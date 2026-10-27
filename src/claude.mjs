@@ -95,6 +95,66 @@ export function runTurn({ args, cwd, env, prompt, onMessage }) {
   return { child, done };
 }
 
+// A short, tool-limited, throwaway run for Ballast's own housekeeping (limit probes,
+// artifact syncs). --safe-mode skips plugins, skills and MCP servers, so it's cheap.
+export async function runQuick({ account, args, prompt, onMessage, env = {} }) {
+  const cwd = path.join(paths.tmp, 'quick');
+  fs.mkdirSync(cwd, { recursive: true });
+  let result = null;
+  const { done } = runTurn({
+    args: ['-p', '--output-format', 'stream-json', '--verbose', '--safe-mode', '--no-session-persistence', ...args],
+    cwd,
+    env: accountEnv(account, env),
+    prompt,
+    onMessage: (msg) => {
+      if (msg.type === 'result') result = msg;
+      onMessage?.(msg);
+    },
+  });
+  const res = await done;
+  return { ...res, result };
+}
+
+// ---------------------------------------------------------------------------
+// Cloud sessions (Claude Code on the web). The session clones `cwd`'s GitHub remote at
+// its current branch, works there, and pushes a branch back.
+
+function collect(args, { account, cwd, input, timeoutMs }) {
+  return new Promise((resolve) => {
+    const child = spawnProc(resolveClaude(), args, { cwd, env: accountEnv(account), stdio: [input == null ? 'ignore' : 'pipe', 'pipe', 'pipe'] });
+    let out = '';
+    child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { out += d; });
+    if (input != null) {
+      child.stdin.on('error', () => {});
+      child.stdin.end(input);
+    }
+    const timer = setTimeout(() => killTree(child), timeoutMs);
+    child.on('error', (err) => { clearTimeout(timer); resolve({ code: -1, out: `${out}\n${err.message}` }); });
+    child.on('close', (code) => { clearTimeout(timer); resolve({ code, out }); });
+  });
+}
+
+const SESSION_URL_RE = /https:\/\/claude\.ai\/code\/[\w/-]+/;
+
+// Creation output isn't documented, so take the first claude.ai/code link it prints.
+export async function createCloudSession({ account, cwd, prompt }) {
+  const { code, out } = await collect(['--cloud', prompt], { account, cwd, timeoutMs: 180e3 });
+  const url = out.match(SESSION_URL_RE)?.[0] || null;
+  const sessionId = url?.split('/').pop() || out.match(/\bsession_[\w-]+/)?.[0] || null;
+  if (!sessionId) throw new Error(`Claude didn't return a cloud session (exit ${code}): ${out.trim().slice(-400) || 'no output'}`);
+  return { sessionId, url: url || `https://claude.ai/code/${sessionId}` };
+}
+
+// Documented: posts one message to the session and returns {ok, session_id, url} without waiting.
+export async function sendCloudMessage({ account, cwd, sessionId, text }) {
+  const { out } = await collect(['-p', '--output-format', 'json', '--cloud', sessionId], { account, cwd, input: text, timeoutMs: 90e3 });
+  let res;
+  try { res = JSON.parse(out.trim().split('\n').filter((l) => l.startsWith('{')).pop()); } catch { /* fall through */ }
+  if (!res?.ok) throw new Error(res?.error || out.trim().slice(-300) || 'Message not delivered');
+  return res;
+}
+
 export function authStatus(account) {
   return new Promise((resolve) => {
     const bin = resolveClaude();

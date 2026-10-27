@@ -13,6 +13,9 @@ export const paths = {
   agents: path.join(HOME, 'agents'),
   artifacts: path.join(HOME, 'artifacts'),
   builds: path.join(HOME, 'builds'),
+  cloud: path.join(HOME, 'cloud'),
+  clones: path.join(HOME, 'clones'), // GitHub repos of cloud-run games
+  studioAttachments: path.join(HOME, 'studio', 'attachments'),
   tmp: path.join(HOME, 'tmp'),
 };
 for (const dir of Object.values(paths)) if (!dir.endsWith('.json')) fs.mkdirSync(dir, { recursive: true });
@@ -26,6 +29,15 @@ const DEFAULTS = {
     maxConcurrentPerAccount: 2,
     directorName: 'Director',
     autopilotDailyTurns: 150,
+    limitRefreshMin: 30, // probe idle accounts this often so limits stay current (0 = off)
+    limitGuardPct: 95, // autopilot leaves an account alone above this usage
+    cloudSyncMin: 10, // claude.ai artifact sync interval (0 = manual only)
+    contentRefreshMin: 60, // re-read an artifact updated today at most this often
+    syncModel: 'haiku',
+    triageModel: 'sonnet', // splits notes into tasks for cloud-run games
+    cloudTaskTimeoutMin: 240, // a cloud session with no report after this is marked blocked
+    desktopArtifacts: true, // let sync runs load the CLI's Artifact tools (see cloud.mjs)
+    reviewers: '', // comma list; when set, only these comment authors are routed to agents
   },
   secrets: {
     uiToken: crypto.randomBytes(24).toString('hex'),
@@ -39,12 +51,14 @@ const DEFAULTS = {
   tasks: [],
   builds: [],
   artifacts: [],
+  cloudArtifacts: [], // claude.ai artifacts tracked per game
+  cloudIndex: {}, // accountId -> last artifact listing, for discovery
 };
 
 function load() {
   let data = {};
   try {
-    data = JSON.parse(fs.readFileSync(paths.state, 'utf8'));
+    data = JSON.parse(fs.readFileSync(paths.state, 'utf8').replace(/^﻿/, '')); // tolerate hand edits saved with a BOM
   } catch (err) {
     if (err.code !== 'ENOENT') {
       const backup = `${paths.state}.corrupt-${Date.now()}`;
@@ -110,3 +124,4 @@ export function readJsonlTail(file, limit = 300, maxBytes = 4 * 1024 * 1024) {
 export const feedFile = (gameId) => path.join(paths.games, gameId, 'feed.jsonl');
 export const transcriptFile = (agentId) => path.join(paths.agents, agentId, 'transcript.jsonl');
 export const attachmentsDir = (gameId) => path.join(paths.games, gameId, 'attachments');
+export const usageFile = path.join(HOME, 'usage.jsonl');

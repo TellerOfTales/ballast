@@ -10,6 +10,8 @@ import { db, save, flush, paths } from './store.mjs';
 import { bus, changed } from './bus.mjs';
 import * as orch from './orchestrator.mjs';
 import { runBuild, cancelBuild, startScheduler } from './scheduler.mjs';
+import { usageSummary } from './usage.mjs';
+import * as cloud from './cloud.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PUBLIC = path.join(ROOT, 'public');
@@ -87,8 +89,12 @@ const route = (method, pattern, handler) => routes.push({ method, re: new RegExp
 
 route('GET', '/api/state', () => orch.publicState());
 route('PATCH', '/api/settings', (_, body) => {
-  for (const key of ['claudePath', 'directorName']) if (body[key] !== undefined) db.settings[key] = String(body[key]).trim();
+  for (const key of ['claudePath', 'directorName', 'syncModel', 'triageModel', 'reviewers']) if (body[key] !== undefined) db.settings[key] = String(body[key]).trim();
+  if (body.cloudTaskTimeoutMin !== undefined) db.settings.cloudTaskTimeoutMin = Math.max(10, Number(body.cloudTaskTimeoutMin) || 240);
+  if (body.desktopArtifacts !== undefined) db.settings.desktopArtifacts = !!body.desktopArtifacts;
   for (const key of ['maxConcurrentPerAccount', 'autopilotDailyTurns']) if (body[key] !== undefined) db.settings[key] = Math.max(1, Number(body[key]) || 1);
+  for (const key of ['limitRefreshMin', 'cloudSyncMin', 'contentRefreshMin']) if (body[key] !== undefined) db.settings[key] = Math.max(0, Number(body[key]) || 0);
+  if (body.limitGuardPct !== undefined) db.settings.limitGuardPct = Math.min(100, Math.max(1, Number(body.limitGuardPct) || 95));
   save();
   changed();
   orch.pump();
@@ -100,6 +106,22 @@ route('PATCH', '/api/accounts/:id', (p, body) => orch.updateAccount(p.id, body))
 route('DELETE', '/api/accounts/:id', (p) => orch.removeAccount(p.id));
 route('POST', '/api/accounts/:id/login', (p) => orch.loginAccount(p.id));
 route('POST', '/api/accounts/:id/refresh', (p) => orch.refreshAccount(p.id));
+route('POST', '/api/accounts/:id/probe', (p) => {
+  orch.probeAccount(p.id).catch(() => {});
+  return { started: true };
+});
+route('POST', '/api/accounts/:id/sync', (p) => {
+  cloud.syncAccount(p.id, { force: true }).catch(() => {});
+  return { started: true };
+});
+
+route('GET', '/api/usage', (_, __, q) => usageSummary(Math.min(60, Math.max(1, Number(q.get('days')) || 14))));
+route('POST', '/api/studio/notes', (_, body) => orch.studioNote(body));
+route('POST', '/api/studio/attachments', (_, body) => orch.saveStudioAttachment(body));
+
+route('POST', '/api/cloud', (_, body) => cloud.track(body));
+route('PATCH', '/api/cloud/:id', (p, body) => cloud.updateTracked(p.id, body));
+route('DELETE', '/api/cloud/:id', (p) => cloud.untrack(p.id));
 
 route('POST', '/api/games', (_, body) => orch.createGame(body));
 route('PATCH', '/api/games/:id', (p, body) => orch.updateGame(p.id, body));
@@ -110,6 +132,7 @@ route('POST', '/api/games/:id/attachments', (p, body) => orch.saveAttachment(p.i
 route('POST', '/api/games/:id/agents', (p, body) => orch.addAgent(p.id, body));
 route('POST', '/api/games/:id/tasks', (p, body) => orch.addTask(p.id, body));
 route('POST', '/api/games/:id/wake', (p) => ({ woken: orch.wakeIdle(p.id, true) }));
+route('POST', '/api/games/:id/survey', (p) => orch.surveyGame(p.id));
 route('POST', '/api/games/:id/build', (p) => {
   runBuild(p.id, 'manual').catch((err) => orch.feedPost(p.id, { kind: 'error', text: `Build failed to start: ${err.message}` }));
   return { started: true };
@@ -122,6 +145,8 @@ route('GET', '/api/agents/:id/transcript', (p, _, q) => orch.readTranscript(p.id
 route('POST', '/api/agents/:id/stop', (p) => orch.stopAgent(p.id));
 route('POST', '/api/agents/:id/reset', (p) => orch.resetAgent(p.id));
 route('POST', '/api/agents/:id/terminal', (p) => orch.openAgentTerminal(p.id));
+route('GET', '/api/agents/:id/sessions', (p) => orch.listSessions(p.id));
+route('POST', '/api/agents/:id/adopt', (p, body) => orch.adoptSession(p.id, body));
 
 route('PATCH', '/api/tasks/:id', (p, body) => orch.updateTask(p.id, body));
 route('DELETE', '/api/tasks/:id', (p) => orch.removeTask(p.id));
@@ -195,10 +220,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Artifacts are agent-written HTML: sandbox them so they can't act as the Ballast UI.
-    const files = pathname.match(/^\/files\/(artifacts|builds|attachments)\/(.+)$/);
+    const files = pathname.match(/^\/files\/(artifacts|builds|attachments|studio|cloud)\/(.+)$/);
     if (fileRead && !files) return send(res, 404, 'Not found');
     if (files) {
-      const root = files[1] === 'attachments' ? paths.games : paths[files[1]];
+      const roots = { attachments: paths.games, studio: paths.studioAttachments, cloud: paths.cloud };
+      const root = roots[files[1]] || paths[files[1]];
       const rel = files[1] === 'attachments' ? files[2].replace(/^([^/]+)\//, '$1/attachments/') : files[2];
       const download = url.searchParams.has('download') ? { 'content-disposition': `attachment; filename="${path.basename(rel)}"` } : {};
       return serveFile(res, root, rel, { 'content-security-policy': 'sandbox allow-scripts allow-forms allow-popups allow-modals allow-pointer-lock', ...download });

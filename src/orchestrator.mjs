@@ -12,6 +12,9 @@ import { bus, changed } from './bus.mjs';
 import * as claude from './claude.mjs';
 import * as git from './git.mjs';
 import * as P from './prompts.mjs';
+import { recordUsage } from './usage.mjs';
+import * as cloud from './cloud.mjs';
+import * as remote from './remote.mjs';
 
 export const runtime = { baseUrl: '' }; // filled in by the server once it is listening
 const MCP_SERVER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'mcp-server.mjs');
@@ -36,6 +39,15 @@ const gameTasks = (gameId) => db.tasks.filter((t) => t.gameId === gameId).sort((
 const openTasks = (gameId) => gameTasks(gameId).filter((t) => t.status === 'open');
 const heldTask = (agentId) => db.tasks.find((t) => t.claimedBy === agentId && t.status === 'claimed');
 const isLimited = (acct) => !!(acct?.limitedUntil && acct.limitedUntil > Date.now());
+const isPaused = (game) => game?.status === 'paused';
+
+// Highest utilization across the account's limit windows (session, weekly, per-model), 0..1.
+export function utilization(acct) {
+  const windows = Object.values(acct?.usage?.windows || {});
+  return windows.length ? Math.max(...windows.map((w) => w?.utilization || 0)) : 0;
+}
+// Autopilot keeps its hands off accounts close to a limit; director messages still go through.
+const overGuard = (acct) => utilization(acct) * 100 >= (db.settings.limitGuardPct || 95);
 const agentName = (id) => getAgent(id)?.name || 'someone';
 const director = () => db.settings.directorName || 'Director';
 
@@ -46,8 +58,8 @@ function must(value, message) {
 
 function agentStatus(agent) {
   const r = R(agent.id);
-  if (r.setup) return 'setup';
-  if (r.child) return 'running';
+  if (r.setup || remote.isDispatching(agent.id)) return 'setup';
+  if (r.child || agent.cloud) return 'running';
   if (isLimited(getAccount(agent.accountId))) return 'limited';
   if (r.queue.length) return 'queued';
   if (r.error) return 'error';
@@ -62,11 +74,13 @@ export function publicState() {
     claudePath: claude.resolveClaude(),
     home: paths.state.replace(/state\.json$/, ''),
     fileKey: db.secrets.fileKey,
-    accounts: db.accounts.map((a) => ({ ...a, running: acctRunning.get(a.id) || 0, limited: isLimited(a) })),
+    accounts: db.accounts.map((a) => ({ ...a, running: accountLoad(a.id), limited: isLimited(a), guarded: overGuard(a), probing: probing.has(a.id), syncing: cloud.isSyncing(a.id) })),
+    cloudArtifacts: db.cloudArtifacts,
+    cloudIndex: db.cloudIndex,
     games: db.games,
     agents: db.agents.map((a) => {
       const r = R(a.id);
-      return { ...a, status: agentStatus(a), queue: r.queue.length, error: r.error, startedAt: r.child ? r.startedAt : null };
+      return { ...a, status: agentStatus(a), queue: r.queue.length, error: r.error, startedAt: r.child ? r.startedAt : a.cloud?.since || null };
     }),
     tasks: db.tasks,
     builds: db.builds.slice(-300),
@@ -172,16 +186,27 @@ export function removeAccount(id) {
 
 const TIME_RE = /^([01]?\d|2[0-3]):([0-5]\d)$/;
 
-export async function createGame({ name, repoPath, isolation = 'worktree', brief = '', permissionMode, model, accountIds = [] }) {
+// runner "local": agents run on this PC in `repoPath`. runner "cloud": agents run as Claude
+// Code cloud sessions on the GitHub repo `github`; Ballast keeps its own clone for builds.
+export async function createGame({ name, repoPath, isolation = 'worktree', brief = '', permissionMode, model, accountIds = [], survey = true, runner = 'local', github, baseBranch }) {
   must(name?.trim(), 'Give the game a name.');
-  must(repoPath?.trim(), 'Choose a repo folder.');
-  const repo = path.resolve(repoPath.trim());
-  const fresh = !fs.existsSync(repo) || fs.readdirSync(repo).length === 0;
-  if (fresh) await git.initRepo(repo);
-  const repoIsGit = await git.isRepo(repo);
-  if (isolation === 'worktree' && !repoIsGit) isolation = 'shared';
-  if (isolation === 'worktree' && !(await git.hasCommits(repo))) {
-    throw Object.assign(new Error('That repo has no commits yet. Commit once, or pick shared mode.'), { status: 400 });
+  const cloudRun = runner === 'cloud';
+  let repo = null;
+  let fresh = false;
+  let repoIsGit = false;
+  if (cloudRun) {
+    must(github?.trim(), 'Give the GitHub repo (owner/name or URL).');
+    isolation = 'cloud';
+  } else {
+    must(repoPath?.trim(), 'Choose a repo folder.');
+    repo = path.resolve(repoPath.trim());
+    fresh = !fs.existsSync(repo) || fs.readdirSync(repo).length === 0;
+    if (fresh) await git.initRepo(repo);
+    repoIsGit = await git.isRepo(repo);
+    if (isolation === 'worktree' && !repoIsGit) isolation = 'shared';
+    if (isolation === 'worktree' && !(await git.hasCommits(repo))) {
+      throw Object.assign(new Error('That repo has no commits yet. Commit once, or pick shared mode.'), { status: 400 });
+    }
   }
 
   let s = slug(name);
@@ -190,16 +215,20 @@ export async function createGame({ name, repoPath, isolation = 'worktree', brief
     id: uid('game'),
     name: name.trim(),
     slug: s,
+    runner: cloudRun ? 'cloud' : 'local',
     repoPath: repo,
     isolation,
     integrationBranch: 'ballast/integration',
-    baseBranch: repoIsGit ? await git.currentBranch(repo).catch(() => null) : null,
+    baseBranch: cloudRun ? baseBranch?.trim() || null : repoIsGit ? await git.currentBranch(repo).catch(() => null) : null,
     brief,
     briefRev: 1,
     permissionMode: permissionMode || 'bypassPermissions',
     model: model || '',
     effort: '',
     autopilot: true,
+    status: 'active',
+    priority: 2,
+    briefSuggestion: '',
     leadAgentId: null,
     noteSeq: 0,
     taskSeq: 0,
@@ -207,18 +236,30 @@ export async function createGame({ name, repoPath, isolation = 'worktree', brief
     build: { command: '', outputPath: '', checkins: [], timeoutMin: 120, shareDir: '', webhookUrl: '', agentReport: false, fired: {} },
     createdAt: Date.now(),
   };
+  if (cloudRun) await remote.prepareClone(game, github);
   if (isolation === 'worktree') await git.ensureBranch(repo, game.integrationBranch, 'HEAD');
   db.games.push(game);
   save();
   feedPost(game.id, {
     kind: 'system',
-    text: fresh
-      ? `New project started at ${repo}.`
-      : `Linked to ${repo} (${isolation === 'worktree' ? `one git worktree per agent, landing on ${game.integrationBranch}` : 'all agents share the working tree'}).`,
+    text: cloudRun
+      ? `Linked to github.com/${game.github} (${game.baseBranch}). Agents run as Claude cloud sessions and deliver pull requests; Ballast's copy for builds is ${game.repoPath}.`
+      : fresh
+        ? `New project started at ${repo}.`
+        : `Linked to ${repo} (${isolation === 'worktree' ? `one git worktree per agent, landing on ${game.integrationBranch}` : 'all agents share the working tree'}).`,
   });
   for (const accountId of accountIds) await addAgent(game.id, { accountId });
+  // An existing project gets surveyed first so the board and brief reflect where it really is.
+  if (!fresh && survey && gameAgents(game.id).length) surveyGame(game.id);
   changed();
   return game;
+}
+
+export function surveyGame(id) {
+  const game = must(getGame(id), 'Unknown game');
+  const lead = must(pickTriager(game), 'Add an agent to this game first.');
+  enqueue(lead, { kind: 'survey', prompt: P.survey({ game }) }, { front: true });
+  feedPost(id, { kind: 'system', text: `${lead.name} is surveying the project: current state, a suggested brief, and starting board tasks.` });
 }
 
 export function updateGame(id, patch) {
@@ -230,6 +271,14 @@ export function updateGame(id, patch) {
     game.autopilot = !!patch.autopilot;
     if (game.autopilot) wakeIdle(game.id);
   }
+  if (patch.priority !== undefined) game.priority = Math.min(3, Math.max(1, Number(patch.priority) || 2));
+  if (patch.status && patch.status !== game.status) {
+    game.status = patch.status === 'paused' ? 'paused' : 'active';
+    feedPost(game.id, { kind: 'system', text: game.status === 'paused' ? 'Game paused. Agents finish their current turn; queued work waits.' : 'Game resumed.' });
+    if (game.status === 'active') setTimeout(() => { pump(); wakeIdle(game.id); }, 100);
+  }
+  if (patch.acceptBriefSuggestion && game.briefSuggestion) patch.brief = game.briefSuggestion;
+  if (patch.acceptBriefSuggestion || patch.dismissBriefSuggestion) game.briefSuggestion = '';
   if (patch.brief !== undefined && patch.brief !== game.brief) {
     game.brief = patch.brief;
     game.briefRev = (game.briefRev || 1) + 1;
@@ -353,6 +402,7 @@ export function stopAgent(id) {
   r.queue = [];
   r.paused = true;
   const agent = getAgent(id);
+  if (agent?.cloud) remote.forget(agent, 'stopped by the director');
   if (agent && !r.child) releaseTasks(agent, `${agent.name} was stopped`);
   if (r.child) {
     r.stopped = true;
@@ -363,6 +413,12 @@ export function stopAgent(id) {
 
 export function openAgentTerminal(id) {
   const agent = must(getAgent(id), 'Unknown agent');
+  // Cloud agents live on claude.ai; the UI opens the session page instead.
+  if (getGame(agent.gameId)?.runner === 'cloud') {
+    const url = agent.cloud?.url || agent.lastCloud?.url;
+    must(url, 'This agent has no cloud session yet.');
+    return { opened: false, url };
+  }
   must(!R(id).child, 'Stop the agent first; two processes on one session would collide.');
   const acct = getAccount(agent.accountId);
   return claude.openTerminal({
@@ -371,6 +427,80 @@ export function openAgentTerminal(id) {
     commandArgs: agent.sessionId ? ['--resume', agent.sessionId] : [],
     title: `Ballast - ${agent.name}`,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Existing Claude Code sessions (bring an old game's conversations into Ballast)
+
+// Claude Code keeps each folder's sessions in <config>/projects/<path with non-alphanumerics as "-">.
+const projectsDir = (acct) => path.join(acct.configDir, 'projects');
+const encodeProject = (dir) => path.resolve(dir).replace(/[^a-zA-Z0-9]/g, '-');
+
+function sessionTitle(file) {
+  let fd;
+  try {
+    fd = fs.openSync(file, 'r');
+    const buf = Buffer.alloc(96 * 1024);
+    const text = buf.toString('utf8', 0, fs.readSync(fd, buf, 0, buf.length, 0));
+    let summary = null;
+    let first = null;
+    for (const line of text.split('\n')) {
+      let m;
+      try { m = JSON.parse(line); } catch { continue; }
+      if (m.type === 'summary' && m.summary) summary = m.summary;
+      if (!first && m.type === 'user' && !m.isMeta) {
+        const c = m.message?.content;
+        const t = typeof c === 'string' ? c : Array.isArray(c) ? c.find((x) => x.type === 'text')?.text : null;
+        if (t && !t.startsWith('<')) first = t;
+      }
+    }
+    return (summary || first || '(no prompt text)').replace(/\s+/g, ' ').slice(0, 160);
+  } catch {
+    return '(unreadable)';
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
+export function listSessions(agentId) {
+  const agent = must(getAgent(agentId), 'Unknown agent');
+  const acct = getAccount(agent.accountId);
+  const game = getGame(agent.gameId);
+  const dirs = [...new Set([game.repoPath, agent.cwd].map((d) => path.join(projectsDir(acct), encodeProject(d))))];
+  const out = [];
+  for (const dir of dirs) {
+    if (!fs.existsSync(dir)) continue;
+    for (const f of fs.readdirSync(dir)) {
+      if (!f.endsWith('.jsonl')) continue;
+      const file = path.join(dir, f);
+      const st = fs.statSync(file);
+      out.push({ sessionId: f.slice(0, -6), dir, title: sessionTitle(file), updatedAt: st.mtimeMs, size: st.size, current: f.slice(0, -6) === agent.sessionId });
+    }
+  }
+  return out.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 40);
+}
+
+export function adoptSession(agentId, { sessionId, dir }) {
+  const agent = must(getAgent(agentId), 'Unknown agent');
+  must(!R(agentId).child, 'Stop the agent before switching sessions.');
+  const acct = getAccount(agent.accountId);
+  must(/^[\w-]+$/.test(sessionId || ''), 'Bad session id');
+  const src = path.join(dir, `${sessionId}.jsonl`);
+  must(path.resolve(dir).startsWith(path.resolve(projectsDir(acct))) && fs.existsSync(src), 'Session not found for this account.');
+  // Resume looks in the agent's own folder, so copy the conversation there (the original stays put).
+  const destDir = path.join(projectsDir(acct), encodeProject(agent.cwd));
+  if (path.resolve(destDir) !== path.resolve(dir)) {
+    fs.mkdirSync(destDir, { recursive: true });
+    fs.copyFileSync(src, path.join(destDir, `${sessionId}.jsonl`));
+    const extras = path.join(dir, sessionId);
+    if (fs.existsSync(extras)) fs.cpSync(extras, path.join(destDir, sessionId), { recursive: true });
+  }
+  Object.assign(agent, { sessionId, forkNext: true });
+  R(agentId).error = null;
+  tx(agent, { kind: 'system', text: `Adopted existing session ${sessionId.slice(0, 8)}: ${sessionTitle(src)}. The next message continues it as a fork.` });
+  save();
+  changed();
+  return agent;
 }
 
 // ---------------------------------------------------------------------------
@@ -387,7 +517,9 @@ export function saveAttachment(gameId, { name, data }) {
   return { name: safe, path: path.join(dir, file), url: `/files/attachments/${gameId}/${encodeURIComponent(file)}` };
 }
 
-export function postNote(gameId, { text = '', target = 'all', attachments = [] }) {
+// `source` is 'director' for notes typed in Ballast, 'studio' for cross-game notes and
+// 'review' for feedback pulled from claude.ai artifacts.
+export function postNote(gameId, { text = '', target = 'all', attachments = [], from = director(), source = 'director' }) {
   const game = must(getGame(gameId), 'Unknown game');
   text = text.trim();
   must(text || attachments.length, 'Write a note first.');
@@ -395,24 +527,53 @@ export function postNote(gameId, { text = '', target = 'all', attachments = [] }
   if (target !== 'all') {
     const agent = must(getAgent(target), 'Unknown agent');
     must(agent.gameId === gameId, 'That agent is on another game.');
-    feedPost(gameId, { kind: 'note', from: director(), to: agent.name, toAgentId: agent.id, text, attachments });
-    enqueue(agent, { kind: 'message', prompt: P.direct({ text, director: director(), attachments }) });
+    feedPost(gameId, { kind: 'note', from, to: agent.name, toAgentId: agent.id, source, text, attachments });
+    enqueue(agent, { kind: 'message', direct: true, text, prompt: P.direct({ text, director: from, attachments }) });
     return;
   }
 
-  const note = { num: ++game.noteSeq, text, attachments };
+  if (game.runner === 'cloud') {
+    // Cloud sessions can't triage through Ballast's board tools, so Ballast splits the note itself.
+    const note = { num: ++game.noteSeq, text, attachments, source };
+    save();
+    feedPost(gameId, { kind: 'note', num: note.num, from, source, text, attachments });
+    if (attachments.length) feedPost(gameId, { kind: 'system', text: 'Cloud sessions can’t open files on this PC; attachments stay with the note here.' });
+    remote.triage(game, note).catch((err) => feedPost(gameId, { kind: 'error', text: `Triage failed: ${err.message}` })).finally(() => wakeIdle(gameId));
+    return;
+  }
+
+  const note = { num: ++game.noteSeq, text, attachments, source };
   save();
-  feedPost(gameId, { kind: 'note', num: note.num, from: director(), text, attachments });
+  feedPost(gameId, { kind: 'note', num: note.num, from, source, text, attachments });
+  if (isPaused(game)) feedPost(gameId, { kind: 'system', text: 'This game is paused; the note runs when you resume it.' });
   const triager = pickTriager(game);
   if (!triager) {
     feedPost(gameId, { kind: 'system', text: 'No agents on this game yet. Add one from the Agents tab, then send the note again.' });
     return;
   }
-  enqueue(triager, { kind: 'triage', note, prompt: P.triage({ note, director: director() }) }, { front: true });
+  enqueue(triager, { kind: 'triage', note, prompt: P.triage({ note, director: from }) }, { front: true });
+}
+
+// One note to several games at once (studio-wide direction, shared tech, art style...).
+export function studioNote({ gameIds = [], text = '', attachments = [] }) {
+  const targets = (gameIds.length ? gameIds : db.games.map((g) => g.id)).filter((id) => getGame(id));
+  must(targets.length, 'Pick at least one game.');
+  for (const id of targets) postNote(id, { text, attachments, source: 'studio' });
+  return { sent: targets.length };
+}
+
+export function saveStudioAttachment({ name, data }) {
+  must(data, 'Empty attachment');
+  fs.mkdirSync(paths.studioAttachments, { recursive: true });
+  const safe = path.basename(String(name || 'file')).replace(/[^\w.\-]+/g, '_').slice(-80) || 'file';
+  const file = `${Date.now().toString(36)}-${safe}`;
+  fs.writeFileSync(path.join(paths.studioAttachments, file), Buffer.from(data, 'base64'));
+  return { name: safe, path: path.join(paths.studioAttachments, file), url: `/files/studio/${encodeURIComponent(file)}` };
 }
 
 function pickTriager(game, exclude) {
-  const agents = gameAgents(game.id).filter((a) => a.id !== exclude);
+  const agents = gameAgents(game.id).filter((a) => a.id !== exclude)
+    .sort((a, b) => utilization(getAccount(a.accountId)) - utilization(getAccount(b.accountId)));
   const usable = agents.filter((a) => !isLimited(getAccount(a.accountId)));
   const idle = usable.filter((a) => !R(a.id).child && !R(a.id).queue.length && !R(a.id).setup);
   const lead = (list) => list.find((a) => a.id === game.leadAgentId);
@@ -438,23 +599,61 @@ function takeBatch(r) {
   const first = r.queue.shift();
   if (!BATCHABLE.has(first.kind)) return first;
   const items = [first];
-  while (r.queue.length && BATCHABLE.has(r.queue[0].kind)) items.push(r.queue.shift());
+  while (r.queue.length && BATCHABLE.has(r.queue[0].kind) && !!r.queue[0].direct === !!first.direct) items.push(r.queue.shift());
   const real = items.filter((i) => i.kind !== 'next');
   if (!real.length) return first;
   if (real.length === 1) return real[0];
-  return { kind: real.some((i) => i.kind === 'note') ? 'note' : 'message', prompt: real.map((i) => i.prompt).join('\n\n---\n\n') };
+  return { kind: real.some((i) => i.kind === 'note') ? 'note' : 'message', direct: !!first.direct, prompt: real.map((i) => i.prompt).join('\n\n---\n\n') };
 }
 
+// When accounts are contended, higher-priority games get the free slots first.
+// Paused games only run messages the director sent straight to one agent.
 export function pump() {
-  for (const agent of db.agents) {
+  const priority = (agent) => getGame(agent.gameId)?.priority ?? 2;
+  const ordered = [...db.agents].sort((a, b) => priority(b) - priority(a));
+  for (const agent of ordered) {
     const r = R(agent.id);
-    if (r.child || r.setup || !r.queue.length) continue;
+    if (r.child || r.setup || !r.queue.length || remote.isDispatching(agent.id)) continue;
+    const game = getGame(agent.gameId);
+    if (isPaused(game) && !r.queue[0].direct) continue;
+    // A cloud agent with a live session takes direct messages as follow-ups; everything else waits.
+    if (agent.cloud) {
+      if (r.queue[0].direct) cloudFollowUp(agent, r.queue.shift());
+      continue;
+    }
     const acct = getAccount(agent.accountId);
     if (!acct || isLimited(acct)) continue;
     const max = acct.maxConcurrent || db.settings.maxConcurrentPerAccount || 2;
-    if ((acctRunning.get(acct.id) || 0) >= max) continue;
-    startTurn(agent, acct, takeBatch(r));
+    if (accountLoad(acct.id) >= max) continue;
+    if (game.runner === 'cloud') remote.dispatch(agent, r.queue.shift()).then(() => pump());
+    else startTurn(agent, acct, takeBatch(r));
   }
+}
+
+async function cloudFollowUp(agent, item) {
+  try {
+    await remote.message(agent, item.text);
+    tx(agent, { kind: 'system', text: `Sent to the cloud session: ${item.text.slice(0, 200)}` });
+  } catch (err) {
+    feedPost(agent.gameId, { kind: 'error', from: agent.name, agentId: agent.id, text: `Couldn't reach the cloud session: ${err.message}` });
+  }
+}
+
+// Cloud agents are handed a task by Ballast instead of claiming one themselves.
+export function claimForAgent(agent) {
+  const open = openTasks(agent.gameId);
+  const role = agent.role?.toLowerCase().split(/[^a-z]+/).filter(Boolean) || [];
+  const fit = open.find((t) => role.some((w) => t.title.toLowerCase().includes(w))) || open[0];
+  if (!fit) return null;
+  Object.assign(fit, { status: 'claimed', claimedBy: agent.id, claimedAt: Date.now(), updatedAt: Date.now() });
+  save();
+  changed();
+  return fit;
+}
+
+export function setAgentError(id, error) {
+  R(id).error = error;
+  changed();
 }
 
 function writeAgentFiles(agent, game) {
@@ -502,13 +701,19 @@ function startTurn(agent, acct, item) {
     '--permission-mode', game.permissionMode || 'bypassPermissions',
     '--append-system-prompt-file', sysFile,
     '--mcp-config', mcpFile,
-    '--add-dir', attachDir,
+    '--add-dir', attachDir, paths.studioAttachments,
     '--allowedTools', 'mcp__ballast',
   ];
   if (game.model) args.push('--model', game.model);
   if (game.effort) args.push('--effort', game.effort);
-  if (agent.sessionId) args.push('--resume', agent.sessionId);
-  else args.push('--session-id', crypto.randomUUID(), '--name', `Ballast · ${game.name} · ${agent.name}`);
+  if (agent.sessionId) {
+    args.push('--resume', agent.sessionId);
+    // An adopted session is forked on first use so the original conversation stays untouched.
+    if (agent.forkNext) {
+      args.push('--fork-session');
+      agent.forkNext = false;
+    }
+  } else args.push('--session-id', crypto.randomUUID(), '--name', `Ballast · ${game.name} · ${agent.name}`);
 
   acctRunning.set(acct.id, (acctRunning.get(acct.id) || 0) + 1);
   tx(agent, { kind: 'prompt', itemKind: item.kind, text: prompt });
@@ -573,13 +778,15 @@ function onMessage(agent, acct, msg) {
   }
 }
 
-function updateUsage(acct, info) {
+// Called with every rate_limit_event: the server's own view of the session (five_hour),
+// weekly (seven_day) and any per-model windows for this account.
+export function updateUsage(acct, info) {
   acct.usage = {
     status: info.status,
     type: info.rateLimitType,
     resetsAt: info.resetsAt,
-    fiveHour: info.unifiedWindows?.five_hour || null,
-    sevenDay: info.unifiedWindows?.seven_day || null,
+    windows: info.unifiedWindows || {},
+    overage: info.isUsingOverage ? 'using' : info.overageStatus || null,
     updatedAt: Date.now(),
   };
   if (info.status === 'rejected') markLimited(acct, (info.resetsAt || 0) * 1000 || Date.now() + 3600e3, 'usage limit');
@@ -587,7 +794,39 @@ function updateUsage(acct, info) {
   changed();
 }
 
-const LIMIT_RE = /usage limit|rate.?limit|limit reached|out of (extra )?usage|\b429\b/i;
+// Local turns plus cloud sessions: both draw on the same account limits.
+function accountLoad(id) {
+  return (acctRunning.get(id) || 0) + db.agents.filter((a) => a.accountId === id && (a.cloud || remote.isDispatching(a.id))).length;
+}
+export const isAccountBusy = (id) => accountLoad(id) > 0;
+
+// Limits only arrive with a model call, so an idle account gets a one-word probe on a
+// small model to keep its session/weekly numbers current (about a fifth of a cent).
+const probing = new Set();
+export async function probeAccount(id) {
+  const acct = must(getAccount(id), 'Unknown account');
+  if (probing.has(id)) return acct;
+  probing.add(id);
+  changed();
+  try {
+    const { result, stderr } = await claude.runQuick({
+      account: acct,
+      args: ['--model', 'haiku', '--tools', 'Read'],
+      prompt: 'Reply with just: ok',
+      onMessage: (msg) => { if (msg.type === 'rate_limit_event') updateUsage(acct, msg.rate_limit_info || {}); },
+    });
+    if (result) recordUsage({ account: acct, kind: 'probe', result });
+    acct.usage = { ...(acct.usage || {}), probedAt: Date.now() };
+    if (!result && /not logged in|\/login|authenticat/i.test(stderr)) acct.loggedIn = false;
+    save();
+  } finally {
+    probing.delete(id);
+    changed();
+  }
+  return acct;
+}
+
+const LIMIT_RE =/usage limit|rate.?limit|limit reached|out of (extra )?usage|\b429\b/i;
 
 function finishTurn(agent, acct, item, res) {
   const r = R(agent.id);
@@ -605,6 +844,7 @@ function finishTurn(agent, acct, item, res) {
   agent.turns = (agent.turns || 0) + 1;
   agent.lastActive = Date.now();
   if (result) {
+    recordUsage({ account: acct, gameId: game.id, agentId: agent.id, kind: 'agent', result });
     agent.costUsd = (agent.costUsd || 0) + (result.total_cost_usd || 0);
     tx(agent, {
       kind: 'result',
@@ -672,6 +912,7 @@ function afterTurn(agent, game, item, ok) {
     return;
   }
 
+  if (isPaused(game) || overGuard(getAccount(agent.accountId))) return;
   if (game.autopilot && !R(agent.id).queue.length && openTasks(game.id).length && autopilotBudget(game)) {
     enqueue(agent, { kind: 'next', prompt: P.nextTask({ openCount: openTasks(game.id).length }) }, { noPump: true });
   }
@@ -696,14 +937,17 @@ function autopilotBudget(game) {
 // Hands open work to idle agents. `force` is the Wake button: ignores autopilot and budget.
 export function wakeIdle(gameId, force = false) {
   const game = getGame(gameId);
-  if (!game || (!force && !game.autopilot)) return 0;
+  if (!game || isPaused(game) || (!force && !game.autopilot)) return 0;
   let open = openTasks(gameId).length;
   let woken = 0;
-  for (const a of gameAgents(gameId)) {
+  // Freshest accounts first, so work drains toward whoever has the most headroom.
+  const agents = gameAgents(gameId).sort((a, b) => utilization(getAccount(a.accountId)) - utilization(getAccount(b.accountId)));
+  for (const a of agents) {
     if (open <= 0) break;
     const r = R(a.id);
-    if (r.child || r.queue.length || r.setup || heldTask(a.id)) continue;
-    if (isLimited(getAccount(a.accountId))) continue;
+    if (r.child || r.queue.length || r.setup || heldTask(a.id) || a.cloud || remote.isDispatching(a.id)) continue;
+    const acct = getAccount(a.accountId);
+    if (isLimited(acct) || (!force && overGuard(acct))) continue;
     if (r.paused && !force) continue;
     if (force) r.paused = false;
     if (!force && !autopilotBudget(game)) break;
@@ -777,9 +1021,9 @@ function createTask(game, { title, detail = '', createdBy, noteNum = null }) {
   return t;
 }
 
-export function addTask(gameId, { title, detail }) {
+export function addTask(gameId, { title, detail, noteNum = null, createdBy = director() }) {
   const game = must(getGame(gameId), 'Unknown game');
-  const t = createTask(game, { title, detail, createdBy: director() });
+  const t = createTask(game, { title, detail, createdBy, noteNum });
   setTimeout(() => wakeIdle(gameId), 300);
   return t;
 }
@@ -788,10 +1032,13 @@ export function updateTask(id, patch) {
   const t = must(db.tasks.find((x) => x.id === id), 'Unknown task');
   if (patch.title?.trim()) t.title = patch.title.trim();
   if (patch.detail !== undefined) t.detail = patch.detail;
+  if (patch.summary !== undefined) t.summary = patch.summary;
+  if (patch.blockReason !== undefined) t.blockReason = patch.blockReason;
   if (patch.status && patch.status !== t.status) {
     t.status = patch.status;
     if (patch.status === 'open') Object.assign(t, { claimedBy: null, nudges: 0, blockReason: null });
     if (patch.status === 'open') setTimeout(() => wakeIdle(t.gameId), 300);
+    if (patch.status === 'done') Object.assign(t, { doneAt: Date.now(), doneBy: patch.doneBy || t.claimedBy || null });
   }
   t.updatedAt = Date.now();
   save();
@@ -877,7 +1124,23 @@ export async function agentApi(agentId, tool, args = {}) {
       return 'Posted to the director feed.';
     }
     case 'publish_artifact':
+      if (args.url && !args.path && args.content == null) {
+        const tracked = cloud.track({ url: args.url, gameId: game.id, accountId: agent.accountId, role: 'output', title: args.title, addedBy: agent.name });
+        feedPost(game.id, { kind: 'artifact', from: agent.name, agentId: agent.id, cloudId: tracked.id, text: `${tracked.title}\n${tracked.url}${args.description ? `\n${args.description}` : ''}` });
+        return `Tracking ${tracked.url} on the director's artifact shelf. Ballast re-reads it and its comments on every sync.`;
+      }
       return publishArtifact(agent, game, args);
+    case 'claude_artifacts':
+      return cloud.listForAgent(game.id);
+    case 'read_claude_artifact':
+      return cloud.readForAgent(game.id, String(args.url || ''));
+    case 'suggest_brief': {
+      game.briefSuggestion = must(String(args.text || '').trim(), 'Empty brief');
+      feedPost(game.id, { kind: 'update', from: agent.name, agentId: agent.id, text: `Suggested a game brief (Settings → Use suggestion):\n${game.briefSuggestion}` });
+      save();
+      changed();
+      return 'Saved as a suggestion. The director decides whether to use it.';
+    }
     case 'read_notes': {
       const notes = readFeed(game.id, 2000).filter((e) => e.kind === 'note').slice(-(Number(args.limit) || 5));
       if (!notes.length) return 'No director notes yet.';
@@ -971,14 +1234,17 @@ export function removeArtifact(id) {
 
 export function requestCheckinReport(gameId, build, time) {
   const game = getGame(gameId);
-  const lead = game && (getAgent(game.leadAgentId) || gameAgents(gameId)[0]);
+  if (!game || game.runner === 'cloud') return; // a cloud session per report would be wasteful
+  const lead = getAgent(game.leadAgentId) || gameAgents(gameId)[0];
   if (lead) enqueue(lead, { kind: 'message', prompt: P.checkinReport({ build, time }) });
 }
 
 export async function init() {
-  // Nothing survives a restart mid-turn, so claimed work goes back on the board.
+  // Local turns don't survive a restart, so their claimed work goes back on the board.
+  // Cloud sessions keep running on claude.ai, so their tasks stay claimed.
+  const cloudHeld = new Set(db.agents.filter((a) => a.cloud?.taskId).map((a) => a.cloud.taskId));
   for (const t of db.tasks) {
-    if (t.status === 'claimed') Object.assign(t, { status: 'open', claimedBy: null, nudges: 0, note: 'Released: Ballast restarted' });
+    if (t.status === 'claimed' && !cloudHeld.has(t.id)) Object.assign(t, { status: 'open', claimedBy: null, nudges: 0, note: 'Released: Ballast restarted' });
   }
   save();
   await Promise.all(db.accounts.map((a) => refreshAccount(a.id).catch(() => {})));

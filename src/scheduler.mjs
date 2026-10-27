@@ -6,8 +6,10 @@ import { spawn } from 'node:child_process';
 import { db, save, uid, paths } from './store.mjs';
 import { changed } from './bus.mjs';
 import * as git from './git.mjs';
-import { feedPost, getGame, checkLimits, requestCheckinReport } from './orchestrator.mjs';
+import { feedPost, getGame, checkLimits, requestCheckinReport, probeAccount, isAccountBusy } from './orchestrator.mjs';
 import { killTree } from './claude.mjs';
+import { syncAccount, isSyncing } from './cloud.mjs';
+import { poll as pollCloudSessions } from './remote.mjs';
 
 const running = new Map(); // gameId -> child process
 const SLOT_WINDOW_MS = 90 * 60e3; // a missed check-in still fires if Ballast starts within 90 min
@@ -71,6 +73,8 @@ export async function runBuild(gameId, reason = 'manual', slot = null) {
   try {
     let cwd = game.repoPath;
     if (game.isolation === 'worktree') cwd = await git.prepareBuildWorktree(game.repoPath, game.integrationBranch);
+    // Cloud games build what has been merged on GitHub, in Ballast's own clone.
+    if (game.runner === 'cloud') await git.syncClone(cwd, game.baseBranch);
     build.cwd = cwd;
     build.commit = await git.head(cwd).catch(() => null);
     if (previous?.commit && build.commit && previous.commit !== build.commit) build.changelog = await git.log(cwd, previous.commit, build.commit);
@@ -141,10 +145,42 @@ function todayAt(hhmm) {
   return d;
 }
 
+// One housekeeping run at a time: limit probes for idle accounts, then claude.ai syncs.
+let housekeeping = false;
+async function keepFresh() {
+  if (housekeeping) return;
+  housekeeping = true;
+  try {
+    const now = Date.now();
+    const s = db.settings;
+    const ready = db.accounts.filter((a) => a.loggedIn && !(a.limitedUntil > now));
+    if (s.limitRefreshMin > 0) {
+      for (const acct of ready) {
+        const last = Math.max(acct.usage?.updatedAt || 0, acct.usage?.probedAt || 0);
+        // Busy accounts report limits with every turn, so they never need a probe.
+        if (!isAccountBusy(acct.id) && now - last > s.limitRefreshMin * 60e3) await probeAccount(acct.id).catch(() => {});
+      }
+    }
+    if (s.cloudSyncMin > 0) {
+      for (const acct of ready) {
+        const tracked = db.cloudArtifacts.some((c) => c.accountId === acct.id);
+        const every = (tracked ? s.cloudSyncMin : Math.max(60, s.cloudSyncMin)) * 60e3; // discovery-only: hourly
+        if (!isSyncing(acct.id) && now - (acct.cloudSyncedAt || 0) > every) await syncAccount(acct.id).catch(() => {});
+      }
+    }
+  } finally {
+    housekeeping = false;
+  }
+}
+
+let ticks = 0;
 function tick() {
   checkLimits();
+  keepFresh();
+  if (ticks++ % 3 === 0) pollCloudSessions().catch(() => {}); // every 90s
   const now = Date.now();
   for (const game of db.games) {
+    if (game.status === 'paused') continue;
     const fired = (game.build.fired ||= {});
     for (const time of game.build.checkins || []) {
       const at = todayAt(time);

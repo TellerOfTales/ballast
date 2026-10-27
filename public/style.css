@@ -67,7 +67,12 @@ pre code { background: none; padding: 0; }
 .acct .sub { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .acct .actions { display: none; gap: 2px; }
 .acct:hover .actions { display: flex; }
-.meter { display: grid; grid-template-columns: 22px 1fr 34px; align-items: center; gap: 6px; font-size: 11px; color: var(--faint); margin-top: 4px; }
+.meter { display: grid; grid-template-columns: 50px 1fr 34px; align-items: center; gap: 6px; font-size: 11px; color: var(--faint); margin-top: 4px; }
+.meter.full { grid-template-columns: 96px 1fr 38px 130px; font-size: 12px; margin-top: 7px; }
+.meter.full .bar { height: 6px; }
+.meter .reset { color: var(--faint); text-align: right; white-space: nowrap; }
+.game-link.studio-link { border-bottom: 1px solid var(--line); border-radius: 8px 8px 0 0; margin-bottom: 4px; }
+.game-link.paused .gname { color: var(--muted); }
 .meter .bar { height: 4px; background: var(--line); border-radius: 3px; overflow: hidden; }
 .meter .bar i { display: block; height: 100%; background: var(--green); border-radius: 3px; }
 .meter .bar i.warn { background: var(--accent); }
@@ -244,6 +249,47 @@ label.field small, .hint { display: block; color: var(--faint); font-size: 12px;
 .art .info { padding: 10px 12px; }
 .art .title { font-weight: 600; }
 .art .meta { color: var(--faint); font-size: 12px; margin-top: 2px; }
+
+/* ---------- studio ---------- */
+.studio section { margin-bottom: 28px; }
+.section-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 10px; }
+.section-head h3 { margin: 0; font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
+.section-head .hint { margin: 0; flex: 1; }
+.row { display: flex; align-items: center; gap: 8px; }
+.grow { flex: 1; min-width: 0; }
+.link { cursor: pointer; }
+.link:hover { color: var(--accent); }
+.acct-grid, .game-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 14px; }
+.usage-lines { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 8px; display: grid; gap: 4px; }
+.kv { display: grid; grid-template-columns: 54px 60px 1fr; gap: 8px; align-items: baseline; font-size: 13px; }
+.kv > span:first-child { color: var(--muted); font-size: 12px; }
+.chart { position: relative; height: 150px; margin-bottom: 26px; }
+.chart svg { width: 100%; height: 100%; display: block; border-bottom: 1px solid var(--line-2); }
+.chart rect:hover { opacity: .8; }
+.xlabels { position: absolute; left: 0; right: 0; bottom: -20px; height: 16px; }
+.xlabels span { position: absolute; transform: translateX(-50%); font-size: 11px; color: var(--faint); }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--muted); align-items: center; }
+.legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; }
+.tbl { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 13px; }
+.tbl th { text-align: left; font-size: 11px; color: var(--faint); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.tbl td { padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.tbl a { color: var(--text); }
+.game-card.paused { opacity: .7; }
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 4px 0 10px; }
+.stats div { background: var(--panel-2); border-radius: 8px; padding: 6px 8px; }
+.stats b { display: block; font-size: 17px; }
+.stats span { font-size: 11px; color: var(--faint); }
+select.mini { width: auto; padding: 4px 8px; font-size: 12px; margin-left: auto; }
+.targets { display: flex; flex-wrap: wrap; gap: 4px 18px; margin-bottom: 4px; }
+.targets .check { margin-bottom: 4px; }
+.studio-composer .composer { border-top: 0; padding: 0; background: none; }
+.studio-composer .composer .inner { max-width: none; }
+.cloud-card { margin-bottom: 10px; }
+.cloud-card .md { margin-top: 8px; }
+.threads { display: grid; gap: 6px; margin-top: 10px; }
+.thread { border-left: 2px solid var(--violet); padding: 4px 10px; font-size: 13px; background: var(--panel-2); border-radius: 0 6px 6px 0; }
+.suggestion { border-color: #2c4a6a; margin-bottom: 14px; }
+.sub-h { margin: 18px 0 10px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
 
 /* ---------- settings ---------- */
 .settings { max-width: 760px; }

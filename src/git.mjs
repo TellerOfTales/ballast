@@ -59,5 +59,50 @@ export async function prepareBuildWorktree(repo, ref) {
   return wt;
 }
 
+// ---------------------------------------------------------------------------
+// GitHub-backed games (agents run in Claude's cloud; Ballast watches the remote)
+
+// Accepts "owner/name", https or ssh URLs. Returns a clone URL and "owner/name".
+export function parseGithub(input) {
+  const s = String(input || '').trim().replace(/\.git$/, '').replace(/\/+$/, '');
+  const m = s.match(/^(?:https?:\/\/github\.com\/|git@github\.com:)?([\w.-]+)\/([\w.-]+)$/);
+  return m ? { slug: `${m[1]}/${m[2]}`, url: `https://github.com/${m[1]}/${m[2]}.git` } : null;
+}
+
+export async function remoteSlug(dir) {
+  const url = await git(dir, ['remote', 'get-url', 'origin']).catch(() => '');
+  return parseGithub(url)?.slug || null;
+}
+
+export async function cloneRepo(url, dir) {
+  fs.mkdirSync(path.dirname(dir), { recursive: true });
+  await git(path.dirname(dir), ['clone', url, dir]);
+}
+
+// Remote branch heads, without fetching anything.
+export async function remoteHeads(dir) {
+  const out = await git(dir, ['ls-remote', '--heads', 'origin']);
+  const heads = {};
+  for (const line of out.split('\n')) {
+    const [sha, ref] = line.trim().split(/\s+/);
+    if (ref?.startsWith('refs/heads/')) heads[ref.slice(11)] = sha;
+  }
+  return heads;
+}
+
+// Fetches the given remote branches into a private namespace so the user's refs are untouched.
+export async function fetchBranches(dir, branches) {
+  if (!branches.length) return;
+  await git(dir, ['fetch', '--no-tags', '--quiet', 'origin', ...branches.map((b) => `+refs/heads/${b}:refs/ballast/remote/${b}`)]);
+}
+
+export const showRemoteFile = (dir, branch, file) => git(dir, ['show', `refs/ballast/remote/${branch}:${file}`]).catch(() => null);
+
+// Brings the local clone to the remote base branch (what cloud sessions start from).
+export async function syncClone(dir, base) {
+  await git(dir, ['fetch', '--no-tags', '--quiet', 'origin', base]);
+  await git(dir, ['checkout', '--quiet', '--detach', '--force', `origin/${base}`]);
+}
+
 export const log = (dir, from, to) =>
   git(dir, ['log', '--oneline', '--no-decorate', '-n', '60', `${from}..${to}`]).catch(() => '');

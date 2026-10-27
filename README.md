@@ -19,7 +19,11 @@ Or double-click `start-ballast.cmd`. It opens <http://127.0.0.1:4477>. Use a dif
 ## Setup in four steps
 
 1. **Add accounts** (sidebar, `+`). Tick *Use the Claude login already on this computer* for your normal login. Every other account gets its own Claude profile in `~/.ballast/accounts/<name>`. Ballast opens a terminal running `claude auth login` for it and notices on its own when you're done.
-2. **Create a game**: give it a name and a folder. An existing git repo works, and so does a new or empty folder (Ballast runs `git init` for you). Tick which accounts should work on it.
+2. **Create a game** and choose where its agents run:
+   - **This PC:** give it a folder. An existing git repo works, and so does a new or empty folder (Ballast runs `git init` for you).
+   - **Claude cloud, on a GitHub repo:** give it `owner/name`. See [Cloud games](#cloud-games).
+
+   Tick which accounts should work on it. If the repo already has work in it, the lead agent surveys it first.
 3. **Write a game brief** (Settings tab). Every agent reads it.
 4. **Send a note** from the Feed.
 
@@ -54,6 +58,54 @@ git merge ballast/integration
 Unity note: each worktree imports its own `Library` the first time it opens, which is slow once and then fine.
 
 **Shared tree.** All agents edit the repo folder directly. Agents are told to stage only their own files and to never stash, reset or clean. It's simpler, but agents can collide.
+
+## Studio: all games and accounts at once
+
+The **Studio** page (top of the sidebar) is the cross-game view:
+
+- **Accounts and limits.** Each account shows its **Session** (5-hour) and **Weekly** (7-day) limit, plus any per-model weekly limit, as a percentage with time to reset. The numbers come from Claude's own rate-limit reports, which arrive with every run. Idle accounts get a one-word probe on a small model every 30 minutes (about a fifth of a cent) so the numbers stay current. **Refresh** checks one now.
+- **Token usage.** Tokens and cost per account, per game and per day, for every run Ballast makes: agent turns, triage, artifact syncs, limit probes. Usage outside Ballast (claude.ai chats, your own terminal sessions) counts toward the limits above but not toward these totals. So do cloud sessions: their tokens aren't reported back.
+- **Limit-aware routing.** Work goes to the agents whose accounts have the most headroom. Autopilot stops handing work to an account above 95% of either limit (configurable). Your own messages still go through.
+- **Games.** Every game's agents, board counts, last build and next check-in. You can **Pause** a game, which frees its accounts for other games, and set its **priority**, which decides who gets account time first when accounts are busy.
+- **Note to several games.** One note, triaged separately onto each ticked game's board.
+
+## Existing games
+
+- **Survey.** Linking a repo that already has work (or pressing *Survey project* in Settings) has the lead agent read the code and history, suggest a brief (accept it in Settings), and put the next tasks on the board.
+- **Adopt old sessions.** Agent → **Sessions** lists the Claude Code conversations that account already has in that repo. Adopting one continues it as a fork, so the agent keeps everything that conversation knew and the original stays as it was.
+
+## claude.ai artifacts and director reviews
+
+Ballast mirrors the artifacts your accounts have on claude.ai: design docs, review pages, trackers.
+
+- **Sync.** Every 10 minutes, each account runs a short read-only Claude turn. It lists the account's artifacts, reads the tracked ones (content, live database data, comment threads) and reports back. Pages edited today are re-read at most hourly. Untracked artifacts show up under *Found on your accounts* in Studio. **Track** links one to a game.
+- **Roles.**
+  - *Review*: when the page changes, the update becomes a director note to the team.
+  - *Reference*: agents read it on demand.
+  - *Output*: something an agent published.
+
+  New comments on any tracked artifact become notes for that game. Set **Reviewers** in Settings to only route comments from certain people.
+- **Cross-account.** Agents call `claude_artifacts` / `read_claude_artifact` to read Ballast's latest copy. That includes artifacts owned by a different account than their own.
+- **Freshness.** This is polling, not push. Headless Claude runs can't hold a live watch on an artifact, so changes arrive within one sync interval.
+- **Unofficial dependency.** Claude Code only loads its Artifact tools when it believes the Claude desktop app launched it. Ballast sets `CLAUDE_CODE_ENTRYPOINT=claude-desktop` for these read-only sync runs. A Claude Code update could change this. If syncing stops working, Studio shows the error. The switch is in Settings.
+
+## Cloud games
+
+A cloud game's agents run as **Claude Code cloud sessions** (claude.ai/code) on its GitHub repo, so your PC doesn't do the work.
+
+- **Notes.** Cloud sessions can't reach Ballast, so Ballast splits each note into tasks itself, with a quick local run.
+- **Dispatch.** Each idle agent gets one task per cloud session (`claude --cloud`), started under that agent's account. The prompt carries the brief, recent notes, what others are working on, and the tracked artifact summaries.
+- **Delivery.** The agent works on its own branch, opens a pull request into the base branch, and commits `.ballast/reports/t<task>.md`. Its first line is `STATUS: DONE` or `STATUS: BLOCKED`.
+- **Completion.** Ballast checks GitHub every 90 seconds for that report, closes or blocks the task with the PR link, and hands the agent the next task.
+- **Messages.** A message to a cloud agent goes to its live session (`claude -p --cloud <id>`). With no live session, the message starts a new one.
+- **Builds.** Builds run in Ballast's own clone (`~/.ballast/clones/<game>`) at the latest base branch, so check-ins show merged PRs.
+
+Requirements:
+- Every account needs GitHub connected on claude.ai/code: run `/web-setup` once in Claude Code, or install the Claude GitHub app.
+- Your git on this PC must be able to read the repo.
+- Model and permissions for cloud sessions are set on claude.ai/code. Attachments in notes stay on this PC.
+
+**Not yet verified end to end.** The Claude Code docs don't say what `claude --cloud` prints when it creates a session. Ballast takes the first `claude.ai/code/...` link from the output. If session creation fails, the feed shows the CLI's output; that's the first place to look.
 
 ## Builds and daily check-ins
 
@@ -93,7 +145,10 @@ Everything lives in `~/.ballast` (set `BALLAST_HOME` to move it):
 
 ```
 state.json            accounts, games, agents, board, builds, artifacts index
+usage.jsonl           one line per Claude run: account, game, tokens, cost
 accounts/<name>/      Claude profile per account (CLAUDE_CONFIG_DIR)
+cloud/<id>/           last copy of each tracked claude.ai artifact
+clones/<game>/        Ballast's clone of each cloud game's GitHub repo
 games/<id>/feed.jsonl game feed; attachments/ holds pasted images
 agents/<id>/          transcript.jsonl, system prompt and MCP config
 artifacts/<game>/     published artifacts
@@ -108,7 +163,10 @@ builds/<game>/<id>/   build.log + output/
 | `src/orchestrator.mjs` | accounts, games, agents, board, dispatch, autopilot, usage limits |
 | `src/claude.mjs` | runs `claude -p --output-format stream-json` per turn, logins, terminals |
 | `src/prompts.mjs` | every piece of text sent to agents (tune the team protocol here) |
-| `src/mcp-server.mjs` | the stdio MCP server each agent loads (board, feed, artifacts) |
-| `src/scheduler.mjs` | check-in schedule and builds |
+| `src/mcp-server.mjs` | the stdio MCP server each local agent loads (board, feed, artifacts, claude.ai mirror) |
+| `src/scheduler.mjs` | check-in schedule, builds, limit probes, artifact syncs, cloud polling |
+| `src/usage.mjs` | token accounting and summaries |
+| `src/cloud.mjs` | claude.ai artifact sync and review routing |
+| `src/remote.mjs` | cloud games: triage, cloud sessions, GitHub report polling |
 | `src/git.mjs` | worktree and integration-branch helpers |
 | `public/` | the UI (vanilla JS, no build step) |

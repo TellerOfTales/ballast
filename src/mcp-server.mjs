@@ -57,11 +57,12 @@ const TOOLS = [
   },
   {
     name: 'publish_artifact',
-    description: "Put something on the director's artifact shelf for review: HTML prototypes, mockups, design docs, screenshots, videos, reports. Pass `path` to an existing file or folder (a folder with index.html is shown as a web page), or `content` plus `filename` to write a new file.",
+    description: "Put something on the director's artifact shelf for review: HTML prototypes, mockups, design docs, screenshots, videos, reports. Pass `path` to an existing file or folder (a folder with index.html is shown as a web page), `content` plus `filename` to write a new file, or `url` with a claude.ai artifact link you published so Ballast tracks it and its comments.",
     inputSchema: {
       type: 'object',
       properties: {
         title: { type: 'string' },
+        url: { type: 'string', description: 'A claude.ai artifact link (https://claude.ai/artifact/...).' },
         path: { type: 'string', description: 'File or folder, absolute or relative to your working directory.' },
         content: { type: 'string' },
         filename: { type: 'string', description: 'With content, e.g. "combat-pass-notes.md" or "hud-mock.html".' },
@@ -69,6 +70,21 @@ const TOOLS = [
       },
       required: ['title'],
     },
+  },
+  {
+    name: 'claude_artifacts',
+    description: "List this game's tracked claude.ai artifacts (design docs, director review pages, trackers) with Ballast's latest summary of each and its open comment threads.",
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'read_claude_artifact',
+    description: "Read Ballast's latest copy of a tracked claude.ai artifact: summary, live data, comment threads, and the page text when available. Works for artifacts owned by any of the team's accounts.",
+    inputSchema: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] },
+  },
+  {
+    name: 'suggest_brief',
+    description: 'Propose a game brief (pillars, platform, art direction, current state, next playable). The director accepts or ignores it.',
+    inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
   },
   {
     name: 'read_notes',
