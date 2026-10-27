@@ -148,7 +148,11 @@ route('POST', '/api/agents/:id/reset', (p) => orch.resetAgent(p.id));
 route('POST', '/api/agents/:id/terminal', (p) => orch.openAgentTerminal(p.id));
 route('GET', '/api/agents/:id/sessions', (p) => orch.listSessions(p.id));
 route('POST', '/api/agents/:id/cloud', (p, body) => remote.connect(orch.getAgent(p.id), body.link));
-route('POST', '/api/agents/:id/cloud/start', (p) => remote.openStarter(orch.getAgent(p.id)));
+route('POST', '/api/agents/:id/cloud/start', (p) => {
+  const agent = orch.getAgent(p.id);
+  return remote.openConnector(agent && orch.getGame(agent.gameId), agent ? [agent.id] : []);
+});
+route('POST', '/api/games/:id/cloud/connect', (p) => remote.openConnector(orch.getGame(p.id)));
 route('POST', '/api/agents/:id/adopt', (p, body) => orch.adoptSession(p.id, body));
 
 route('PATCH', '/api/tasks/:id', (p, body) => orch.updateTask(p.id, body));

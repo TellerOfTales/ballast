@@ -46,7 +46,18 @@ const TRIAGE_SCHEMA = {
   type: 'object',
   properties: {
     summary: { type: 'string' },
-    tasks: { type: 'array', items: { type: 'object', properties: { title: { type: 'string' }, detail: { type: 'string' } }, required: ['title'] } },
+    tasks: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          title: { type: 'string' },
+          detail: { type: 'string' },
+          everyAgent: { type: 'boolean', description: 'True when the note asks each agent to do this themselves (e.g. "every agent should...").' },
+        },
+        required: ['title'],
+      },
+    },
   },
   required: ['tasks'],
 };
@@ -73,7 +84,11 @@ export async function triage(game, note) {
     orch.feedPost(game.id, { kind: 'error', text: 'Triage failed; the note went on the board as one task.' });
     return;
   }
-  const nums = out.tasks.map((t) => orch.addTask(game.id, { title: t.title, detail: t.detail, noteNum: note.num, createdBy: 'Ballast triage' }).num);
+  // "Every agent should..." becomes one task per agent, each assigned to its agent.
+  const agents = db.agents.filter((a) => a.gameId === game.id);
+  const nums = out.tasks.flatMap((t) => (t.everyAgent && agents.length > 1
+    ? agents.map((a) => orch.addTask(game.id, { title: `${t.title} (${a.name})`, detail: t.detail, noteNum: note.num, createdBy: 'Ballast triage', assignee: a.id }).num)
+    : [orch.addTask(game.id, { title: t.title, detail: t.detail, noteNum: note.num, createdBy: 'Ballast triage' }).num]));
   orch.feedPost(game.id, { kind: 'system', text: nums.length ? `Note #${note.num} split into ${nums.map((n) => `#${n}`).join(', ')}. ${out.summary || ''}` : `Note #${note.num}: already covered by the board. ${out.summary || ''}` });
 }
 
@@ -135,12 +150,56 @@ export function connect(agent, link) {
   return agent;
 }
 
-export function openStarter(agent) {
-  if (!agent) throw Object.assign(new Error('Unknown agent'), { status: 400 });
-  const game = orch.getGame(agent.gameId);
-  // Plain words only: this goes through a Windows .cmd file.
-  const intro = `You are ${agent.name.replace(/[^\w -]/g, '')}, an agent Ballast coordinates on the game ${game.name.replace(/[^\w -]/g, '')}${game.subdir ? `. Work only inside the ${game.subdir.replace(/[^\w/ .-]/g, '')} folder` : ''}. Tasks arrive later as follow-up messages. For now just reply ready and wait.`;
-  return claude.openCloudStarter({ account: orch.getAccount(agent.accountId), cwd: game.repoPath, intro, title: `Ballast cloud - ${agent.name}` });
+// Plain words only: the intro goes through a Windows .cmd file.
+const plain = (s) => String(s).replace(/[^\w /.-]/g, '');
+const introFor = (agent, game) =>
+  `You are ${plain(agent.name)}, an agent Ballast coordinates on the game ${plain(game.name)}${game.subdir ? `. Work only inside the ${plain(game.subdir)} folder` : ''}. Tasks arrive later as follow-up messages. For now just reply ready and wait.`;
+
+// The connector terminal writes each pasted link to a file; Ballast watches for them.
+const pendingLinks = new Map(); // file -> agentId
+let linkTimer = null;
+let linkDeadline = 0;
+
+function watchLinks() {
+  linkDeadline = Date.now() + 60 * 60e3;
+  if (linkTimer) return;
+  linkTimer = setInterval(() => {
+    for (const [file, agentId] of pendingLinks) {
+      if (!fs.existsSync(file)) continue;
+      const link = fs.readFileSync(file, 'utf8').trim();
+      fs.rmSync(file, { force: true });
+      pendingLinks.delete(file);
+      const agent = orch.getAgent(agentId);
+      try {
+        connect(agent, link);
+      } catch (err) {
+        if (agent) orch.feedPost(agent.gameId, { kind: 'error', from: agent.name, agentId, text: `That link didn't work: ${err.message} Press Connect cloud sessions to try again.` });
+      }
+    }
+    if (!pendingLinks.size || Date.now() > linkDeadline) {
+      clearInterval(linkTimer);
+      linkTimer = null;
+      pendingLinks.clear();
+    }
+  }, 2000);
+}
+
+// Opens one terminal that creates a cloud session for each agent and asks for its link.
+export function openConnector(game, agentIds = null) {
+  if (!game) throw Object.assign(new Error('Unknown game'), { status: 400 });
+  const agents = db.agents.filter((a) => a.gameId === game.id && (agentIds ? agentIds.includes(a.id) : !a.cloudLink));
+  if (!agents.length) throw Object.assign(new Error('Every agent on this game already has a cloud session.'), { status: 400 });
+  const steps = agents.map((agent) => {
+    const acct = orch.getAccount(agent.accountId);
+    const outFile = path.join(paths.tmp, `cloudlink-${agent.id}.txt`);
+    fs.rmSync(outFile, { force: true });
+    pendingLinks.set(outFile, agent.id);
+    return { account: acct, label: `${agent.name} (${acct.email || acct.name})`, intro: introFor(agent, game), outFile };
+  });
+  watchLinks();
+  const res = claude.openCloudConnector({ cwd: game.repoPath, steps, title: `Ballast - connect ${game.name}` });
+  orch.feedPost(game.id, { kind: 'system', text: `Connecting ${agents.map((a) => a.name).join(', ')} to cloud sessions. In the terminal, paste each link it prints; Ballast picks them up on its own.` });
+  return { ...res, agents: agents.map((a) => a.name) };
 }
 
 export async function message(agent, text) {

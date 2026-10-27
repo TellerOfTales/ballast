@@ -60,6 +60,7 @@ function agentStatus(agent) {
   const r = R(agent.id);
   if (r.setup || remote.isDispatching(agent.id)) return 'setup';
   if (r.child || agent.cloud) return 'running';
+  if (getGame(agent.gameId)?.runner === 'cloud' && !agent.cloudLink) return 'unlinked';
   if (isLimited(getAccount(agent.accountId))) return 'limited';
   if (r.queue.length) return 'queued';
   if (r.error) return 'error';
@@ -625,10 +626,7 @@ export function pump() {
     if (!acct || isLimited(acct)) continue;
     const max = acct.maxConcurrent || db.settings.maxConcurrentPerAccount || 2;
     if (accountLoad(acct.id) >= max) continue;
-    if (game.runner === 'cloud' && !agent.cloudLink) {
-      r.error = 'Connect a cloud session to this agent (Agents tab → Connect cloud session).';
-      continue;
-    }
+    if (game.runner === 'cloud' && !agent.cloudLink) continue; // shown as "needs session"
     if (game.runner === 'cloud') remote.dispatch(agent, r.queue.shift()).then(() => pump());
     else startTurn(agent, acct, takeBatch(r));
   }
@@ -645,9 +643,11 @@ async function cloudFollowUp(agent, item) {
 
 // Cloud agents are handed a task by Ballast instead of claiming one themselves.
 export function claimForAgent(agent) {
-  const open = openTasks(agent.gameId);
+  // Tasks assigned to this agent come first; tasks assigned to someone else are off limits.
+  const open = openTasks(agent.gameId).filter((t) => !t.assignee || t.assignee === agent.id)
+    .sort((a, b) => (b.assignee === agent.id) - (a.assignee === agent.id));
   const role = agent.role?.toLowerCase().split(/[^a-z]+/).filter(Boolean) || [];
-  const fit = open.find((t) => role.some((w) => t.title.toLowerCase().includes(w))) || open[0];
+  const fit = open.find((t) => t.assignee === agent.id) || open.find((t) => role.some((w) => t.title.toLowerCase().includes(w))) || open[0];
   if (!fit) return null;
   Object.assign(fit, { status: 'claimed', claimedBy: agent.id, claimedAt: Date.now(), updatedAt: Date.now() });
   save();
@@ -1006,7 +1006,7 @@ export function checkLimits() {
 // ---------------------------------------------------------------------------
 // Board
 
-function createTask(game, { title, detail = '', createdBy, noteNum = null }) {
+function createTask(game, { title, detail = '', createdBy, noteNum = null, assignee = null }) {
   const t = {
     id: uid('t'),
     gameId: game.id,
@@ -1017,6 +1017,7 @@ function createTask(game, { title, detail = '', createdBy, noteNum = null }) {
     claimedBy: null,
     createdBy,
     noteNum,
+    assignee: assignee && getAgent(assignee)?.gameId === game.id ? assignee : null,
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
@@ -1026,9 +1027,9 @@ function createTask(game, { title, detail = '', createdBy, noteNum = null }) {
   return t;
 }
 
-export function addTask(gameId, { title, detail, noteNum = null, createdBy = director() }) {
+export function addTask(gameId, { title, detail, noteNum = null, createdBy = director(), assignee = null }) {
   const game = must(getGame(gameId), 'Unknown game');
-  const t = createTask(game, { title, detail, createdBy, noteNum });
+  const t = createTask(game, { title, detail, createdBy, noteNum, assignee });
   setTimeout(() => wakeIdle(gameId), 300);
   return t;
 }
@@ -1069,7 +1070,7 @@ export async function agentApi(agentId, tool, args = {}) {
     const num = Number(String(n ?? '').replace('#', ''));
     return must(gameTasks(game.id).find((t) => t.num === num), `No task #${n} on this board.`);
   };
-  const line = (t) => `#${t.num} [${t.status}${t.claimedBy ? ` by ${agentName(t.claimedBy)}` : ''}] ${t.title}`;
+  const line = (t) => `#${t.num} [${t.status}${t.claimedBy ? ` by ${agentName(t.claimedBy)}` : ''}${t.assignee && !t.claimedBy ? ` for ${agentName(t.assignee)}` : ''}] ${t.title}`;
   const indent = (s) => s.replace(/\n/g, '\n    ');
 
   switch (tool) {
@@ -1098,6 +1099,7 @@ export async function agentApi(agentId, tool, args = {}) {
       const t = byNum(args.task_id);
       if (t.claimedBy === agent.id && t.status === 'claimed') return `You already hold #${t.num}.`;
       if (t.status !== 'open') throw new Error(`#${t.num} is ${t.status}${t.claimedBy ? ` by ${agentName(t.claimedBy)}` : ''}. Pick another open task.`);
+      if (t.assignee && t.assignee !== agent.id) throw new Error(`#${t.num} is for ${agentName(t.assignee)}. Pick another open task.`);
       const held = heldTask(agent.id);
       if (held) throw new Error(`You still hold #${held.num}. Finish it (board_done) or give it back (board_block) first.`);
       Object.assign(t, { status: 'claimed', claimedBy: agent.id, claimedAt: Date.now(), updatedAt: Date.now(), nudges: 0 });

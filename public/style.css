@@ -55,7 +55,7 @@ pre code { background: none; padding: 0; }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
 .dot.running { background: var(--green); box-shadow: 0 0 0 3px #3ecf8e22; animation: pulse 1.6s infinite; }
 .dot.queued, .dot.setup { background: var(--blue); }
-.dot.limited { background: var(--accent); }
+.dot.limited, .dot.unlinked { background: var(--accent); }
 .dot.error { background: var(--red); }
 .dot.idle { background: #4a5260; }
 @keyframes pulse { 50% { box-shadow: 0 0 0 5px #3ecf8e00; } }

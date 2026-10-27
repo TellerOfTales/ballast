@@ -142,9 +142,51 @@ export function parseCloudSession(input) {
 }
 
 // Creating a cloud session needs an interactive terminal (`claude --cloud` refuses to run
-// headless), so it happens once per agent in a terminal window; tasks follow as messages.
-export function openCloudStarter({ account, cwd, intro, title }) {
-  return openTerminal({ account, cwd, commandArgs: ['--cloud', intro], title });
+// headless), and the CLI keeps no local record of the session it made. So one terminal
+// walks through the agents: create a session under each account, ask the director to paste
+// the link it printed, and write that link to `outFile` for Ballast to pick up.
+// steps: [{ account, label, intro, outFile }]
+export function openCloudConnector({ cwd, steps, title }) {
+  const bin = resolveClaude();
+  if (IS_WIN) {
+    const script = path.join(paths.tmp, `${uid('connect')}.cmd`);
+    const lines = ['@echo off', 'setlocal EnableDelayedExpansion', `title ${title.replace(/[&|<>^%!]/g, '')}`, `cd /d "${cwd}"`, 'set "ANTHROPIC_API_KEY="'];
+    steps.forEach((s, i) => {
+      lines.push(
+        'echo.',
+        `echo ===== ${i + 1} of ${steps.length}: ${s.label.replace(/[&|<>^%!]/g, '')} =====`,
+        s.account.isDefault ? 'set "CLAUDE_CONFIG_DIR="' : `set "CLAUDE_CONFIG_DIR=${s.account.configDir}"`,
+        `"${bin}" --cloud ${quoteWin(s.intro)}`,
+        'echo.',
+        'set "LINK="',
+        'set /p LINK=Paste the View link printed above, then press Enter (Enter alone skips): ',
+        // Delayed expansion keeps the "&" in claude.ai links from being run as a command.
+        `if defined LINK (>"${s.outFile}" echo !LINK!)`,
+      );
+    });
+    lines.push('echo.', 'echo [Ballast] Done. You can close this window.', 'pause >nul');
+    fs.writeFileSync(script, lines.join('\r\n'));
+    spawn('cmd.exe', ['/d', '/c', `start "" "${script}"`], { windowsVerbatimArguments: true, detached: true, stdio: 'ignore' }).unref();
+    return { opened: true };
+  }
+  const sh = (v) => `'${String(v).replace(/'/g, `'\\''`)}'`;
+  const script = path.join(paths.tmp, `${uid('connect')}.sh`);
+  const lines = ['#!/bin/bash', `cd ${sh(cwd)}`, 'unset ANTHROPIC_API_KEY'];
+  steps.forEach((s, i) => {
+    lines.push(
+      `echo; echo "===== ${i + 1} of ${steps.length}: ${s.label.replace(/["$`\\]/g, '')} ====="`,
+      s.account.isDefault ? 'unset CLAUDE_CONFIG_DIR' : `export CLAUDE_CONFIG_DIR=${sh(s.account.configDir)}`,
+      `${sh(bin)} --cloud ${sh(s.intro)}`,
+      'read -r -p "Paste the View link printed above, then press Enter (Enter alone skips): " LINK',
+      `[ -n "$LINK" ] && printf '%s\\n' "$LINK" > ${sh(s.outFile)}`,
+    );
+  });
+  fs.writeFileSync(script, lines.join('\n'), { mode: 0o755 });
+  if (process.platform === 'darwin') {
+    spawn('osascript', ['-e', `tell application "Terminal" to do script ${JSON.stringify(`bash ${sh(script)}`)}`, '-e', 'tell application "Terminal" to activate'], { detached: true, stdio: 'ignore' }).unref();
+    return { opened: true };
+  }
+  return { opened: false, command: `bash ${sh(script)}` };
 }
 
 // Documented: posts one message to the session and returns {ok, session_id, url} without waiting.

@@ -243,6 +243,10 @@ function renderHead() {
       ? `<a class="pill queued" href="https://github.com/${esc(g.github)}${g.subdir ? `/tree/${esc(g.baseBranch)}/${esc(g.subdir)}` : ''}" target="_blank" rel="noopener" title="Agents run as Claude cloud sessions and open pull requests into ${esc(g.baseBranch)}">cloud · ${esc(g.github)}${g.subdir ? `/${esc(g.subdir)}` : ''}</a>`
       : `<span class="pill" title="${g.isolation === 'worktree' ? `Each agent has its own git worktree; finished work lands on ${esc(g.integrationBranch)}` : 'All agents edit the same folder'}">${g.isolation === 'worktree' ? 'worktrees' : 'shared tree'}</span>`}
     ${g.cloudError ? `<span class="pill error" title="${esc(g.cloudError)}">GitHub unreachable</span>` : ''}
+    ${(() => {
+      const unlinked = agents.filter((a) => a.status === 'unlinked').length;
+      return unlinked ? `<button class="primary small" data-act="cloud-connect-all" title="Nothing can start until each cloud agent has a session">Connect ${unlinked} cloud session${unlinked > 1 ? 's' : ''}</button>` : '';
+    })()}
     ${g.status === 'paused' ? '<span class="pill limited">paused</span>' : ''}
     ${(g.priority ?? 2) !== 2 ? `<span class="pill">${PRIORITY[g.priority]} priority</span>` : ''}
     <span class="spacer"></span>
@@ -554,6 +558,7 @@ function appendFeed(entry) {
 function statusPill(a) {
   if (a.status === 'running') return `<span class="pill running">running <span data-since="${a.startedAt}"></span></span>`;
   if (a.status === 'queued') return `<span class="pill queued">queued ${a.queue}</span>`;
+  if (a.status === 'unlinked') return '<span class="pill limited" title="Connect a cloud session before it can take work">needs session</span>';
   return `<span class="pill ${a.status}">${a.status}</span>`;
 }
 
@@ -686,7 +691,7 @@ function renderBoard() {
     return `<div class="col"><h5>${label} <span>${tasks.filter((t) => t.status === status).length}</span></h5>${list.map((t) => {
       const meta = status === 'claimed' ? `${esc(name(t.claimedBy))} · ${ago(t.claimedAt)}`
         : status === 'done' ? `${esc(name(t.doneBy))} · ${ago(t.doneAt)}`
-        : `from ${esc(t.createdBy || '?')}${t.noteNum ? ` · note #${t.noteNum}` : ''}`;
+        : `${t.assignee ? `for ${esc(name(t.assignee))} · ` : ''}from ${esc(t.createdBy || '?')}${t.noteNum ? ` · note #${t.noteNum}` : ''}`;
       const acts = [
         status !== 'open' && `<button class="ghost small" data-act="task-status" data-id="${t.id}" data-status="open">Reopen</button>`,
         status !== 'done' && `<button class="ghost small" data-act="task-status" data-id="${t.id}" data-status="done">Done</button>`,
@@ -1337,6 +1342,18 @@ const ACTIONS = {
     modal({ title: `${c.title} (Ballast's last copy)`, wide: true, body: `<iframe class="viewer" src="${fileUrl('cloud', c.id, 'page.html')}" sandbox="allow-scripts"></iframe>` });
   },
   'agent-sessions': sessionsModal,
+  'cloud-connect-all': async () => {
+    const r = await api('POST', `/api/games/${S.gameId}/cloud/connect`);
+    if (r.opened) {
+      modal({
+        title: 'Connecting cloud sessions',
+        body: `<p style="margin-top:0">A terminal opened. For each of ${esc(r.agents.join(', '))}, it creates a Claude cloud session under that agent's account, then asks for the link.</p>
+          <ol class="hint" style="padding-left:18px;line-height:1.7"><li>Copy the <b>View:</b> link it prints (https://claude.ai/code/session_…).</li><li>Paste it into the same terminal and press Enter.</li></ol>
+          <p class="hint">Ballast connects each agent as soon as you paste its link, and work starts right away.</p>`,
+        actions: [{ label: 'OK', kind: 'primary' }],
+      });
+    } else modal({ title: 'Run this in a terminal', body: `<div class="cmd">${esc(r.command)}</div>`, actions: [{ label: 'Done' }] });
+  },
   'cloud-connect': () => {
     const a = agentOf(S.agentId);
     const g = game();
@@ -1344,8 +1361,8 @@ const ACTIONS = {
       title: `Cloud session for ${a.name}`,
       body: `<p style="margin-top:0">Claude Code only starts a cloud session from an interactive terminal, so this is a one-time step per agent. After that, Ballast sends each task to the session as a message.</p>
         <ol class="hint" style="padding-left:18px;line-height:1.7">
-          <li><button type="button" class="btn small" data-start>Start a session in a terminal</button> (runs <code>claude --cloud</code> as ${esc(acctOf(a.accountId)?.name || '')} on github.com/${esc(g.github)}), or start one yourself on claude.ai/code on that repo, signed in as ${esc(acctOf(a.accountId)?.email || 'that account')}.</li>
-          <li>Copy the session link from the terminal or the claude.ai/code address bar, then paste it here.</li>
+          <li><button type="button" class="btn small" data-start>Start a session in a terminal</button> (runs <code>claude --cloud</code> as ${esc(acctOf(a.accountId)?.name || '')} on github.com/${esc(g.github)}, then asks you to paste the link it prints, and Ballast connects it on its own)</li>
+          <li>Or start one yourself on claude.ai/code on that repo, signed in as ${esc(acctOf(a.accountId)?.email || 'that account')}, and paste its link here.</li>
         </ol>
         <label class="field"><span>Session link or id</span><input name="link" value="${esc(a.cloudLink?.url || '')}" placeholder="https://claude.ai/code/session_…"></label>`,
       actions: [{ label: 'Cancel' }, { label: 'Connect', kind: 'primary', onClick: (root) => api('POST', `/api/agents/${a.id}/cloud`, formData(root)) }],
@@ -1353,7 +1370,7 @@ const ACTIONS = {
         $('[data-start]', root).onclick = async () => {
           try {
             const r = await api('POST', `/api/agents/${a.id}/cloud/start`);
-            if (r.opened) toast('Terminal opened. Copy the session link it shows.');
+            if (r.opened) toast('Terminal opened. Paste the link it prints into that terminal.');
             else modal({ title: 'Start it in a terminal', body: `<div class="cmd">${esc(r.command)}</div>`, actions: [{ label: 'Done' }] });
           } catch (err) { fail(err); }
         };

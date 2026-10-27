@@ -173,7 +173,7 @@ ${open.length ? open.map((t) => `- #${t.num} ${t.title}`).join('\n') : '(nothing
 Director note:
 ${note.text}
 
-Return one task per concrete change the note asks for. Each task must be doable by one agent in one session, with a clear done-condition in its detail, keeping the note's wording where it matters. Tag titles like "[gameplay] ...", "[art] ...", "[ui] ...", "[audio] ...", "[tech] ...", "[qa] ...". Return an empty list if everything is already covered. Also return a one-line summary of the split.`;
+Return one task per concrete change the note asks for. If the note asks every agent to do something themselves (for example "every agent should read X and introduce themselves"), return it once with everyAgent true; Ballast gives each agent its own copy. Each task must be doable by one agent in one session, with a clear done-condition in its detail, keeping the note's wording where it matters. Tag titles like "[gameplay] ...", "[art] ...", "[ui] ...", "[audio] ...", "[tech] ...", "[qa] ...". Return an empty list if everything is already covered. Also return a one-line summary of the split.`;
 }
 
 export function sessionLost() {
