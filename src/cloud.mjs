@@ -13,7 +13,14 @@ import * as orch from './orchestrator.mjs';
 import * as P from './prompts.mjs';
 
 const URL_RE = /^https:\/\/claude\.ai\/(?:code\/)?artifact\/[\w-]+/;
-const ROLES = new Set(['reference', 'review', 'output']);
+const ROLES = new Set(['gdd', 'reference', 'review', 'output']);
+const DISCIPLINE_IDS = new Set(['gameplay', 'art', 'audio', 'backend', 'other']);
+// A first guess from the title ("Look Review" -> art, "Audio Checklist" -> audio); editable after.
+const guessDiscipline = (title) =>
+  /audio|sound|sfx|music/i.test(title) ? 'audio'
+    : /art|look|visual|anim|vfx|model|shader|light/i.test(title) ? 'art'
+      : /backend|server|network|build|tech|infra/i.test(title) ? 'backend'
+        : /gameplay|playtest|design|mechanic|level|gdd/i.test(title) ? 'gameplay' : 'other';
 const syncing = new Set();
 export const isSyncing = (accountId) => syncing.has(accountId);
 
@@ -83,7 +90,7 @@ function defaultAccount() {
   return db.accounts.find((a) => a.loggedIn && a.isDefault) || db.accounts.find((a) => a.loggedIn) || db.accounts[0];
 }
 
-export function track({ url, gameId = null, accountId, role = 'reference', title, addedBy = 'Director' }) {
+export function track({ url, gameId = null, accountId, role = 'reference', title, addedBy = 'Director', discipline }) {
   url = normalize(url);
   must(URL_RE.test(url), 'That is not a claude.ai artifact link (https://claude.ai/artifact/...).');
   if (gameId) must(orch.getGame(gameId), 'Unknown game');
@@ -92,6 +99,7 @@ export function track({ url, gameId = null, accountId, role = 'reference', title
   if (existing) {
     if (gameId) existing.gameId = gameId;
     existing.role = role;
+    if (DISCIPLINE_IDS.has(discipline)) existing.discipline = discipline;
     save();
     changed();
     return existing;
@@ -105,6 +113,7 @@ export function track({ url, gameId = null, accountId, role = 'reference', title
     gameId,
     accountId: acct.id,
     role,
+    discipline: DISCIPLINE_IDS.has(discipline) ? discipline : guessDiscipline(title || listed?.title || ''),
     addedBy,
     createdAt: Date.now(),
     updated: listed?.updated || null,
@@ -127,6 +136,7 @@ export function updateTracked(id, patch) {
   const a = must(db.cloudArtifacts.find((x) => x.id === id), 'Unknown artifact');
   if (patch.gameId !== undefined) a.gameId = patch.gameId || null;
   if (patch.role && ROLES.has(patch.role)) a.role = patch.role;
+  if (DISCIPLINE_IDS.has(patch.discipline)) a.discipline = patch.discipline;
   if (patch.accountId && orch.getAccount(patch.accountId)) a.accountId = patch.accountId;
   save();
   changed();
@@ -289,7 +299,8 @@ function route(a, { contentChanged, dataChanged, fresh }) {
 
   // Comments are reviews wherever they land; page changes only become work on review pages.
   const comments = fresh.filter((c) => reviewerAllowed(c.author));
-  const pageIsReview = a.role === 'review' && (contentChanged || dataChanged);
+  // The GDD is the source of truth, so its changes flow into work just like a review page's.
+  const pageIsReview = (a.role === 'review' || a.role === 'gdd') && (contentChanged || dataChanged);
   if (!comments.length && !pageIsReview) return;
   const authors = [...new Set(comments.map((c) => c.author).filter(Boolean))];
   orch.postNote(a.gameId, {

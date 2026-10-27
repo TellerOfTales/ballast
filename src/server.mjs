@@ -13,6 +13,8 @@ import { runBuild, cancelBuild, startScheduler } from './scheduler.mjs';
 import { usageSummary } from './usage.mjs';
 import * as cloud from './cloud.mjs';
 import * as remote from './remote.mjs';
+import * as review from './review.mjs';
+import * as inbox from './inbox.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PUBLIC = path.join(ROOT, 'public');
@@ -93,6 +95,8 @@ route('PATCH', '/api/settings', (_, body) => {
   for (const key of ['claudePath', 'directorName', 'syncModel', 'triageModel', 'reviewers']) if (body[key] !== undefined) db.settings[key] = String(body[key]).trim();
   if (body.cloudTaskTimeoutMin !== undefined) db.settings.cloudTaskTimeoutMin = Math.max(10, Number(body.cloudTaskTimeoutMin) || 240);
   if (body.desktopArtifacts !== undefined) db.settings.desktopArtifacts = !!body.desktopArtifacts;
+  if (body.review) review.setStudioPolicy(body.review);
+  for (const key of ['reviewAutoApproveHours', 'deliveryHeadsUpMin']) if (body[key] !== undefined) db.settings[key] = Math.max(0, Number(body[key]) || 0);
   for (const key of ['maxConcurrentPerAccount', 'autopilotDailyTurns']) if (body[key] !== undefined) db.settings[key] = Math.max(1, Number(body[key]) || 1);
   for (const key of ['limitRefreshMin', 'cloudSyncMin', 'contentRefreshMin']) if (body[key] !== undefined) db.settings[key] = Math.max(0, Number(body[key]) || 0);
   if (body.limitGuardPct !== undefined) db.settings.limitGuardPct = Math.min(100, Math.max(1, Number(body.limitGuardPct) || 95));
@@ -157,6 +161,11 @@ route('POST', '/api/agents/:id/adopt', (p, body) => orch.adoptSession(p.id, body
 
 route('PATCH', '/api/tasks/:id', (p, body) => orch.updateTask(p.id, body));
 route('DELETE', '/api/tasks/:id', (p) => orch.removeTask(p.id));
+route('POST', '/api/tasks/:id/approve', (p) => review.approve(p.id));
+route('POST', '/api/tasks/:id/changes', (p, body) => review.requestChanges(p.id, body.feedback));
+route('POST', '/api/games/:id/approve-all', (p, body) => review.approveAll(p.id, body.discipline));
+route('POST', '/api/inbox/:id/answer', (p, body) => inbox.answer(p.id, body.answer));
+route('POST', '/api/inbox/:id/dismiss', (p) => inbox.dismiss(p.id));
 route('DELETE', '/api/artifacts/:id', (p) => orch.removeArtifact(p.id));
 route('GET', '/api/builds/:id/log', (p) => {
   const b = db.builds.find((x) => x.id === p.id);

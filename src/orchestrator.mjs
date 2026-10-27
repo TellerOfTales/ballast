@@ -15,6 +15,8 @@ import * as P from './prompts.mjs';
 import { recordUsage } from './usage.mjs';
 import * as cloud from './cloud.mjs';
 import * as remote from './remote.mjs';
+import * as review from './review.mjs';
+import * as inbox from './inbox.mjs';
 
 export const runtime = { baseUrl: '' }; // filled in by the server once it is listening
 const MCP_SERVER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'mcp-server.mjs');
@@ -78,14 +80,17 @@ export function publicState() {
     accounts: db.accounts.map((a) => ({ ...a, running: accountLoad(a.id), limited: isLimited(a), guarded: overGuard(a), probing: probing.has(a.id), syncing: cloud.isSyncing(a.id) })),
     cloudArtifacts: db.cloudArtifacts,
     cloudIndex: db.cloudIndex,
+    inbox: db.inbox,
+    disciplines: review.DISCIPLINES.map(({ id, label }) => ({ id, label })),
     games: db.games,
     agents: db.agents.map((a) => {
       const r = R(a.id);
       return { ...a, status: agentStatus(a), queue: r.queue.length, error: r.error, startedAt: r.child ? r.startedAt : a.cloud?.since || null };
     }),
-    tasks: db.tasks,
+    // Older records predate disciplines; derive one so department tabs can file them.
+    tasks: db.tasks.map((t) => (t.discipline ? t : { ...t, discipline: review.disciplineOf(t.title) })),
     builds: db.builds.slice(-300),
-    artifacts: db.artifacts,
+    artifacts: db.artifacts.map((a) => (a.discipline ? a : { ...a, discipline: review.disciplineOf(a.title) })),
   };
 }
 
@@ -278,6 +283,7 @@ export function updateGame(id, patch) {
     feedPost(game.id, { kind: 'system', text: game.status === 'paused' ? 'Game paused. Agents finish their current turn; queued work waits.' : 'Game resumed.' });
     if (game.status === 'active') setTimeout(() => { pump(); wakeIdle(game.id); }, 100);
   }
+  if (patch.review) review.setGamePolicy(game, patch.review);
   if (patch.acceptBriefSuggestion && game.briefSuggestion) patch.brief = game.briefSuggestion;
   if (patch.acceptBriefSuggestion || patch.dismissBriefSuggestion) game.briefSuggestion = '';
   if (patch.brief !== undefined && patch.brief !== game.brief) {
@@ -802,7 +808,19 @@ export function updateUsage(acct, info) {
 function accountLoad(id) {
   return (acctRunning.get(id) || 0) + db.agents.filter((a) => a.accountId === id && (a.cloud || remote.isDispatching(a.id))).length;
 }
-export const isAccountBusy = (id) => accountLoad(id) > 0;
+// The next scheduled check-in build today or tomorrow, as { time: "12:00", minutes }.
+export function nextDelivery(game) {
+  const times = game?.build?.checkins || [];
+  if (!times.length) return null;
+  const now = new Date();
+  const slots = times.flatMap((t) => [0, 1].map((day) => {
+    const [h, m] = t.split(':').map(Number);
+    return { time: t, at: new Date(now.getFullYear(), now.getMonth(), now.getDate() + day, h, m).getTime() };
+  })).filter((s) => s.at > now.getTime()).sort((a, b) => a.at - b.at);
+  return slots[0] ? { time: slots[0].time, at: slots[0].at, minutes: Math.round((slots[0].at - now.getTime()) / 60e3) } : null;
+}
+
+export const isAccountBusy =(id) => accountLoad(id) > 0;
 
 // Limits only arrive with a model call, so an idle account gets a one-word probe on a
 // small model to keep its session/weekly numbers current (about a fifth of a cent).
@@ -1018,6 +1036,7 @@ function createTask(game, { title, detail = '', createdBy, noteNum = null, assig
     createdBy,
     noteNum,
     assignee: assignee && getAgent(assignee)?.gameId === game.id ? assignee : null,
+    discipline: review.disciplineOf(title),
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
@@ -1105,17 +1124,24 @@ export async function agentApi(agentId, tool, args = {}) {
       Object.assign(t, { status: 'claimed', claimedBy: agent.id, claimedAt: Date.now(), updatedAt: Date.now(), nudges: 0 });
       save();
       changed();
-      return `Claimed #${t.num}: ${t.title}${t.detail ? `\n${t.detail}` : ''}`;
+      const policy = review.policyFor(game, t.discipline || review.disciplineOf(t.title));
+      return `Claimed #${t.num}: ${t.title}${t.detail ? `\n${t.detail}` : ''}\n\n${P.reviewRuleLocal({ task: t, game, policy })}\n${P.deliveryLine(nextDelivery(game))}`;
     }
     case 'board_done': {
       const t = byNum(args.task_id);
       if (t.claimedBy && t.claimedBy !== agent.id) throw new Error(`#${t.num} belongs to ${agentName(t.claimedBy)}.`);
-      Object.assign(t, { status: 'done', summary: String(args.summary || '').trim(), doneBy: agent.id, claimedBy: agent.id, doneAt: Date.now(), updatedAt: Date.now() });
-      feedPost(game.id, { kind: 'task', from: agent.name, agentId: agent.id, text: `Done #${t.num} ${t.title}${t.summary ? `\n${t.summary}` : ''}` });
+      Object.assign(t, { summary: String(args.summary || '').trim(), doneBy: agent.id, claimedBy: agent.id, doneAt: Date.now(), updatedAt: Date.now() });
+      t.status = review.onFinished(t, game);
+      const parked = t.status === 'review';
+      feedPost(game.id, { kind: 'task', from: agent.name, agentId: agent.id, text: `${parked ? 'Ready for review' : 'Done'} #${t.num} ${t.title}${t.summary ? `\n${t.summary}` : ''}` });
       save();
       changed();
       const open = openTasks(game.id).length;
-      return `Marked #${t.num} done.${open ? ` ${open} open task(s) remain on the board.` : ' Nothing else is open.'}`;
+      return `${parked ? `#${t.num} is waiting for the director's approval; don't land it. Ballast tells you when it's approved.` : `Marked #${t.num} done.`}${open ? ` ${open} open task(s) remain on the board: take the next one.` : ' Nothing else is open.'}`;
+    }
+    case 'ask_director': {
+      const q = inbox.ask({ game, agent, question: args.question, assumption: args.assumption, task: heldTask(agent.id) });
+      return `Added to the Director's Inbox (${q.id}). Don't wait for the answer: go ahead with your assumption${q.assumption ? ` ("${q.assumption.slice(0, 120)}")` : ''}. The answer comes to you as a message.`;
     }
     case 'board_block': {
       const t = byNum(args.task_id);
@@ -1210,6 +1236,7 @@ function publishArtifact(agent, game, args) {
   } else {
     throw new Error('Pass either `path` (a file or folder) or `content` with a `filename`.');
   }
+  const task = heldTask(agent.id);
   const art = {
     id,
     gameId: game.id,
@@ -1219,6 +1246,9 @@ function publishArtifact(agent, game, args) {
     description: String(args.description || '').trim(),
     kind: kindOf(entry),
     entry,
+    // Department tabs group media by discipline; default to the task the agent is on.
+    discipline: review.DISCIPLINES.some((d) => d.id === args.discipline) ? args.discipline : task?.discipline || review.disciplineOf(args.title),
+    taskId: task?.id || null,
     createdAt: Date.now(),
   };
   db.artifacts.push(art);
@@ -1226,6 +1256,31 @@ function publishArtifact(agent, game, args) {
   changed();
   feedPost(game.id, { kind: 'artifact', from: agent.name, agentId: agent.id, artifactId: id, text: `${art.title}${art.description ? `\n${art.description}` : ''}` });
   return `Published "${art.title}" (${art.kind}) to the director's artifact shelf.`;
+}
+
+// Captures a cloud agent committed on its branch (pulled by remote.mjs) join the shelf like
+// anything a local agent publishes, filed under the task's discipline.
+export function addMediaArtifact({ game, agent, task, name, data }) {
+  const id = uid('art');
+  const dir = path.join(paths.artifacts, game.id, id);
+  fs.mkdirSync(dir, { recursive: true });
+  const entry = path.basename(name).replace(/[^\w.\-]+/g, '_');
+  fs.writeFileSync(path.join(dir, entry), data);
+  db.artifacts.push({
+    id,
+    gameId: game.id,
+    agentId: agent.id,
+    agentName: agent.name,
+    title: task ? `#${task.num} ${entry}` : entry,
+    description: task ? task.title : '',
+    kind: kindOf(entry),
+    entry,
+    discipline: task?.discipline || review.disciplineOf(task?.title || ''),
+    taskId: task?.id || null,
+    createdAt: Date.now(),
+  });
+  save();
+  changed();
 }
 
 export function removeArtifact(id) {

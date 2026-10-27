@@ -67,6 +67,7 @@ const TOOLS = [
         content: { type: 'string' },
         filename: { type: 'string', description: 'With content, e.g. "combat-pass-notes.md" or "hud-mock.html".' },
         description: { type: 'string', description: 'One or two lines on what to look at.' },
+        discipline: { type: 'string', enum: ['gameplay', 'art', 'audio', 'backend'], description: "Which department review it belongs to. Defaults to your current task's." },
       },
       required: ['title'],
     },
@@ -85,6 +86,18 @@ const TOOLS = [
     name: 'suggest_brief',
     description: 'Propose a game brief (pillars, platform, art direction, current state, next playable). The director accepts or ignores it.',
     inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+  },
+  {
+    name: 'ask_director',
+    description: "Put a question in the Director's Inbox. It never blocks: say what you're assuming, carry on with that assumption, and move to the next task when this one is done. The answer arrives later as a message.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        question: { type: 'string' },
+        assumption: { type: 'string', description: "What you're going with until you hear back." },
+      },
+      required: ['question', 'assumption'],
+    },
   },
   {
     name: 'read_notes',

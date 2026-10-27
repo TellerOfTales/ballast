@@ -11,6 +11,8 @@ import * as git from './git.mjs';
 import * as P from './prompts.mjs';
 import { recordUsage } from './usage.mjs';
 import * as orch from './orchestrator.mjs';
+import * as review from './review.mjs';
+import * as inbox from './inbox.mjs';
 
 const dispatching = new Set(); // agentIds with a session being created
 export const isDispatching = (agentId) => dispatching.has(agentId);
@@ -35,7 +37,8 @@ export async function prepareClone(game, githubInput) {
 function context(game, agent) {
   const notes = orch.readFeed(game.id, 400).filter((e) => e.kind === 'note' && !e.to).slice(-3);
   const others = db.tasks.filter((t) => t.gameId === game.id && t.status === 'claimed' && t.claimedBy !== agent.id);
-  const artifacts = db.cloudArtifacts.filter((a) => a.gameId === game.id && a.summary);
+  // GDD first: it's the source of truth the rest inherits from.
+  const artifacts = db.cloudArtifacts.filter((a) => a.gameId === game.id && a.summary).sort((a, b) => (b.role === 'gdd') - (a.role === 'gdd'));
   return { notes, others, artifacts };
 }
 
@@ -74,7 +77,7 @@ export async function triage(game, note) {
   const { result } = await claude.runQuick({
     account: acct,
     args: ['--model', db.settings.triageModel || 'sonnet', '--tools', 'Read', '--json-schema', JSON.stringify(TRIAGE_SCHEMA)],
-    prompt: P.cloudTriage({ game, note, open }),
+    prompt: P.cloudTriage({ game, note, open, gdd: db.cloudArtifacts.filter((a) => a.gameId === game.id && a.role === 'gdd') }),
     onMessage: (m) => { if (m.type === 'rate_limit_event') orch.updateUsage(acct, m.rate_limit_info || {}); },
   });
   if (result) recordUsage({ account: acct, gameId: game.id, kind: 'triage', result });
@@ -111,7 +114,7 @@ export async function dispatch(agent, item) {
     task = orch.claimForAgent(agent);
     if (!task) return;
     key = `t${task.num}`;
-    prompt = P.cloudTask({ game, agent, task, ...context(game, agent) });
+    prompt = `${P.cloudTask({ game, agent, task, policy: review.policyFor(game, task.discipline || review.disciplineOf(task.title)), ...context(game, agent) })}\n- ${P.deliveryLine(orch.nextDelivery(game)) || 'Keep the base branch buildable whenever you merge.'}`;
   }
 
   dispatching.add(agent.id);
@@ -253,7 +256,7 @@ export async function poll() {
             if (report) { branch = b; break; }
           }
         }
-        if (report) complete(game, agent, report, branch);
+        if (report) await complete(game, agent, report, branch);
         else if (Date.now() - since > timeout) {
           const task = db.tasks.find((t) => t.id === agent.cloud.taskId);
           if (task) orch.updateTask(task.id, { status: 'blocked', blockReason: `No report from the cloud session after ${Math.round(timeout / 3600e3)}h: ${agent.cloud.url}` });
@@ -270,12 +273,35 @@ export async function poll() {
   }
 }
 
-function complete(game, agent, report, branch) {
+// "## Questions" lines in a report ("- question -> assumption") go to the Director's Inbox.
+function reportQuestions(body) {
+  const section = body.match(/##\s*Questions\s*\n([\s\S]*?)(?=\n##\s|$)/i)?.[1] || '';
+  return [...section.matchAll(/^\s*[-*]\s*(.+)$/gm)].map(([, line]) => {
+    const [question, assumption = ''] = line.split(/\s*(?:->|→)\s*/);
+    return { question: question.trim(), assumption: assumption.trim() };
+  }).filter((q) => q.question);
+}
+
+// Screenshots, GIFs, video and audio the agent committed under .ballast/media/<key>/ on its
+// branch become artifacts in the department tab for that task.
+async function pullMedia(game, agent, task, branch, key) {
+  const files = await git.listRemoteFiles(game.repoPath, branch, P.mediaPath(key, game.subdir)).catch(() => []);
+  for (const file of files.slice(0, 40)) {
+    const buf = await git.readRemoteBlob(game.repoPath, branch, file).catch(() => null);
+    if (!buf || buf.length > 100e6) continue;
+    orch.addMediaArtifact({ game, agent, task, name: path.posix.basename(file), data: buf });
+  }
+  return files.length;
+}
+
+async function complete(game, agent, report, branch) {
   const { taskId, url, key } = agent.cloud;
   const blocked = /^STATUS:\s*BLOCKED/im.test(report);
   const body = report.replace(/^STATUS:.*\n?/im, '').trim();
   const pr = body.match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/)?.[0];
   const task = db.tasks.find((t) => t.id === taskId);
+  for (const q of reportQuestions(body)) inbox.ask({ game, agent, task, question: q.question, assumption: q.assumption, source: 'report' });
+  const media = await pullMedia(game, agent, task, branch, key);
   if (key === 'survey') {
     const brief = body.match(/##\s*Brief\s*\n([\s\S]*?)(?=\n##\s|$)/i)?.[1]?.trim();
     const tasks = [...(body.match(/##\s*Tasks\s*\n([\s\S]*?)(?=\n##\s|$)/i)?.[1] || '').matchAll(/^\s*-\s*(.+?)(?::\s*(.+))?$/gm)];
@@ -283,10 +309,13 @@ function complete(game, agent, report, branch) {
     for (const [, title, detail] of tasks.slice(0, 8)) orch.addTask(game.id, { title: title.trim(), detail: detail?.trim() || '', createdBy: agent.name });
     orch.feedPost(game.id, { kind: 'agent', from: agent.name, agentId: agent.id, text: `Survey done (branch ${branch}).\n${body.slice(0, 3000)}` });
   } else if (task) {
-    orch.updateTask(task.id, blocked
-      ? { status: 'blocked', blockReason: body.slice(0, 600) }
-      : { status: 'done', summary: `${body.slice(0, 800)}${pr ? '' : `\nBranch: ${branch}`}`, doneBy: agent.id });
-    orch.feedPost(game.id, { kind: 'task', from: agent.name, agentId: agent.id, text: `${blocked ? 'Blocked' : 'Done'} #${task.num} ${task.title}${pr ? `\n${pr}` : `\nbranch ${branch}`}\n${body.slice(0, 600)}` });
+    if (blocked) orch.updateTask(task.id, { status: 'blocked', blockReason: body.slice(0, 600) });
+    else {
+      Object.assign(task, { summary: `${body.slice(0, 800)}${pr ? '' : `\nBranch: ${branch}`}`, doneBy: agent.id, doneAt: Date.now(), branch });
+      orch.updateTask(task.id, { status: review.onFinished(task, game, { pr }) });
+    }
+    const label = blocked ? 'Blocked' : task.status === 'review' ? 'Ready for review' : 'Done';
+    orch.feedPost(game.id, { kind: 'task', from: agent.name, agentId: agent.id, text: `${label} #${task.num} ${task.title}${pr ? `\n${pr}` : `\nbranch ${branch}`}${media ? `\n${media} capture(s) attached` : ''}\n${body.slice(0, 600)}` });
   } else {
     orch.feedPost(game.id, { kind: 'agent', from: agent.name, agentId: agent.id, text: `${body.slice(0, 2000)}\n${pr || `branch ${branch}`}` });
   }

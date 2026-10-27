@@ -10,6 +10,7 @@ import { feedPost, getGame, checkLimits, requestCheckinReport, probeAccount, isA
 import { killTree } from './claude.mjs';
 import { syncAccount, isSyncing } from './cloud.mjs';
 import { poll as pollCloudSessions } from './remote.mjs';
+import { autoApproveTick } from './review.mjs';
 
 const running = new Map(); // gameId -> child process
 const SLOT_WINDOW_MS = 90 * 60e3; // a missed check-in still fires if Ballast starts within 90 min
@@ -181,6 +182,7 @@ function tick() {
   checkLimits();
   keepFresh();
   if (ticks++ % 3 === 0) pollCloudSessions().catch(() => {}); // every 90s
+  if (ticks % 10 === 0) autoApproveTick().catch(() => {}); // every 5 min
   const now = Date.now();
   for (const game of db.games) {
     if (game.status === 'paused') continue;
@@ -188,13 +190,26 @@ function tick() {
     for (const time of game.build.checkins || []) {
       const at = todayAt(time);
       const key = `${at.toDateString()} ${time}`;
+      // Heads-up before each delivery, so the director (and the feed agents read) see what's landing.
+      const lead = (db.settings.deliveryHeadsUpMin || 0) * 60e3;
+      if (lead && !fired[`${key} heads-up`] && now >= at.getTime() - lead && now < at.getTime()) {
+        fired[`${key} heads-up`] = true;
+        save();
+        const tasks = db.tasks.filter((t) => t.gameId === game.id);
+        const inProgress = tasks.filter((t) => t.status === 'claimed').length;
+        const waiting = tasks.filter((t) => t.review?.state === 'pending' && t.status === 'review').length;
+        feedPost(game.id, { kind: 'system', text: `${time} build in ${Math.round((at.getTime() - now) / 60e3)} min. ${inProgress} task(s) in progress${waiting ? `, ${waiting} waiting for your approval (unapproved work won't be in this build)` : ''}. Agents are landing only finished work until then.` });
+      }
       if (fired[key] || now < at.getTime() || now - at.getTime() > SLOT_WINDOW_MS) continue;
       fired[key] = true;
       save();
       runBuild(game.id, 'checkin', time).catch((err) => feedPost(game.id, { kind: 'error', text: `Check-in ${time} failed to start: ${err.message}` }));
     }
     // keep a week of history so the map doesn't grow forever
-    for (const key of Object.keys(fired)) if (now - new Date(key.slice(0, -6)).getTime() > 7 * 86400e3) delete fired[key];
+    for (const key of Object.keys(fired)) {
+      const day = key.match(/^\w{3} \w{3} \d{2} \d{4}/)?.[0];
+      if (!day || now - new Date(day).getTime() > 7 * 86400e3) delete fired[key];
+    }
   }
 }
 

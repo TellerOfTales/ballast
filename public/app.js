@@ -166,8 +166,12 @@ const formData = (root) => Object.fromEntries($$('[name]', root).map((el) => [el
 function renderSide() {
   const games = [...S.st.games].sort((a, b) => (a.status === 'paused') - (b.status === 'paused'));
   const running = S.st.agents.filter((a) => a.status === 'running').length;
-  $('#games').innerHTML = `<button class="game-link studio-link${S.view === 'studio' ? ' active' : ''}" data-act="studio">
+  const questions = openQuestions().length;
+  $('#games').innerHTML = `<button class="game-link${S.view === 'studio' ? ' active' : ''}" data-act="studio">
       <span class="gname">Studio</span><span class="hint" style="margin:0">${running ? `${running} running` : 'overview'}</span>
+    </button>
+    <button class="game-link studio-link${S.view === 'inbox' ? ' active' : ''}" data-act="inbox">
+      <span class="gname">Director's Inbox</span>${questions ? `<span class="badge">${questions}</span>` : '<span class="hint" style="margin:0">empty</span>'}
     </button>` + (games.length ? games.map((g) => {
     const agents = agentsOf(g.id);
     const unread = S.unread[g.id] || 0;
@@ -220,7 +224,21 @@ function acctRow(a) {
 
 const PRIORITY = { 3: 'high', 2: 'normal', 1: 'low' };
 
+// Review policy per discipline: game override, else the studio default.
+const policyOf = (g, d) => {
+  const mode = g?.review?.[d] || S.st.settings.review?.[d] || 'after';
+  return mode === 'gate' && g?.isolation === 'shared' ? 'after' : mode;
+};
+const openQuestions = (gid) => (S.st.inbox || []).filter((q) => q.status === 'open' && (!gid || q.gameId === gid));
+const isDept = (tab) => S.st?.disciplines?.some((d) => d.id === tab);
+
 function renderHead() {
+  if (S.view === 'inbox') {
+    const n = openQuestions().length;
+    $('#ghead').innerHTML = `<div><h1>Director's Inbox</h1><span class="hint" style="margin:0">Questions from every agent on every game. Agents never wait on these: each one is working on the assumption shown, and your answer goes straight back to it.</span></div>
+      <span class="spacer"></span><span class="pill ${n ? 'limited' : ''}">${n} open</span>`;
+    return;
+  }
   if (S.view === 'studio') {
     if (!S.st.accounts.length) { $('#ghead').innerHTML = ''; return; }
     const running = S.st.agents.filter((a) => a.status === 'running').length;
@@ -257,13 +275,16 @@ function renderHead() {
 
 function renderTabs() {
   const g = game();
-  if (S.view === 'studio' || !g || !S.st.accounts.length) { $('#tabs').innerHTML = ''; return; }
+  if (S.view !== 'game' || !g || !S.st.accounts.length) { $('#tabs').innerHTML = ''; return; }
   const agents = agentsOf(g.id);
   const running = agents.filter((a) => a.status === 'running').length;
   const open = tasksOf(g.id).filter((t) => t.status === 'open' || t.status === 'claimed').length;
   const arts = S.st.artifacts.filter((a) => a.gameId === g.id).length + S.st.cloudArtifacts.filter((a) => a.gameId === g.id).length;
+  const pendingIn = (d) => tasksOf(g.id).filter((t) => t.discipline === d && t.review?.state === 'pending').length
+    + openQuestions(g.id).filter((q) => q.discipline === d).length;
   const tabs = [
     ['feed', 'Feed', ''],
+    ...S.st.disciplines.map((d) => [d.id, d.label, policyOf(g, d.id) === 'skip' ? '' : pendingIn(d.id) || '']),
     ['agents', 'Agents', agents.length ? `${running}/${agents.length}` : ''],
     ['board', 'Board', open || ''],
     ['builds', 'Builds', ''],
@@ -288,6 +309,14 @@ function buildShell() {
   if (S.view === 'studio') {
     v.innerHTML = studioShell();
     bindComposer('studio');
+    return;
+  }
+  if (S.view === 'inbox') {
+    v.innerHTML = '<div class="scroll pad" style="flex:1" id="inbox"></div>';
+    return;
+  }
+  if (isDept(S.tab)) {
+    v.innerHTML = '<div class="scroll pad dept" style="flex:1" id="dept"></div>';
     return;
   }
   switch (S.tab) {
@@ -343,7 +372,8 @@ function buildShell() {
 // The onboarding checklist also depends on login state, so it rebuilds when that changes.
 const shellKey = () => S.view === 'studio'
   ? `studio|${S.st.games.map((g) => g.id + g.name).join()}|${S.st.accounts.length > 0}|${S.st.accounts.some((a) => a.loggedIn)}`
-  : `${S.gameId}|${S.tab}|${S.st.accounts.length > 0}|${!!game()}|${!game() && S.st.accounts.some((a) => a.loggedIn)}`;
+  : S.view === 'inbox' ? `inbox|${S.st.accounts.length > 0}`
+    : `${S.gameId}|${S.tab}|${S.st.accounts.length > 0}|${!!game()}|${!game() && S.st.accounts.some((a) => a.loggedIn)}`;
 
 function renderLive() {
   if (shellKey() !== S.shellKey) buildShell();
@@ -351,7 +381,9 @@ function renderLive() {
   renderHead();
   renderTabs();
   if (S.view === 'studio') return renderStudio();
+  if (S.view === 'inbox') return renderInbox();
   if (!game()) return;
+  if (isDept(S.tab)) return renderDept(S.tab);
   switch (S.tab) {
     case 'feed': updateTargetSelect(); break;
     case 'agents': {
@@ -521,6 +553,8 @@ function feedEntry(e) {
     av = e.source === 'review' ? '<span class="avatar" style="background:var(--violet)">R</span>' : '<span class="avatar" style="background:var(--accent)">★</span>';
     const src = e.source === 'review' ? 'review · ' : e.source === 'studio' ? 'studio · ' : '';
     label = e.to ? `<span class="pill">to ${esc(e.to)} only</span>` : `<span class="pill limited">${src}note #${e.num} · all agents</span>`;
+  } else if (e.kind === 'question') {
+    label = '<span class="pill limited">question · not blocking</span>';
   } else if (e.kind === 'cloud') {
     av = '<span class="avatar" style="background:var(--violet)">C</span>';
     label = '<span class="pill" style="color:var(--violet)">claude.ai</span>';
@@ -536,7 +570,8 @@ function feedEntry(e) {
   let body = clamp(e.text || '', md(e.text));
   if (e.kind === 'task' || e.kind === 'error') body = `<div class="md">${md(e.text)}</div>`;
   if (e.kind === 'artifact' && e.artifactId) body = `<div class="art-ref"><div class="md" style="flex:1">${md(e.text)}</div><button class="btn small" data-act="art-open" data-id="${e.artifactId}">Open</button></div>`;
-  if (e.kind === 'build') body += `<div style="margin-top:8px"><button class="btn small" data-act="build-log" data-id="${e.buildId}">View log</button></div>`;
+  if (e.kind === 'question') body += `<div style="margin-top:8px"><button class="btn small" data-act="q-answer" data-id="${e.questionId}">Answer</button></div>`;
+  if (e.kind === 'build') body +=`<div style="margin-top:8px"><button class="btn small" data-act="build-log" data-id="${e.buildId}">View log</button></div>`;
   return `<div class="entry ${e.kind}">
     <div class="head">${av}<span class="who">${esc(e.from || (e.kind === 'build' ? 'Build' : 'Ballast'))}</span>${label}${when}</div>
     <div class="body">${body}${attachmentsHtml(e.attachments)}</div>
@@ -684,7 +719,7 @@ function renderBoard() {
   if (!el) return;
   const tasks = tasksOf(S.gameId);
   const name = (id) => agentOf(id)?.name || 'removed agent';
-  const cols = [['open', 'Open'], ['claimed', 'In progress'], ['blocked', 'Blocked'], ['done', 'Done']];
+  const cols = [['open', 'Open'], ['claimed', 'In progress'], ['review', 'Awaiting approval'], ['blocked', 'Blocked'], ['done', 'Done']];
   el.innerHTML = cols.map(([status, label]) => {
     let list = tasks.filter((t) => t.status === status);
     list = status === 'done' ? list.sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0)).slice(0, 40) : list.sort((a, b) => a.num - b.num);
@@ -693,6 +728,7 @@ function renderBoard() {
         : status === 'done' ? `${esc(name(t.doneBy))} · ${ago(t.doneAt)}`
         : `${t.assignee ? `for ${esc(name(t.assignee))} · ` : ''}from ${esc(t.createdBy || '?')}${t.noteNum ? ` · note #${t.noteNum}` : ''}`;
       const acts = [
+        status === 'review' && `<button class="primary small" data-act="review-approve" data-id="${t.id}">Approve</button>`,
         status !== 'open' && `<button class="ghost small" data-act="task-status" data-id="${t.id}" data-status="open">Reopen</button>`,
         status !== 'done' && `<button class="ghost small" data-act="task-status" data-id="${t.id}" data-status="done">Done</button>`,
         `<button class="ghost small" data-act="task-edit" data-id="${t.id}">Edit</button>`,
@@ -940,7 +976,8 @@ function gameCard(g) {
 // claude.ai artifacts
 
 const ROLE_INFO = {
-  review: 'Director review: page changes and comments become notes for the team',
+  gdd: 'GDD: the source of truth; every agent reads it, and its changes become notes for the team',
+  review:'Director review: page changes and comments become notes for the team',
   reference: 'Reference: agents read it on demand; comments still reach the team',
   output: 'Made by an agent: comments reach the team',
 };
@@ -993,13 +1030,16 @@ function renderCloudArtifacts() {
   }).join('');
 }
 
-function trackModal({ url = '', accountId = '', gameId = S.view === 'game' ? S.gameId : '' } = {}) {
+const disciplineOptions = (cur) => `<option value="">Guess from the title</option>${S.st.disciplines.map((d) => `<option value="${d.id}"${d.id === cur ? ' selected' : ''}>${esc(d.label)}</option>`).join('')}<option value="other"${cur === 'other' ? ' selected' : ''}>Other</option>`;
+
+function trackModal({ url = '', accountId = '', discipline = '', gameId = S.view === 'game' ? S.gameId : '' } = {}) {
   const loggedIn = S.st.accounts.filter((a) => a.loggedIn);
   modal({
     title: 'Track a claude.ai artifact',
     body: `<label class="field"><span>Link</span><input name="url" value="${esc(url)}" placeholder="https://claude.ai/artifact/…"></label>
       <label class="field"><span>Game</span><select name="gameId"><option value="">No game yet</option>${S.st.games.map((g) => `<option value="${g.id}"${g.id === gameId ? ' selected' : ''}>${esc(g.name)}</option>`).join('')}</select></label>
-      <label class="field"><span>Role</span><select name="role">${Object.entries(ROLE_INFO).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('')}</select></label>
+      <label class="field"><span>Role</span><select name="role">${Object.entries(ROLE_INFO).map(([k, v]) => `<option value="${k}"${k === 'review' ? ' selected' : ''}>${esc(v)}</option>`).join('')}</select></label>
+      <label class="field"><span>Department</span><select name="discipline">${disciplineOptions(discipline)}</select><small>Which department tab shows it.</small></label>
       <label class="field"><span>Read it with</span><select name="accountId">${loggedIn.map((a) => `<option value="${a.id}"${a.id === accountId ? ' selected' : ''}>${esc(a.name)}</option>`).join('')}</select><small>An account that owns the artifact or was shared on it.</small></label>`,
     actions: [{ label: 'Cancel' }, { label: 'Track', kind: 'primary', onClick: async (root) => { await api('POST', '/api/cloud', formData(root)); toast('Tracking. First read starts now.'); } }],
   });
@@ -1012,6 +1052,7 @@ function editCloudModal(id) {
     body: `<p class="hint" style="margin-top:0"><a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.url)}</a></p>
       <label class="field"><span>Game</span><select name="gameId"><option value="">No game</option>${S.st.games.map((g) => `<option value="${g.id}"${g.id === c.gameId ? ' selected' : ''}>${esc(g.name)}</option>`).join('')}</select></label>
       <label class="field"><span>Role</span><select name="role">${Object.entries(ROLE_INFO).map(([k, v]) => `<option value="${k}"${k === c.role ? ' selected' : ''}>${esc(v)}</option>`).join('')}</select></label>
+      <label class="field"><span>Department</span><select name="discipline">${disciplineOptions(c.discipline)}</select></label>
       <label class="field"><span>Read it with</span><select name="accountId">${S.st.accounts.map((a) => `<option value="${a.id}"${a.id === c.accountId ? ' selected' : ''}>${esc(a.name)}</option>`).join('')}</select></label>`,
     actions: [
       { label: 'Stop tracking', kind: 'danger', onClick: () => api('DELETE', `/api/cloud/${id}`) },
@@ -1044,6 +1085,133 @@ async function sessionsModal() {
         };
       });
     },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Department tabs (Gameplay / Art / Audio / Backend): review, questions, work, captures
+
+const MODE_INFO = {
+  gate: { label: 'Approve first', text: (g) => `Agents leave changes in this area unmerged and move straight on to other work. Approving merges it. Anything you haven't looked at is approved after ${S.st.settings.reviewAutoApproveHours || 0}h, so it never holds up a build for long.${g.isolation === 'shared' ? ' (Not available with a shared working tree; acts like Review after.)' : ''}` },
+  after: { label: 'Review after', text: () => 'Agents merge and keep going. Finished work queues here for you; asking for changes creates a follow-up task. Never blocks anything.' },
+  skip: { label: 'Not my field', text: () => 'Agents merge and keep going, and nothing queues for you. Finished work is listed below if you ever want a look.' },
+};
+
+const capturesFor = (gid, filter) => S.st.artifacts.filter((a) => a.gameId === gid && filter(a)).sort((a, b) => b.createdAt - a.createdAt);
+
+function thumb(a) {
+  const url = artUrl(a);
+  const inner = a.kind === 'image' ? `<img src="${url}" loading="lazy" alt="">`
+    : a.kind === 'video' ? `<video src="${url}" muted loop playsinline preload="metadata" onmouseenter="this.play()" onmouseleave="this.pause()"></video>`
+    : a.kind === 'audio' ? '<span>♪ AUDIO</span>'
+    : `<span>${esc(a.kind.toUpperCase())}</span>`;
+  return `<button class="cap" data-act="art-open" data-id="${a.id}" title="${esc(a.title)}">${inner}<span class="cap-title">${esc(a.title)}</span></button>`;
+}
+
+function reviewCard(t, g) {
+  const agent = agentOf(t.doneBy || t.claimedBy);
+  const caps = capturesFor(g.id, (a) => a.taskId === t.id);
+  const waiting = t.status === 'review';
+  return `<div class="card review-card">
+    <div class="row"><span class="num">#${t.num}</span><b class="grow">${esc(t.title.replace(/^\s*\[[^\]]+\]\s*/, ''))}</b>
+      <span class="pill ${waiting ? 'limited' : 'success'}">${waiting ? 'waiting to merge' : 'merged'}</span></div>
+    <div class="hint">${esc(agent?.name || 'agent')} · ${clock(t.doneAt || t.updatedAt)}${t.pr ? ` · <a href="${esc(t.pr)}" target="_blank" rel="noopener">pull request</a>` : ''}${t.branch && !t.pr ? ` · branch ${esc(t.branch)}` : ''}</div>
+    ${t.summary ? clamp(t.summary, md(t.summary)) : ''}
+    ${caps.length ? `<div class="caps">${caps.slice(0, 8).map(thumb).join('')}</div>` : ''}
+    <div class="row" style="margin-top:10px">
+      <button class="primary small" data-act="review-approve" data-id="${t.id}">${waiting ? 'Approve & merge' : 'Looks good'}</button>
+      <button class="ghost small" data-act="review-changes" data-id="${t.id}">Request changes</button>
+    </div>
+  </div>`;
+}
+
+function questionCard(q) {
+  const g = S.st.games.find((x) => x.id === q.gameId);
+  return `<div class="card question">
+    <div class="row"><b class="grow">${esc(q.question)}</b>${S.view === 'inbox' && g ? `<span class="pill link" data-act="game" data-id="${g.id}">${esc(g.name)}</span>` : ''}</div>
+    <div class="hint">${esc(q.agentName)}${q.taskNum ? ` · on #${q.taskNum}` : ''} · ${clock(q.createdAt)}</div>
+    ${q.assumption ? `<div class="assume">Going with: ${esc(q.assumption)}</div>` : ''}
+    ${q.status === 'open'
+      ? `<div class="row" style="margin-top:8px"><button class="primary small" data-act="q-answer" data-id="${q.id}">Answer</button><button class="ghost small" data-act="q-dismiss" data-id="${q.id}">Assumption is fine</button></div>`
+      : `<div class="hint" style="margin-top:6px">${q.status === 'answered' ? `You answered: ${esc(q.answer)}` : 'Kept the assumption.'}</div>`}
+  </div>`;
+}
+
+function renderDept(d) {
+  const el = $('#dept');
+  const g = game();
+  if (!el || !g) return;
+  const label = S.st.disciplines.find((x) => x.id === d)?.label || d;
+  const mode = policyOf(g, d);
+  const override = g.review?.[d];
+  const tasks = tasksOf(g.id).filter((t) => t.discipline === d);
+  const pending = tasks.filter((t) => t.review?.state === 'pending').sort((a, b) => (b.status === 'review') - (a.status === 'review') || (b.doneAt || 0) - (a.doneAt || 0));
+  const questions = openQuestions(g.id).filter((q) => q.discipline === d);
+  const active = tasks.filter((t) => t.status === 'claimed');
+  const upNext = tasks.filter((t) => t.status === 'open').sort((a, b) => a.num - b.num);
+  const recent = tasks.filter((t) => t.status === 'done' && t.review?.state !== 'pending').sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0)).slice(0, 25);
+  const caps = capturesFor(g.id, (a) => a.discipline === d && ['image', 'video', 'audio'].includes(a.kind));
+  const refs = S.st.cloudArtifacts.filter((c) => c.gameId === g.id && (c.discipline === d || c.role === 'gdd'));
+  const line = (t) => `<div class="tline"><span class="num">#${t.num}</span> ${esc(t.title.replace(/^\s*\[[^\]]+\]\s*/, ''))} <span class="hint" style="display:inline">${t.claimedBy ? `· ${esc(agentOf(t.claimedBy)?.name || '')}` : t.assignee ? `· for ${esc(agentOf(t.assignee)?.name || '')}` : ''}</span></div>`;
+
+  el.innerHTML = `
+    <div class="dept-head">
+      <h2>${esc(label)}</h2>
+      <div class="seg">${['gate', 'after', 'skip'].map((m) => `<button class="${m === mode ? 'on' : ''}" data-act="dept-mode" data-d="${d}" data-mode="${m}">${MODE_INFO[m].label}</button>`).join('')}</div>
+      <span class="hint" style="margin:0">${override ? `Set for this game · <a href="#" data-act="dept-mode" data-d="${d}" data-mode="default">use studio default</a>` : 'Studio default'}</span>
+    </div>
+    <p class="hint" style="margin-top:4px">${esc(MODE_INFO[mode].text(g))}</p>
+
+    ${mode !== 'skip' || pending.length ? `<section><div class="section-head"><h3>Waiting for you</h3><span class="hint">${pending.length ? `${pending.length} item${pending.length > 1 ? 's' : ''}` : 'Nothing to review.'}</span>${pending.length > 1 ? `<button class="ghost small" data-act="review-all" data-d="${d}">Approve all</button>` : ''}</div>
+      ${pending.map((t) => reviewCard(t, g)).join('')}</section>` : ''}
+
+    ${questions.length ? `<section><div class="section-head"><h3>Questions</h3><span class="hint">Agents kept working on these assumptions.</span></div>${questions.map(questionCard).join('')}</section>` : ''}
+
+    <section><div class="section-head"><h3>Work</h3><span class="hint">${active.length} in progress · ${upNext.length} up next</span></div>
+      <div class="two">
+        <div class="card"><b>In progress</b>${active.map(line).join('') || '<div class="hint">Nothing right now.</div>'}</div>
+        <div class="card"><b>Up next</b>${upNext.slice(0, 12).map(line).join('') || '<div class="hint">Nothing on the board.</div>'}${upNext.length > 12 ? `<div class="hint">and ${upNext.length - 12} more</div>` : ''}</div>
+      </div></section>
+
+    <section><div class="section-head"><h3>Captures</h3><span class="hint">Screenshots, GIFs, video and clips agents attached to ${esc(label.toLowerCase())} work</span></div>
+      ${caps.length ? `<div class="caps big">${caps.slice(0, 48).map(thumb).join('')}</div>` : `<p class="hint">None yet. Agents attach captures to ${d === 'audio' ? 'audio work as clips' : 'visual work as screenshots and GIFs'}.</p>`}</section>
+
+    <section><div class="section-head"><h3>On claude.ai</h3><button class="ghost small" data-act="cloud-track" data-discipline="${d}">+ Track an artifact</button></div>
+      ${refs.length ? refs.map((c) => `<div class="card cloud-card"><div class="row"><span class="pill">${esc(c.role)}</span><b class="grow">${esc(c.title)}</b><a class="btn small" href="${esc(c.url)}" target="_blank" rel="noopener">Open</a></div>
+        <div class="hint">updated ${esc(c.updated || '?')}${c.lastReadAt ? ` · read ${ago(c.lastReadAt)}` : ''}${(c.threads || []).filter((t) => !t.resolved).length ? ` · ${(c.threads || []).filter((t) => !t.resolved).length} open comment threads` : ''}</div>
+        ${c.summary ? clamp(c.summary, md(c.summary)) : ''}</div>`).join('') : `<p class="hint">Track this department's review pages and checklists (like an art review or audio checklist) to see them here and route their changes to the team.</p>`}</section>
+
+    ${recent.length ? `<section><details><summary class="hint" style="display:inline;cursor:pointer">Recently finished (${recent.length})</summary>
+      ${recent.map((t) => `<div class="tline"><span class="num">#${t.num}</span> ${esc(t.title.replace(/^\s*\[[^\]]+\]\s*/, ''))} <span class="hint" style="display:inline">· ${esc(agentOf(t.doneBy)?.name || '')} · ${({ changes: 'changes requested', auto: 'auto-approved', skipped: 'not reviewed', approved: 'approved' })[t.review?.state] || 'finished'}${t.pr ? ` · <a href="${esc(t.pr)}" target="_blank" rel="noopener">PR</a>` : ''}</span></div>`).join('')}</details></section>` : ''}`;
+}
+
+function renderInbox() {
+  const el = $('#inbox');
+  if (!el) return;
+  const open = openQuestions().sort((a, b) => a.createdAt - b.createdAt);
+  const done = (S.st.inbox || []).filter((q) => q.status !== 'open').sort((a, b) => (b.answeredAt || 0) - (a.answeredAt || 0)).slice(0, 30);
+  el.innerHTML = `${open.length ? open.map(questionCard).join('') : '<div class="empty"><h2>Inbox zero</h2><p>When an agent has a question it adds it here, writes down what it is assuming, and keeps going. Your answer goes back to that agent.</p></div>'}
+    ${done.length ? `<details style="margin-top:18px"><summary class="hint" style="display:inline;cursor:pointer">Answered (${done.length})</summary>${done.map(questionCard).join('')}</details>` : ''}`;
+}
+
+function answerModal(id) {
+  const q = S.st.inbox.find((x) => x.id === id);
+  modal({
+    title: 'Answer',
+    body: `<p style="margin-top:0"><b>${esc(q.question)}</b></p>${q.assumption ? `<p class="hint">${esc(q.agentName)} is going with: ${esc(q.assumption)}</p>` : ''}
+      <label class="field"><span>Your answer</span><textarea name="answer" rows="5"></textarea><small>Sent to ${esc(q.agentName)} as a message. It adjusts its work if your answer differs from its assumption.</small></label>`,
+    actions: [{ label: 'Cancel' }, { label: 'Send answer', kind: 'primary', onClick: (root) => api('POST', `/api/inbox/${id}/answer`, formData(root)) }],
+  });
+}
+
+function changesModal(id) {
+  const t = S.st.tasks.find((x) => x.id === id);
+  modal({
+    title: `Changes to #${t.num}`,
+    body: `<p class="hint" style="margin-top:0">${esc(t.title)}</p>
+      <label class="field"><span>What should change?</span><textarea name="feedback" rows="6" placeholder="Be as specific as you like: what feels off, what to aim for, references…"></textarea>
+      <small>Becomes a follow-up task for ${esc(agentOf(t.doneBy || t.claimedBy)?.name || 'the team')}. ${t.status === 'review' ? 'The unmerged change stays parked until the follow-up is approved.' : 'Nothing else waits on it.'}</small></label>`,
+    actions: [{ label: 'Cancel' }, { label: 'Send to the team', kind: 'primary', onClick: (root) => api('POST', `/api/tasks/${id}/changes`, formData(root)) }],
   });
 }
 
@@ -1264,6 +1432,13 @@ function globalSettingsModal() {
         <label class="field"><span>Parallel turns per account</span><input name="maxConcurrentPerAccount" type="number" min="1" value="${s.maxConcurrentPerAccount}"></label>
         <label class="field"><span>Autopilot turns per game per day</span><input name="autopilotDailyTurns" type="number" min="1" value="${s.autopilotDailyTurns}"></label>
       </div>
+      <h4 class="sub-h">Your review (studio default; each game can override in its department tabs)</h4>
+      <div class="two">${[...S.st.disciplines, { id: 'other', label: 'Untagged work' }].map((d) => `<label class="field"><span>${esc(d.label)}</span><select name="review.${d.id}">
+        ${['after', 'gate', 'skip'].map((m) => `<option value="${m}"${(s.review?.[d.id] || 'after') === m ? ' selected' : ''}>${MODE_INFO[m].label}</option>`).join('')}</select></label>`).join('')}</div>
+      <div class="two">
+        <label class="field"><span>Auto-approve unreviewed work after (hours)</span><input name="reviewAutoApproveHours" type="number" min="0" value="${s.reviewAutoApproveHours}"><small>Only for "Approve first" areas. 0 = never.</small></label>
+        <label class="field"><span>Delivery heads-up (minutes before each check-in)</span><input name="deliveryHeadsUpMin" type="number" min="0" value="${s.deliveryHeadsUpMin}"></label>
+      </div>
       <h4 class="sub-h">Limits</h4>
       <div class="two">
         <label class="field"><span>Re-check idle accounts every (min)</span><input name="limitRefreshMin" type="number" min="0" value="${s.limitRefreshMin}"><small>A one-word run on a small model; 0 turns it off. Busy accounts update with every turn.</small></label>
@@ -1285,7 +1460,14 @@ function globalSettingsModal() {
         <label class="field"><span>Mark a session blocked after (min)</span><input name="cloudTaskTimeoutMin" type="number" min="10" value="${s.cloudTaskTimeoutMin}"><small>If it hasn't pushed its report by then.</small></label>
       </div>
       <p class="hint">Data folder: <a href="#" data-act="open-folder" data-path="${esc(S.st.home)}">${esc(S.st.home)}</a></p>`,
-    actions: [{ label: 'Cancel' }, { label: 'Save', kind: 'primary', onClick: (root) => api('PATCH', '/api/settings', formData(root)) }],
+    actions: [{ label: 'Cancel' }, {
+      label: 'Save', kind: 'primary', onClick: (root) => {
+        const f = formData(root);
+        const reviewModes = {};
+        for (const k of Object.keys(f)) if (k.startsWith('review.')) { reviewModes[k.slice(7)] = f[k]; delete f[k]; }
+        return api('PATCH', '/api/settings', { ...f, review: reviewModes });
+      },
+    }],
   });
 }
 
@@ -1316,6 +1498,13 @@ function openTab(tab) {
 
 const ACTIONS = {
   'studio': selectStudio,
+  'inbox': () => { S.view = 'inbox'; store('view', 'inbox'); renderLive(); },
+  'dept-mode': (d) => api('PATCH', `/api/games/${S.gameId}`, { review: { [d.d]: d.mode } }),
+  'review-approve': async (d) => { const t = await api('POST', `/api/tasks/${d.id}/approve`); toast(`Approved #${t.num}`); },
+  'review-changes': (d) => changesModal(d.id),
+  'review-all': async (d) => { const r = await api('POST', `/api/games/${S.gameId}/approve-all`, { discipline: d.d }); toast(`Approved ${r.approved}`); },
+  'q-answer': (d) => answerModal(d.id),
+  'q-dismiss': (d) => api('POST', `/api/inbox/${d.id}/dismiss`),
   'game': (d) => selectGame(d.id),
   'probe': async (d) => { await api('POST', `/api/accounts/${d.id}/probe`); },
   'sync': async (d) => { await api('POST', `/api/accounts/${d.id}/sync`); toast('Reading claude.ai artifacts…'); },
@@ -1330,7 +1519,7 @@ const ACTIONS = {
     toast(`Syncing claude.ai on ${ids.length} account${ids.length === 1 ? '' : 's'}…`);
   },
   'game-status': (d) => api('PATCH', `/api/games/${d.id}`, { status: d.status }),
-  'cloud-track': (d) => trackModal({ url: d.url || '', accountId: d.account || '' }),
+  'cloud-track': (d) => trackModal({ url: d.url || '', accountId: d.account || '', discipline: d.discipline || '' }),
   'cloud-edit': (d) => editCloudModal(d.id),
   'cloud-read': async (d) => {
     const c = S.st.cloudArtifacts.find((x) => x.id === d.id);

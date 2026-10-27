@@ -69,6 +69,36 @@ The **Studio** page (top of the sidebar) is the cross-game view:
 - **Games.** Every game's agents, board counts, last build and next check-in. You can **Pause** a game, which frees its accounts for other games, and set its **priority**, which decides who gets account time first when accounts are busy.
 - **Note to several games.** One note, triaged separately onto each ticked game's board.
 
+## Department tabs and review
+
+Every game has a **Gameplay**, **Art**, **Audio** and **Backend** tab. Tasks are filed by their tag: `[ui]` and `[qa]` count as Gameplay, and `[tech]`, `[build]` and `[docs]` count as Backend. Each tab shows:
+- work waiting for your review
+- open questions
+- what's in progress and up next
+- a gallery of captures: screenshots, GIFs, video and audio clips agents attached
+- that department's claude.ai artifacts
+
+**Review never holds the team up.** For each department you choose how involved you are. Set the studio default in Settings, or override it per game in the tab:
+
+| Mode | What agents do | What you see |
+|---|---|---|
+| **Not my field** | merge and keep going | nothing queued; finished work listed for reference |
+| **Review after** (default) | merge and keep going | finished work queues for you; *Request changes* creates a follow-up task for the same agent |
+| **Approve first** | leave the change unmerged and **move straight on to other work** | *Approve & merge* lands it; anything left unreviewed is auto-approved after 24h (configurable) |
+
+Backend defaults to *Not my field*. *Approve first* needs per-agent worktrees or a cloud game. With a shared working tree it acts like *Review after*.
+
+**Captures.** Local agents publish captures with `publish_artifact`. Cloud agents commit them to `.ballast/media/t<task>/` on their branch, and Ballast pulls them in when the task reports.
+
+## Director's Inbox
+
+One place (sidebar) for every question from every agent, on every game and account. An agent asks with `ask_director`, or adds a `## Questions` section to a cloud report. It writes down the assumption it's going with and keeps working. **It never waits.** Your answer goes back to that agent as a message, and it adjusts if your answer differs. *Assumption is fine* closes a question without a reply.
+
+## GDD and delivery schedule
+
+- **GDD.** Track the game design document on claude.ai with the **GDD** role. Every agent treats it as the source of truth. When it changes, the change becomes a note for the team, and triage adds a task to update the GDD when a note changes the design.
+- **Delivery.** Set check-ins (e.g. `07:00, 12:00, 17:00`). Every task hand-off tells the agent when the next build is cut. Close to a build, agents land only finished work. The feed gets a heads-up 45 minutes before each one.
+
 ## Existing games
 
 - **Survey.** Linking a repo that already has work (or pressing *Survey project* in Settings) has the lead agent read the code and history, suggest a brief (accept it in Settings), and put the next tasks on the board.
@@ -168,5 +198,7 @@ builds/<game>/<id>/   build.log + output/
 | `src/usage.mjs` | token accounting and summaries |
 | `src/cloud.mjs` | claude.ai artifact sync and review routing |
 | `src/remote.mjs` | cloud games: triage, cloud sessions, GitHub report polling |
+| `src/review.mjs` | departments, review modes, approve / request changes, auto-approve |
+| `src/inbox.mjs` | Director's Inbox |
 | `src/git.mjs` | worktree and integration-branch helpers |
 | `public/` | the UI (vanilla JS, no build step) |

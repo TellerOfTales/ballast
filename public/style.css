@@ -213,7 +213,7 @@ label.field small, .hint { display: block; color: var(--faint); font-size: 12px;
 .board-wrap { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .task-form { display: flex; gap: 8px; padding: 14px 24px; border-bottom: 1px solid var(--line); }
 .task-form input:first-child { flex: 0 0 38%; }
-.board { flex: 1; display: grid; grid-template-columns: repeat(4, minmax(220px, 1fr)); gap: 14px; padding: 16px 24px; overflow: auto; align-items: start; }
+.board { flex: 1; display: grid; grid-template-columns: repeat(5, minmax(200px, 1fr)); gap: 14px; padding: 16px 24px; overflow: auto; align-items: start; }
 .col h5 { margin: 0 0 10px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--faint); display: flex; gap: 6px; }
 .col h5 span { color: var(--muted); }
 .task { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; margin-bottom: 8px; }
@@ -290,6 +290,28 @@ select.mini { width: auto; padding: 4px 8px; font-size: 12px; margin-left: auto;
 .thread { border-left: 2px solid var(--violet); padding: 4px 10px; font-size: 13px; background: var(--panel-2); border-radius: 0 6px 6px 0; }
 .suggestion { border-color: #2c4a6a; margin-bottom: 14px; }
 .sub-h { margin: 18px 0 10px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
+
+/* ---------- department tabs + inbox ---------- */
+.dept section { margin-top: 22px; }
+.dept-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.dept-head h2 { margin: 0; font-size: 20px; }
+.seg { display: inline-flex; border: 1px solid var(--line-2); border-radius: 9px; overflow: hidden; }
+.seg button { background: none; border: 0; padding: 6px 12px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.seg button + button { border-left: 1px solid var(--line-2); }
+.seg button.on { background: var(--accent); color: var(--accent-ink); }
+.review-card, .question { margin-bottom: 10px; }
+.review-card .num, .tline .num { font-family: var(--mono); color: var(--accent); font-size: 12px; }
+.review-card .md { margin-top: 8px; }
+.tline { padding: 4px 0; font-size: 13px; border-bottom: 1px solid var(--line); }
+.tline:last-child { border-bottom: 0; }
+.card > b { display: block; margin-bottom: 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); }
+.assume { margin-top: 8px; font-size: 13px; color: var(--muted); border-left: 2px solid var(--accent); padding-left: 10px; }
+.caps { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; margin-top: 10px; }
+.caps.big { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
+.cap { position: relative; padding: 0; border: 1px solid var(--line-2); border-radius: 8px; overflow: hidden; background: #0a0c0f; aspect-ratio: 16 / 10; display: grid; place-items: center; color: var(--faint); font-size: 12px; font-weight: 700; }
+.cap img, .cap video { width: 100%; height: 100%; object-fit: cover; }
+.cap-title { position: absolute; left: 0; right: 0; bottom: 0; padding: 3px 6px; font-size: 11px; font-weight: 500; text-align: left; background: linear-gradient(transparent, #000c); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cap:hover { border-color: var(--accent); }
 
 /* ---------- settings ---------- */
 .settings { max-width: 760px; }

@@ -98,7 +98,16 @@ export async function fetchBranches(dir, branches) {
   await git(dir, ['fetch', '--no-tags', '--quiet', 'origin', ...branches.map((b) => `+refs/heads/${b}:refs/ballast/remote/${b}`)]);
 }
 
-export const showRemoteFile = (dir, branch, file) => git(dir, ['show', `refs/ballast/remote/${branch}:${file}`]).catch(() => null);
+export const listRemoteFiles = (dir, branch, prefix) =>
+  git(dir, ['ls-tree', '-r', '--name-only', `refs/ballast/remote/${branch}`, '--', prefix]).then((o) => o.split('\n').filter(Boolean));
+
+export function readRemoteBlob(dir, branch, file) {
+  return new Promise((resolve, reject) => {
+    execFile('git', ['show', `refs/ballast/remote/${branch}:${file}`], { cwd: dir, encoding: 'buffer', maxBuffer: 128 * 1024 * 1024, windowsHide: true }, (err, stdout) => (err ? reject(err) : resolve(stdout)));
+  });
+}
+
+export const showRemoteFile =(dir, branch, file) => git(dir, ['show', `refs/ballast/remote/${branch}:${file}`]).catch(() => null);
 
 // Brings the local clone to the remote base branch. It must be a real branch, not a detached
 // commit: `claude --cloud` starts the session from the clone's remote at its current branch.

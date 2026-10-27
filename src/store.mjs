@@ -38,6 +38,10 @@ const DEFAULTS = {
     cloudTaskTimeoutMin: 240, // a cloud session with no report after this is marked blocked
     desktopArtifacts: true, // let sync runs load the CLI's Artifact tools (see cloud.mjs)
     reviewers: '', // comma list; when set, only these comment authors are routed to agents
+    // Director review per discipline: skip ("not my field"), after (never blocks), gate (approve first).
+    review: { gameplay: 'after', art: 'after', audio: 'after', backend: 'skip', other: 'after' },
+    reviewAutoApproveHours: 24, // gated work nobody looked at is approved after this (0 = never)
+    deliveryHeadsUpMin: 45, // tell the team this long before each check-in build
   },
   secrets: {
     uiToken: crypto.randomBytes(24).toString('hex'),
@@ -53,6 +57,7 @@ const DEFAULTS = {
   artifacts: [],
   cloudArtifacts: [], // claude.ai artifacts tracked per game
   cloudIndex: {}, // accountId -> last artifact listing, for discovery
+  inbox: [], // Director's Inbox: questions agents asked without stopping
 };
 
 function load() {
