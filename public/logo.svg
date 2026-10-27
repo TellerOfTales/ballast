@@ -1,26 +1,26 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="40 118 1454 840" role="img" aria-label="Ballast">
-  <!-- Ballast mark: a rail-section U with flared caps, the wordmark, and a green half-disc.
-       Drawn from the original artwork's proportions; the right side mirrors the left. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 40 1000 610" role="img" aria-label="Ballast">
+  <!-- Ballast mark, built geometrically so every line is clean and symmetric:
+       both bands are arcs around one centre (500,200), so they stay parallel all the way round,
+       and the caps on the right are the left caps mirrored about x=500. -->
   <defs>
-    <g id="side">
-      <!-- top cap -->
-      <path d="M62 132H256q6 0 9 6l15 32H86q-30 0-30-30q0-8 6-8z"/>
-      <!-- flange the band hangs from -->
-      <path d="M106 180H372l-34 31H200v8h-34q-12 0-16-8l-6-10H122q-16 0-16-14z"/>
+    <g id="caps">
+      <path d="M30 60H168l-10 20H38q-8 0-8-8z"/>
+      <path d="M58 86H226l-18 18H66q-8 0-8-8z"/>
     </g>
   </defs>
   <g fill="#e9a820">
-    <use href="#side"/>
-    <use href="#side" transform="translate(1534 0) scale(-1 1)"/>
+    <use href="#caps"/>
+    <use href="#caps" transform="translate(1000 0) scale(-1 1)"/>
   </g>
-  <g fill="none" stroke="#e9a820" stroke-linecap="butt">
-    <!-- outer band -->
-    <path stroke-width="38" d="M175 205V330C175 702 470 921 767 921S1359 702 1359 330V205"/>
-    <!-- inner band -->
-    <path stroke-width="24" d="M231 214C231 652 478 878 767 878S1303 652 1303 214"/>
+  <g fill="none" stroke="#e9a820">
+    <!-- outer band: radius 410 -->
+    <path stroke-width="34" d="M90 104V200A410 410 0 0 0 910 200V104"/>
+    <!-- inner band: radius 362 -->
+    <path stroke-width="16" d="M138 104V200A362 362 0 0 0 862 200V104"/>
   </g>
-  <text x="777" y="584" text-anchor="middle" textLength="975" lengthAdjust="spacingAndGlyphs"
-        font-family="Georgia, 'Times New Roman', serif" font-weight="700" font-size="342" fill="#e9a820"
-        stroke="#e9a820" stroke-width="9" stroke-linejoin="miter">BALLAST</text>
-  <path fill="#179a48" d="M362 666H1172C1102 770 942 856 767 856S432 770 362 666Z"/>
+  <text x="500" y="332" text-anchor="middle" textLength="640" lengthAdjust="spacingAndGlyphs"
+        font-family="Georgia, 'Times New Roman', serif" font-weight="700" font-size="204"
+        fill="#e9a820" stroke="#e9a820" stroke-width="5" stroke-linejoin="miter">BALLAST</text>
+  <!-- green half-disc: radius 340 around the same centre, cut flat below the wordmark -->
+  <path fill="#179a48" d="M209 375H791A340 340 0 0 1 209 375Z"/>
 </svg>
