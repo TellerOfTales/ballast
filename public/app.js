@@ -1204,9 +1204,9 @@ function rsListen() {
 
 // Saying "mark that" / "mark moment" while playing drops a ★ marker (you can't click mid-game).
 const MARK_RE = /\b(?:mark(?:ed)?|work)\s+(?:that|this|it|here|(?:the\s+)?moment)\b/i;
-// Speech arrives in short bursts; anything within a few seconds of the last line joins it,
+// Speech arrives in short bursts; anything within 10 seconds of the last line joins it,
 // so the transcript reads as sentences instead of fragments.
-const JOIN_MS = 4000;
+const JOIN_MS = 10000;
 
 function rsAddSpeech(text) {
   const t = rsElapsed();
