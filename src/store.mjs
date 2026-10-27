@@ -16,6 +16,7 @@ export const paths = {
   cloud: path.join(HOME, 'cloud'),
   clones: path.join(HOME, 'clones'), // GitHub repos of cloud-run games
   targets: path.join(HOME, 'targets'), // quality target images per game
+  assets: path.join(HOME, 'assets'), // per-game asset index (file scan + AI catalog)
   studioAttachments: path.join(HOME, 'studio', 'attachments'),
   tmp: path.join(HOME, 'tmp'),
 };

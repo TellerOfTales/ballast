@@ -99,6 +99,12 @@ Each department tab has a **Quality targets** section for reference images (or c
 - **Agents' captures:** agents are told to meet the bar without copying, frame their captures like the closest target, and say how close they got.
 - **In review:** review cards show the matching **target** next to the agent's **result**.
 
+**Tagging assets.** In the target dialog, pick a **category** (Characters, Level design, Props, Vehicles, UI, VFX, Animation, Audio, Materials & textures), then search the game's assets and tick the ones the target applies to. Agents get the asset names and their defining files with the target, and tasks that mention a tagged asset get that target.
+
+The asset list comes from two places:
+- **Asset files** found by scanning the repo (models, textures, prefabs, scenes, audio). This is instant.
+- **An asset catalog** Claude builds by reading the game: what's in it, named the way a player would name it, with the files that define it. This is what makes code-built games searchable. It's built the first time you search, and again whenever you press **Scan the game**.
+
 ## Department notes
 
 Each department tab has a **Leave a note** box for feedback aimed at the whole department, like "everything looks too clean" in Art. A note goes through four stages:

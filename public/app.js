@@ -1439,6 +1439,7 @@ function renderDept(d) {
         ${cloudLine}
         ${tg.length ? `<div class="targets-grid">${tg.map((x) => `<div class="card target-card">${targetThumb(x)}
             <div class="row" style="margin-top:8px"><b class="grow">${esc(x.title)}</b><button class="icon-btn" data-act="target-edit" data-id="${x.id}" title="Edit">✎</button><button class="icon-btn" data-act="target-delete" data-id="${x.id}" title="Remove">✕</button></div>
+            ${x.category || x.assets?.length ? `<div class="hint" style="margin:0">${x.category ? `<span class="pill">${esc(x.category)}</span> ` : ''}${(x.assets || []).slice(0, 3).map((a) => esc(a.name)).join(', ')}${(x.assets || []).length > 3 ? ` +${x.assets.length - 3}` : ''}</div>` : ''}
             ${x.tags.length ? `<div class="hint" style="margin:0">${x.tags.map(esc).join(' · ')}</div>` : ''}
             ${x.notes ? `<div class="hint" style="margin:4px 0 0">Match: ${esc(x.notes)}</div>` : ''}</div>`).join('')}</div>`
           : `<div class="drop-hint">Drop images here, or use <b>Add targets</b>: concept art, a screenshot from a game you admire, a lighting look, a texture with the right amount of wear.</div>`}
@@ -1485,6 +1486,80 @@ function renderInbox() {
     ${done.length ? `<details style="margin-top:18px"><summary class="hint" style="display:inline;cursor:pointer">Answered (${done.length})</summary>${done.map(questionCard).join('')}</details>` : ''}`;
 }
 
+// Asset picker: pick a category, then search the game's assets (AI catalog + asset files) and
+// tick the ones a target applies to. Lives inside a modal, so it's never re-rendered by state.
+const assetKey = (a) => `${a.name}|${(a.refs || []).join(',')}`;
+const assetPickerHtml = () => `<div class="asset-picker">
+  <span class="field-label">Category</span>
+  <div class="chip-row" data-cats></div>
+  <div class="row" style="margin-top:8px"><input data-asset-q placeholder="Search the game's assets: barrel, wharf, fisherman…" autocomplete="off"><button type="button" class="ghost small" data-asset-scan title="Have Claude read the game and list what's in it">Scan the game</button></div>
+  <div class="hint" data-asset-status style="margin:4px 0"></div>
+  <div class="asset-results" data-asset-results></div>
+  <span class="field-label" style="margin-top:8px">Applies to</span>
+  <div class="chip-row" data-asset-chosen></div>
+</div>`;
+
+function mountAssetPicker(root, { category = '', assets: chosen = [] } = {}) {
+  const st = { category, chosen: [...chosen], q: '', data: null, timer: null };
+  const $r = (s) => $(s, root);
+  const renderChosen = () => {
+    $r('[data-asset-chosen]').innerHTML = st.chosen.length
+      ? st.chosen.map((a, i) => `<span class="chip">${esc(a.name)} <span class="hint" style="display:inline">${esc(a.category)}</span><button type="button" data-unpick="${i}">✕</button></span>`).join('')
+      : '<span class="hint" style="margin:0">Nothing tagged yet: tick assets above.</span>';
+  };
+  const render = () => {
+    const d = st.data;
+    if (!d) return;
+    $r('[data-cats]').innerHTML = [{ id: '', label: 'All' }, ...d.categories].filter((c) => !c.id || d.counts[c.id] || c.id === st.category)
+      .map((c) => `<button type="button" class="chip-btn${st.category === c.id ? ' on' : ''}" data-cat="${c.id}">${esc(c.label)}${c.id ? ` <span>${d.counts[c.id] || 0}</span>` : ''}</button>`).join('');
+    const picked = new Set(st.chosen.map(assetKey));
+    $r('[data-asset-results]').innerHTML = d.items.length ? d.items.map((a, i) => `<label class="asset-row"><input type="checkbox" data-pick="${i}" ${picked.has(assetKey(a)) ? 'checked' : ''}>
+        <span class="grow"><b>${esc(a.name)}</b> <span class="pill">${esc(d.categories.find((c) => c.id === a.category)?.label || a.category)}</span>${a.source === 'file' ? ' <span class="hint" style="display:inline">file</span>' : ''}
+        <span class="hint" style="margin:0;display:block">${esc(a.description || '')}${a.refs.length ? ` <code>${esc(a.refs[0])}</code>` : ''}</span></span></label>`).join('')
+      : `<div class="hint">${d.catalog || d.files?.count ? 'No assets match.' : 'No asset list yet. Press Scan the game.'}</div>`;
+    const parts = [d.catalog ? `catalog: ${d.catalog.count} assets, scanned ${ago(d.catalog.at)}` : 'no catalog yet', d.files?.count ? `${d.files.count} asset files` : ''].filter(Boolean);
+    $r('[data-asset-status]').textContent = d.scanning ? 'Scanning the game… (about a minute)' : parts.join(' · ');
+  };
+  const fetchResults = async () => {
+    st.data = await api('GET', `/api/games/${S.gameId}/assets?q=${encodeURIComponent(st.q)}&category=${encodeURIComponent(st.category)}`);
+    render();
+    return st.data;
+  };
+  const scan = async () => {
+    const btn = $r('[data-asset-scan]');
+    btn.disabled = true;
+    $r('[data-asset-status]').textContent = 'Scanning the game… (about a minute)';
+    try { await api('POST', `/api/games/${S.gameId}/assets/scan`); } catch (err) { toast(err.message, true); } finally { btn.disabled = false; }
+    await fetchResults();
+  };
+  $r('[data-asset-q]').addEventListener('input', (e) => { st.q = e.target.value; clearTimeout(st.timer); st.timer = setTimeout(fetchResults, 200); });
+  $r('[data-asset-scan]').onclick = scan;
+  root.addEventListener('click', (e) => {
+    const cat = e.target.closest('[data-cat]');
+    if (cat) { st.category = cat.dataset.cat; fetchResults(); }
+    const un = e.target.closest('[data-unpick]');
+    if (un) { st.chosen.splice(Number(un.dataset.unpick), 1); renderChosen(); render(); }
+  });
+  root.addEventListener('change', (e) => {
+    const box = e.target.closest('[data-pick]');
+    if (!box) return;
+    const a = st.data.items[Number(box.dataset.pick)];
+    if (box.checked) st.chosen.push(a);
+    else st.chosen = st.chosen.filter((c) => assetKey(c) !== assetKey(a));
+    renderChosen();
+  });
+  renderChosen();
+  // First use on a game: build the catalog automatically so there's something to search.
+  fetchResults().then((d) => { if (!d.catalog && !d.scanning) scan(); }).catch((err) => { $r('[data-asset-status]').textContent = err.message; });
+  // The target's category: the chip picked, else the most common category among tagged assets.
+  return () => {
+    const counts = {};
+    for (const a of st.chosen) counts[a.category] = (counts[a.category] || 0) + 1;
+    const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || '';
+    return { category: st.category || top, assets: st.chosen.map(({ name, category, refs }) => ({ name, category, refs })) };
+  };
+}
+
 // Add quality targets: one title per file, shared subjects and "what to match" for the batch.
 function addTargetsModal(d, files) {
   files = [...files].filter((f) => /^(image|video|audio)\//.test(f.type));
@@ -1492,17 +1567,20 @@ function addTargetsModal(d, files) {
   const g = game();
   const label = S.st.disciplines.find((x) => x.id === d)?.label || d;
   const previews = files.map((f) => (f.type.startsWith('image/') ? URL.createObjectURL(f) : null));
+  let pickerValue = () => ({});
   modal({
     title: `Add ${label} quality targets`,
     wide: files.length > 2,
     body: `<div class="targets-grid">${files.map((f, i) => `<div class="card">${previews[i] ? `<img src="${previews[i]}" style="width:100%;border-radius:6px;max-height:160px;object-fit:cover">` : `<div class="hint">${esc(f.name)}</div>`}
         <label class="field" style="margin:8px 0 0"><span>Title</span><input name="title${i}" value="${esc(f.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' '))}"></label></div>`).join('')}</div>
-      <label class="field" style="margin-top:12px"><span>Subjects</span><input name="tags" placeholder="e.g. barrels, crates, dock props"><small>Comma-separated. Agents working on tasks about these get the targets.</small></label>
+      <div style="margin-top:12px">${assetPickerHtml()}</div>
+      <label class="field" style="margin-top:12px"><span>Other subjects (optional)</span><input name="tags" placeholder="e.g. grime, weathering, night lighting"><small>Comma-separated words. Tasks mentioning these, or the tagged assets, get the targets.</small></label>
       <label class="field"><span>What to match</span><textarea name="notes" rows="3" placeholder="e.g. this level of grime and rust, warm lantern light, chunky readable silhouettes"></textarea></label>
       ${g.runner === 'cloud' ? '<p class="hint">This is a cloud game, so Ballast also pushes the targets to a <code>ballast/targets</code> branch of its GitHub repo (never main) so the cloud agents can see them.</p>' : ''}`,
+    onMount: (root) => { pickerValue = mountAssetPicker(root); },
     actions: [{ label: 'Cancel' }, {
       label: `Add ${files.length} target${files.length > 1 ? 's' : ''}`, kind: 'primary', onClick: async (root) => {
-        const f = formData(root);
+        const f = { ...formData(root), ...pickerValue() };
         for (const [i, file] of files.entries()) {
           if (file.size > 60e6) { toast(`${file.name} is over 60 MB`, true); continue; }
           const data = await new Promise((resolve, reject) => {
@@ -1511,7 +1589,7 @@ function addTargetsModal(d, files) {
             r.onerror = reject;
             r.readAsDataURL(file);
           });
-          await api('POST', `/api/games/${g.id}/targets`, { discipline: d, title: f[`title${i}`], tags: f.tags, notes: f.notes, name: file.name, data });
+          await api('POST', `/api/games/${g.id}/targets`, { discipline: d, title: f[`title${i}`], tags: f.tags, notes: f.notes, category: f.category, assets: f.assets, name: file.name, data });
         }
         previews.forEach((u) => u && URL.revokeObjectURL(u));
         toast(`Added ${files.length} target${files.length > 1 ? 's' : ''}`);
@@ -1522,13 +1600,17 @@ function addTargetsModal(d, files) {
 
 function editTargetModal(id) {
   const x = S.st.targets.find((t) => t.id === id);
+  let pickerValue = () => ({});
   modal({
     title: 'Quality target',
-    body: `${x.kind === 'image' ? `<img src="${targetUrl(x)}" style="width:100%;border-radius:8px;max-height:260px;object-fit:contain;background:#0a0c0f">` : ''}
+    wide: true,
+    body: `${x.kind === 'image' ? `<img src="${targetUrl(x)}" style="width:100%;border-radius:8px;max-height:220px;object-fit:contain;background:#0a0c0f">` : ''}
       <label class="field" style="margin-top:10px"><span>Title</span><input name="title" value="${esc(x.title)}"></label>
-      <label class="field"><span>Subjects</span><input name="tags" value="${esc(x.tags.join(', '))}"></label>
+      ${assetPickerHtml()}
+      <label class="field" style="margin-top:12px"><span>Other subjects</span><input name="tags" value="${esc(x.tags.join(', '))}"></label>
       <label class="field"><span>What to match</span><textarea name="notes" rows="3">${esc(x.notes)}</textarea></label>`,
-    actions: [{ label: 'Cancel' }, { label: 'Save', kind: 'primary', onClick: (root) => api('PATCH', `/api/targets/${id}`, formData(root)) }],
+    onMount: (root) => { pickerValue = mountAssetPicker(root, { category: x.category || '', assets: x.assets || [] }); },
+    actions: [{ label: 'Cancel' }, { label: 'Save', kind: 'primary', onClick: (root) => api('PATCH', `/api/targets/${id}`, { ...formData(root), ...pickerValue() }) }],
   });
 }
 

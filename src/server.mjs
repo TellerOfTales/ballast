@@ -17,6 +17,7 @@ import * as review from './review.mjs';
 import * as inbox from './inbox.mjs';
 import * as deptnotes from './deptnotes.mjs';
 import * as targets from './targets.mjs';
+import * as assets from './assets.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PUBLIC = path.join(ROOT, 'public');
@@ -167,6 +168,8 @@ route('POST', '/api/tasks/:id/approve', (p) => review.approve(p.id));
 route('POST', '/api/tasks/:id/changes', (p, body) => review.requestChanges(p.id, body.feedback));
 route('POST', '/api/games/:id/approve-all', (p, body) => review.approveAll(p.id, body.discipline));
 route('POST', '/api/games/:id/queue-earlier', (p) => review.queueEarlierWork(p.id));
+route('GET', '/api/games/:id/assets', (p, _, q) => assets.search(p.id, { q: q.get('q') || '', category: q.get('category') || '', limit: q.get('limit') }));
+route('POST', '/api/games/:id/assets/scan', async (p) => ({ catalog: await assets.scanCatalog(p.id), files: await assets.scanFiles(p.id) }));
 route('POST', '/api/games/:id/targets', (p, body) => targets.add(p.id, body));
 route('POST', '/api/games/:id/targets/share', (p) => targets.share(p.id));
 route('PATCH', '/api/targets/:id', (p, body) => targets.update(p.id, body));

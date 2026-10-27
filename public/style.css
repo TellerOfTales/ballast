@@ -322,6 +322,18 @@ button.pill { cursor: pointer; }
 .tline { padding: 4px 0; font-size: 13px; border-bottom: 1px solid var(--line); }
 .tline:last-child { border-bottom: 0; }
 .card > b { display: block; margin-bottom: 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); }
+.field-label { display: block; font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 5px; }
+.chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip-btn { background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 20px; padding: 3px 10px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.chip-btn span { color: var(--faint); font-weight: 500; }
+.chip-btn.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.chip-btn.on span { color: var(--accent-ink); }
+.asset-results { max-height: 260px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+.asset-row { display: flex; gap: 10px; align-items: flex-start; padding: 7px 10px; border-bottom: 1px solid var(--line); cursor: pointer; font-size: 13px; }
+.asset-row:last-child { border-bottom: 0; }
+.asset-row:hover { background: var(--panel-2); }
+.asset-row input { margin-top: 3px; accent-color: var(--accent); }
+.asset-row code { font-size: 11px; }
 .targets-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
 .target-card { padding: 8px; }
 .target-card .cap { width: 100%; }

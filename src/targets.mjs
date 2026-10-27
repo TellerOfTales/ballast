@@ -25,7 +25,12 @@ const tagList = (tags) => (Array.isArray(tags) ? tags : String(tags || '').split
 
 export const fileOf = (t) => path.join(root, t.gameId, t.id, t.file);
 
-export function add(gameId, { discipline = 'art', title, notes = '', tags = '', name, data }) {
+// Tagged assets are kept as a snapshot (name, category, defining files) so a target still makes
+// sense to agents after the asset index is rebuilt.
+const assetList = (list) => (Array.isArray(list) ? list : []).filter((a) => a?.name).slice(0, 30)
+  .map((a) => ({ name: String(a.name).slice(0, 80), category: String(a.category || 'other'), refs: (a.refs || []).slice(0, 4).map(String) }));
+
+export function add(gameId, { discipline = 'art', title, notes = '', tags = '', category = '', assets = [], name, data }) {
   const game = must(orch.getGame(gameId), 'Unknown game');
   must(data, 'Empty file');
   const file = path.basename(String(name || 'target.png')).replace(/[^\w.\-]+/g, '_').slice(-80);
@@ -36,6 +41,8 @@ export function add(gameId, { discipline = 'art', title, notes = '', tags = '', 
     title: String(title || file.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ')).trim().slice(0, 120),
     notes: String(notes || '').trim().slice(0, 2000),
     tags: tagList(tags),
+    category: String(category || ''),
+    assets: assetList(assets),
     file,
     kind: kindOf(file),
     createdAt: Date.now(),
@@ -54,6 +61,8 @@ export function update(id, patch) {
   if (patch.title !== undefined) t.title = String(patch.title).trim().slice(0, 120) || t.title;
   if (patch.notes !== undefined) t.notes = String(patch.notes).trim().slice(0, 2000);
   if (patch.tags !== undefined) t.tags = tagList(patch.tags);
+  if (patch.category !== undefined) t.category = String(patch.category || '');
+  if (patch.assets !== undefined) t.assets = assetList(patch.assets);
   if (patch.discipline) t.discipline = patch.discipline;
   save();
   changed();
@@ -77,7 +86,12 @@ export function remove(id) {
 export function forTask(task, game) {
   const pool = db.targets.filter((t) => t.gameId === game.id && t.discipline === (task.discipline || 'art'));
   const tw = new Set(words(`${task.title} ${task.detail || ''}`));
-  const scored = pool.map((t) => ({ t, score: [...t.tags.flatMap(words), ...words(t.title)].filter((w) => tw.has(w)).length }));
+  // Tagged assets count double: a task naming "rain barrel" wants the target tagged with it.
+  const scored = pool.map((t) => ({
+    t,
+    score: [...t.tags.flatMap(words), ...words(t.title)].filter((w) => tw.has(w)).length
+      + 2 * (t.assets || []).flatMap((a) => [...words(a.name), ...a.refs.flatMap(words)]).filter((w) => tw.has(w)).length,
+  }));
   const hits = scored.filter((s) => s.score > 0).sort((a, b) => b.score - a.score).map((s) => s.t);
   return (hits.length ? hits : pool).slice(0, 6);
 }
@@ -85,8 +99,10 @@ export function forTask(task, game) {
 // Name each target gets on the shared branch: readable and unique.
 export const branchName = (t) => `${t.id.slice(3)}-${t.file}`;
 
+const appliesTo = (t) => (t.assets?.length ? `\n    Applies to: ${t.assets.map((a) => `${a.name} (${a.category}${a.refs.length ? `: ${a.refs.join(', ')}` : ''})`).join('; ')}` : '');
+
 export function describe(list, { local }) {
-  return list.map((t) => `- ${t.title}${t.tags.length ? ` [${t.tags.join(', ')}]` : ''}: ${local ? fileOf(t) : branchName(t)}${t.notes ? `\n    Match: ${t.notes.replace(/\n/g, ' ')}` : ''}`).join('\n');
+  return list.map((t) => `- ${t.title}${t.category ? ` {${t.category}}` : ''}${t.tags.length ? ` [${t.tags.join(', ')}]` : ''}: ${local ? fileOf(t) : branchName(t)}${t.notes ? `\n    Match: ${t.notes.replace(/\n/g, ' ')}` : ''}${appliesTo(t)}`).join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -106,7 +122,7 @@ export async function share(gameId) {
   const index = `# Ballast quality targets for ${game.name}\n\nReference images the director chose to set the quality bar. Match them; don't copy them.\n\n${
     ['gameplay', 'art', 'audio', 'backend'].map((d) => {
       const ts = list.filter((t) => t.discipline === d);
-      return ts.length ? `## ${d}\n${ts.map((t) => `- \`${branchName(t)}\`: ${t.title}${t.tags.length ? ` (${t.tags.join(', ')})` : ''}${t.notes ? `\n  Match: ${t.notes.replace(/\n/g, ' ')}` : ''}`).join('\n')}\n` : '';
+      return ts.length ? `## ${d}\n${ts.map((t) => `- \`${branchName(t)}\`: ${t.title}${t.tags.length ? ` (${t.tags.join(', ')})` : ''}${t.notes ? `\n  Match: ${t.notes.replace(/\n/g, ' ')}` : ''}${appliesTo(t).replace(/\n {4}/, '\n  ')}`).join('\n')}\n` : '';
     }).join('\n')}`;
   const indexFile = path.join(root, gameId, 'README.md');
   fs.mkdirSync(path.dirname(indexFile), { recursive: true });

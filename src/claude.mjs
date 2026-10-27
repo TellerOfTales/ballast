@@ -97,8 +97,7 @@ export function runTurn({ args, cwd, env, prompt, onMessage }) {
 
 // A short, tool-limited, throwaway run for Ballast's own housekeeping (limit probes,
 // artifact syncs). --safe-mode skips plugins, skills and MCP servers, so it's cheap.
-export async function runQuick({ account, args, prompt, onMessage, env = {} }) {
-  const cwd = path.join(paths.tmp, 'quick');
+export async function runQuick({ account, args, prompt, onMessage, env = {}, cwd = path.join(paths.tmp, 'quick') }) {
   fs.mkdirSync(cwd, { recursive: true });
   let result = null;
   const { done } = runTurn({
