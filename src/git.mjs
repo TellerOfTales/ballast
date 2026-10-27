@@ -125,6 +125,20 @@ export async function remoteHeads(dir) {
   return heads;
 }
 
+// Every branch on origin plus the one GitHub calls the default, in one round trip.
+export async function remoteBranches(dir) {
+  const out = await git(dir, ['ls-remote', '--symref', 'origin', 'HEAD', 'refs/heads/*']);
+  const heads = {};
+  let defaultBranch = null;
+  for (const line of out.split('\n')) {
+    const sym = line.match(/^ref: refs\/heads\/(\S+)\s+HEAD$/);
+    if (sym) { defaultBranch = sym[1]; continue; }
+    const [sha, ref] = line.trim().split(/\s+/);
+    if (ref?.startsWith('refs/heads/')) heads[ref.slice(11)] = sha;
+  }
+  return { heads, defaultBranch };
+}
+
 // Fetches the given remote branches into a private namespace so the user's refs are untouched.
 export async function fetchBranches(dir, branches) {
   if (!branches.length) return;

@@ -32,7 +32,30 @@ export async function prepareClone(game, githubInput) {
   game.repoPath = dir;
   if (gh.subdir) game.subdir = gh.subdir;
   if (!game.baseBranch && gh.branch) game.baseBranch = gh.branch;
-  if (!game.baseBranch) game.baseBranch = await git.git(dir, ['rev-parse', '--abbrev-ref', 'origin/HEAD']).then((r) => r.replace(/^origin\//, ''), () => 'main');
+  // Ask GitHub what's really there: a typed or pasted branch may not exist, and repos don't
+  // always use "main" (or have any commits yet).
+  const { heads, defaultBranch } = await git.remoteBranches(dir);
+  const names = Object.keys(heads);
+  if (!names.length) throw Object.assign(new Error(`github.com/${gh.slug} has no branches yet. Push a first commit, then add the game.`), { status: 400 });
+  if (!game.baseBranch) game.baseBranch = defaultBranch || names[0];
+  // A folder link on a branch with slashes (/tree/claude/some-branch/game) reads as branch
+  // "claude": take the longest real branch the link's path starts with.
+  if (!heads[game.baseBranch] && gh.branch === game.baseBranch && gh.subdir) {
+    const parts = gh.subdir.split('/');
+    for (let i = parts.length; i > 0; i--) {
+      const candidate = [gh.branch, ...parts.slice(0, i)].join('/');
+      if (!heads[candidate]) continue;
+      game.baseBranch = candidate;
+      if (parts.length > i) game.subdir = parts.slice(i).join('/');
+      else delete game.subdir;
+      break;
+    }
+  }
+  if (!heads[game.baseBranch]) {
+    const list = [defaultBranch, ...names.filter((n) => n !== defaultBranch).sort()].filter(Boolean);
+    const shown = list.slice(0, 12).map((n) => (n === defaultBranch ? `${n} (default)` : n)).join(', ');
+    throw Object.assign(new Error(`github.com/${gh.slug} has no branch "${game.baseBranch}"${gh.branch === game.baseBranch && gh.subdir ? ` (or any branch the link's /tree/${gh.branch}/${gh.subdir} starts with)` : ''}. Its branches: ${shown}${list.length > 12 ? `, and ${list.length - 12} more` : ''}. Leave Base branch empty to use the default, or link to a folder with /tree/<branch>/<folder>.`), { status: 400 });
+  }
   await git.syncClone(dir, game.baseBranch);
 }
 
