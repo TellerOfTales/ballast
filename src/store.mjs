@@ -70,6 +70,7 @@ const DEFAULTS = {
   deptNotes: [], // notes left for a whole department, tracked until their tasks are done
   targets: [], // quality targets: reference images per department
   usageReports: [], // periodic session/weekly limit reports, newest last
+  audits: [], // Bartle audits: the audiences each game serves and how to market it to them
 };
 
 function load() {

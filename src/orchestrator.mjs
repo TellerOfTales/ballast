@@ -21,6 +21,7 @@ import * as deptnotes from './deptnotes.mjs';
 import * as targets from './targets.mjs';
 import * as subagents from './subagents.mjs';
 import * as delegates from './delegates.mjs';
+import * as policy from './policy.mjs';
 
 export const runtime = { baseUrl: '' }; // filled in by the server once it is listening
 const MCP_SERVER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'mcp-server.mjs');
@@ -47,7 +48,15 @@ const openTasks = (gameId) => gameTasks(gameId).filter((t) => t.status === 'open
 const heldTask = (agentId) => db.tasks.find((t) => t.claimedBy === agentId && t.status === 'claimed');
 const heldTasks = (agentId) => db.tasks.filter((t) => t.claimedBy === agentId && t.status === 'claimed');
 const isLimited = (acct) => !!(acct?.limitedUntil && acct.limitedUntil > Date.now());
-const isPaused = (game) => game?.status === 'paused';
+// Game life cycle: active → shipped (still takes your notes, no autopilot) → archived (nothing runs).
+// Paused and archived games only run messages sent straight to one agent.
+export const GAME_STATUSES = ['active', 'paused', 'shipped', 'archived'];
+const isPaused = (game) => game?.status === 'paused' || game?.status === 'archived';
+const isActive = (game) => !game?.status || game.status === 'active';
+// The game's usage cap and rules for this agent's account right now.
+const fxFor = (agent) => policy.effects(getGame(agent.gameId), getAccount(agent.accountId));
+export const claimBatchFor = (agent) => (fxFor(agent).oneTask ? 1 : getGame(agent.gameId)?.claimBatch || 1);
+export const policyNoteFor = (agent) => policy.promptNote(fxFor(agent), getAccount(agent.accountId));
 
 // Highest utilization across the account's limit windows (session, weekly, per-model), 0..1.
 export function utilization(acct) {
@@ -74,6 +83,7 @@ function agentStatus(agent) {
   if (r.child || agent.cloud) return 'running';
   if (getGame(agent.gameId)?.runner === 'cloud' && !agent.cloudLink) return 'unlinked';
   if (isLimited(getAccount(agent.accountId))) return 'limited';
+  if (r.queue.length && !r.queue[0].direct && fxFor(agent).stop) return 'capped';
   if (r.queue.length) return 'queued';
   if (r.error) return 'error';
   if (r.paused) return 'paused';
@@ -95,6 +105,8 @@ export function publicState() {
     targets: db.targets,
     usageReports: db.usageReports.slice(-20),
     disciplines: review.DISCIPLINES.map(({ id, label }) => ({ id, label })),
+    policy: { actions: policy.ACTIONS, metrics: policy.METRICS, presets: policy.PRESETS },
+    audits: db.audits,
     games: db.games,
     agents: db.agents.map((a) => {
       const r = R(a.id);
@@ -185,6 +197,8 @@ export function updateAccount(id, patch) {
   const acct = must(getAccount(id), 'Unknown account');
   if (patch.name?.trim()) acct.name = patch.name.trim();
   if (patch.maxConcurrent !== undefined) acct.maxConcurrent = Math.max(1, Number(patch.maxConcurrent) || 1);
+  // What the plan costs you a month; drives cost-per-task and plan value on the Studio page.
+  if (patch.monthlyCost !== undefined) acct.monthlyCost = patch.monthlyCost === '' || patch.monthlyCost === null ? null : Math.max(0, Number(patch.monthlyCost) || 0);
   if (patch.clearLimit) acct.limitedUntil = null;
   save();
   changed();
@@ -300,11 +314,12 @@ export function updateGame(id, patch) {
     if (game.autopilot) wakeIdle(game.id);
   }
   if (patch.priority !== undefined) game.priority = Math.min(3, Math.max(1, Number(patch.priority) || 2));
-  if (patch.status && patch.status !== game.status) {
-    game.status = patch.status === 'paused' ? 'paused' : 'active';
-    feedPost(game.id, { kind: 'system', text: game.status === 'paused' ? 'Game paused. Agents finish their current turn; queued work waits.' : 'Game resumed.' });
-    if (game.status === 'active') setTimeout(() => { pump(); wakeIdle(game.id); }, 100);
+  if (patch.usagePolicy) {
+    game.usagePolicy = policy.normalize(patch.usagePolicy);
+    setTimeout(() => { for (const acct of db.accounts) syncPolicy(game, acct); pump(); wakeIdle(game.id); }, 100);
   }
+  // releaseOnly records another release of a game that's already shipped.
+  if (patch.status && (patch.status !== game.status || (patch.releaseOnly && patch.status === 'shipped'))) setStatus(game, patch.status, patch.release);
   if (patch.review) review.setGamePolicy(game, patch.review);
   if (patch.acceptBriefSuggestion && game.briefSuggestion) patch.brief = game.briefSuggestion;
   if (patch.acceptBriefSuggestion || patch.dismissBriefSuggestion) game.briefSuggestion = '';
@@ -329,6 +344,54 @@ export function updateGame(id, patch) {
   save();
   changed();
   return game;
+}
+
+function setStatus(game, status, release = {}) {
+  must(GAME_STATUSES.includes(status), 'Unknown game status');
+  const was = game.status || 'active';
+  game.status = status;
+  if (status === 'shipped') {
+    // Each ship is a release; author developers keep shipping updates to the same game.
+    const r = { at: Date.now(), version: String(release.version || '').trim().slice(0, 40), url: String(release.url || '').trim().slice(0, 500), platforms: String(release.platforms || '').trim().slice(0, 120), notes: String(release.notes || '').trim().slice(0, 2000) };
+    (game.releases ||= []).push(r);
+    game.shippedAt ||= r.at;
+    feedPost(game.id, { kind: 'system', text: `Shipped${r.version ? ` ${r.version}` : ''}${r.platforms ? ` on ${r.platforms}` : ''}${r.url ? `: ${r.url}` : ''}. Autopilot stops here; your notes still reach the agents for patches.` });
+  } else if (status === 'archived') {
+    for (const a of gameAgents(game.id)) R(a.id).queue = [];
+    game.archivedAt = Date.now();
+    feedPost(game.id, { kind: 'system', text: 'Game archived. Queued work was cleared; agents finish their current turn and nothing else runs. Restore it from the Studio to pick it back up.' });
+  } else if (status === 'paused') {
+    feedPost(game.id, { kind: 'system', text: 'Game paused. Agents finish their current turn; queued work waits.' });
+  } else {
+    feedPost(game.id, { kind: 'system', text: was === 'archived' ? 'Game restored.' : was === 'shipped' ? 'Back in development: autopilot picks up open tasks again.' : 'Game resumed.' });
+    setTimeout(() => { pump(); wakeIdle(game.id); }, 100);
+  }
+}
+
+// Posts once when the rules in force for an account on a game change, so you can see why
+// agents switched model, stopped claiming or went quiet. "Tell me" rules also go to the webhook.
+function syncPolicy(game, acct) {
+  if (!game?.usagePolicy || !gameAgents(game.id).some((a) => a.accountId === acct.id)) return;
+  const fx = policy.effects(game, acct);
+  const sig = [fx.capHit ? 'cap' : '', ...fx.rules.map((r) => r.id)].filter(Boolean).join(',');
+  const seen = (game.policySeen ||= {});
+  if ((seen[acct.id] || '') === sig) return;
+  const before = seen[acct.id] || '';
+  seen[acct.id] = sig;
+  save();
+  const usage = `session ${Math.round(policy.pct(acct, 'session'))}%, weekly ${Math.round(policy.pct(acct, 'weekly'))}%`;
+  if (!sig) {
+    feedPost(game.id, { kind: 'system', text: `Usage rules lifted for ${acct.name} (${usage}).` });
+    setTimeout(() => { pump(); wakeIdle(game.id); }, 100);
+    return;
+  }
+  const parts = [fx.capHit ? `${acct.name} reached this game's ${game.usagePolicy.cap}% cap: work stops here except messages you send to one agent` : '', ...fx.rules.map(policy.describe)].filter(Boolean);
+  const text = `Usage rules in force for ${acct.name} (${usage}): ${parts.join('; ')}.`;
+  feedPost(game.id, { kind: fx.capHit || fx.notify ? 'error' : 'system', text });
+  const hook = db.settings.reportWebhook;
+  if (fx.notify && hook && !before.split(',').some((id) => fx.rules.find((r) => r.id === id && r.action === 'notify'))) {
+    fetch(hook, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: `[${game.name}] ${text}`, content: `[${game.name}] ${text}` }) }).catch(() => {});
+  }
 }
 
 export function removeGame(id) {
@@ -553,6 +616,7 @@ export function saveAttachment(gameId, { name, data }) {
 // 'review' for feedback pulled from claude.ai artifacts.
 export function postNote(gameId, { text = '', target = 'all', attachments = [], from = director(), source = 'director' }) {
   const game = must(getGame(gameId), 'Unknown game');
+  must(game.status !== 'archived', `${game.name} is archived. Restore it from the Studio first.`);
   text = text.trim();
   must(text || attachments.length, 'Write a note first.');
 
@@ -710,6 +774,8 @@ export function pump() {
     }
     const acct = getAccount(agent.accountId);
     if (!acct || isLimited(acct)) continue;
+    // The game's usage cap (or a "stop" rule) holds everything but messages sent to this agent.
+    if (!r.queue[0].direct && policy.effects(game, acct).stop) continue;
     const max = acct.maxConcurrent || db.settings.maxConcurrentPerAccount || 2;
     if (accountLoad(acct.id) >= max) continue;
     if (game.runner === 'cloud' && !agent.cloudLink) continue; // shown as "needs session"
@@ -800,6 +866,8 @@ function startTurn(agent, acct, item) {
   let prompt = item.prompt;
   if (agent.sessionId && (agent.briefRevSeen || 0) < game.briefRev && game.brief?.trim()) prompt = P.briefUpdate(game.brief) + prompt;
   if (item.lost) prompt = P.sessionLost() + prompt;
+  const fx = policy.effects(game, acct);
+  prompt = policy.promptNote(fx, acct) + prompt;
   agent.briefRevSeen = game.briefRev;
 
   const attachDir = attachmentsDir(game.id);
@@ -814,8 +882,10 @@ function startTurn(agent, acct, item) {
     '--add-dir', attachDir, paths.studioAttachments,
     '--allowedTools', 'mcp__ballast',
   ];
-  if (game.model) args.push('--model', game.model);
-  if (game.effort) args.push('--effort', game.effort);
+  const model = fx.model || game.model;
+  const effort = fx.effort || game.effort;
+  if (model) args.push('--model', model);
+  if (effort) args.push('--effort', effort);
   if (agent.sessionId) {
     args.push('--resume', agent.sessionId);
     // An adopted session is forked on first use so the original conversation stays untouched.
@@ -902,6 +972,7 @@ export function updateUsage(acct, info) {
     updatedAt: Date.now(),
   };
   if (info.status === 'rejected') markLimited(acct, (info.resetsAt || 0) * 1000 || Date.now() + 3600e3, 'usage limit');
+  for (const game of db.games) syncPolicy(game, acct);
   save();
   changed();
 }
@@ -1047,9 +1118,10 @@ function afterTurn(agent, game, item, ok) {
     return;
   }
 
-  if (isPaused(game) || overGuard(getAccount(agent.accountId))) return;
+  const fx = fxFor(agent);
+  if (!isActive(game) || overGuard(getAccount(agent.accountId)) || fx.stop || fx.noClaims) return;
   if (game.autopilot && !R(agent.id).queue.length && openTasks(game.id).length && autopilotBudget(game)) {
-    enqueue(agent, { kind: 'next', prompt: P.nextTask({ openCount: openTasks(game.id).length, batch: game.claimBatch || 1 }) }, { noPump: true });
+    enqueue(agent, { kind: 'next', prompt: P.nextTask({ openCount: openTasks(game.id).length, batch: claimBatchFor(agent) }) }, { noPump: true });
   }
 }
 
@@ -1072,7 +1144,7 @@ function autopilotBudget(game) {
 // Hands open work to idle agents. `force` is the Wake button: ignores autopilot and budget.
 export function wakeIdle(gameId, force = false) {
   const game = getGame(gameId);
-  if (!game || isPaused(game) || (!force && !game.autopilot)) return 0;
+  if (!game || isPaused(game) || (!force && (!game.autopilot || !isActive(game)))) return 0;
   let open = openTasks(gameId).length;
   let woken = 0;
   // Freshest accounts first, so work drains toward whoever has the most headroom.
@@ -1085,11 +1157,14 @@ export function wakeIdle(gameId, force = false) {
     if (game.runner === 'cloud' && !a.cloudLink) continue; // nothing to send tasks to yet
     const acct = getAccount(a.accountId);
     if (isLimited(acct) || (!force && overGuard(acct))) continue;
+    const fx = policy.effects(game, acct);
+    if (fx.stop || fx.noClaims) continue; // the game's usage policy wins over Wake
     if (r.paused && !force) continue;
     if (force) r.paused = false;
     if (!force && !autopilotBudget(game)) break;
-    enqueue(a, { kind: 'next', prompt: P.nextTask({ openCount: openTasks(gameId).length, batch: game.claimBatch || 1 }) }, { noPump: true });
-    open -= game.claimBatch || 1; // each woken agent claims a batch
+    const batch = claimBatchFor(a);
+    enqueue(a, { kind: 'next', prompt: P.nextTask({ openCount: openTasks(gameId).length, batch }) }, { noPump: true });
+    open -= batch; // each woken agent claims a batch
     woken++;
   }
   pump();
@@ -1267,6 +1342,7 @@ export async function agentApi(agentId, tool, args = {}) {
       return list.length ? `Quality targets (open the files with Read):\n${targets.describe(list, { local: true })}` : 'No quality targets for that yet.';
     }
     case 'open_delegate': {
+      if (fxFor(agent).noFanout || fxFor(agent).stop) throw new Error("This game's usage rules don't allow delegate chats on your account right now. Do the work yourself.");
       const { agent: d, handed, account } = await delegates.open(agent, args);
       return `Opened delegate chat "${d.name}" on ${account.name}${handed.length ? `, holding ${handed.map((t) => `#${t.num}`).join(', ')}` : ''}. It starts from your branch${d.branch ? ` (its own: ${d.branch})` : ''} and reports back to you with a message when done. Carry on with your own work meanwhile.`;
     }

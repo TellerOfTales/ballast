@@ -131,7 +131,7 @@ export async function dispatch(agent, item) {
     items = [{ key, taskId: null }];
     prompt = P.cloudTask({ game, agent, key, task: { title: 'Message from the director', detail: item.text }, ...context(game, agent) });
   } else {
-    for (let i = 0; i < (game.claimBatch || 1); i++) {
+    for (let i = 0; i < orch.claimBatchFor(agent); i++) {
       const t = orch.claimForAgent(agent);
       if (!t) break;
       tasks.push(t);
@@ -158,6 +158,7 @@ export async function dispatch(agent, item) {
     }
   }
 
+  prompt = orch.policyNoteFor(agent) + prompt; // the game's usage rules in force on this account
   dispatching.add(agent.id);
   changed();
   try {

@@ -190,7 +190,7 @@ function tick() {
   reportsTick();
   const now = Date.now();
   for (const game of db.games) {
-    if (game.status === 'paused') continue;
+    if (game.status && game.status !== 'active') continue; // paused, shipped and archived games skip check-in builds
     const fired = (game.build.fired ||= {});
     for (const time of game.build.checkins || []) {
       const at = todayAt(time);

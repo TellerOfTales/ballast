@@ -1,6 +1,6 @@
 # Ballast
 
-A lightweight local app that leashes several Claude Code accounts into one game-dev team.
+Home base for **author developers**: solo developers making games entirely with AI. Ballast leashes several Claude Code accounts into one game-dev team, and keeps every game you're making, its output, its costs and its audience in one place.
 
 Each Claude account you add becomes an **agent**. Point a **game** at a repo, send it notes (gameplay review, art notes, direction) and every agent working in that repo picks them up. One agent splits each note into tasks on a shared **board**, the agents claim tasks and work them in parallel (each can also spin up its own subagents), and Ballast keeps them going until the board is empty. Run as many games side by side as you like.
 
@@ -74,14 +74,28 @@ Unity note: each worktree imports its own `Library` the first time it opens, whi
 
 ## Studio: all games and accounts at once
 
-The **Studio** page (top of the sidebar) is the cross-game view:
+The **Studio** page (top of the sidebar) is the author developer's home: every game, what it's producing, what it costs, and who it's for.
+
+- **Your output.** Tasks finished this week (against the week before), a 14-day chart with your streak of days with finished work, builds and captures this week, how many games are in development, shipped and archived, and weekly headroom across accounts.
+- **Costs.** What your plans cost a month (set each account's price with ✎ on the account; until then Ballast guesses from the plan: Pro $20, Max $100, Team $30), **cost per finished task** over the last 30 days, and the **API value** of Ballast's own runs: what they'd have cost on the API. Cloud sessions aren't metered, so cloud games show no API value.
+- **Games.** A card per live game plus a table of every game: status, age (or time to ship), tasks done this week and in total, open tasks, last activity, its **share of your output** over 30 days, its **share of your plan cost** (plans split by share of finished tasks, which is fair to cloud games too), API value, and its top audience from the latest Bartle Audit.
+- **Ship, archive, restore.** **Ship** records a release (version, platforms, store page, notes) and marks the game shipped: autopilot and check-in builds stop, but your notes still reach the agents for patches. **+ Release** records each update after that, and **Back to development** turns autopilot on again. **Archive** clears queued work and stops everything; archived games fold away at the bottom of the sidebar, keep their board, feed and stats, and come back with **Restore**.
+- **Audiences: Bartle Audit.** Tick the games to audit. Claude reads each one (repo, brief, board) and ranks Bartle's eight player subtypes by how well the game serves them: Planner and Opportunist (Achievers), Scientist and Hacker (Explorers), Networker and Friend (Socialisers), Politician and Griefer (Killers). For the top four you get the evidence in the game, what they'd want more of, a pitch, where to find them, content that lands, and what to say and avoid. Plus a positioning line, a store page draft, comparable games, a launch plan and audience risks. **Copy as Markdown** takes it anywhere. Opus by default, or Sonnet to go lighter on usage. It takes a few minutes per game and runs on the account with the most headroom.
 
 - **Accounts and limits.** Each account shows its **Session** (5-hour) and **Weekly** (7-day) limit, plus any per-model weekly limit, as a percentage with time to reset. The numbers come from Claude's own rate-limit reports, which arrive with every run. Idle accounts get a one-word probe on a small model every 30 minutes (about a fifth of a cent) so the numbers stay current. **Refresh** checks one now.
 - **Token usage.** Tokens and cost per account, per game and per day, for every run Ballast makes: agent turns, triage, artifact syncs, limit probes. Usage outside Ballast (claude.ai chats, your own terminal sessions) counts toward the limits above but not toward these totals. So do cloud sessions: their tokens aren't reported back.
 - **Usage reports.** During your **working hours** (Settings: default 09:00 to 18:00, Monday to Friday), every account reports its session and weekly limit, time to reset and today's tokens **every 90 minutes**. Stale numbers are refreshed first. Reports show on the Studio page with their history, **Report now** runs one immediately, and an optional Slack or Discord webhook gets each one. Background limit checks only run during working hours.
 - **Limit-aware routing.** Work goes to the agents whose accounts have the most headroom. Autopilot stops handing work to an account above 95% of either limit (configurable). Your own messages still go through.
-- **Games.** Every game's agents, board counts, last build and next check-in. You can **Pause** a game, which frees its accounts for other games, and set its **priority**, which decides who gets account time first when accounts are busy.
+- **Game cards.** Every game's agents, board counts, last build and next check-in. You can **Pause** a game, which frees its accounts for other games, and set its **priority**, which decides who gets account time first when accounts are busy.
 - **Note to several games.** One note, triaged separately onto each ticked game's board.
+
+### Per-game usage cap and rules
+
+Your games share the same few accounts, so each game decides how far into them it may go (game **Settings → Usage limits & rules**):
+
+- **Stop at** caps the game at a percentage of an account's session or weekly limit. Past it, the game's agents on that account stop taking work and show **held by usage rules**. Messages you send to one agent still go through. Work picks up again when the limit resets.
+- **Rules** change how agents work as an account fills up: *when session / weekly / either is over N%*, then one of: claim one task at a time, no delegate chats or subagents, switch to Sonnet or Haiku, lower effort, finish claimed tasks and claim nothing new, tell the agents something in your own words, tell me (feed and report webhook), or stop. **Add a prefilled rule** offers ready-made ones, and **Add the starter set** adds six that stretch an account across the week (one task at a time over 60% session, Sonnet over 70% weekly, a "keep it small" instruction over 75% weekly, no fan-out over 80% session, no new claims over 85% weekly, tell me over 90%).
+- Rules are checked before every turn against that agent's own account; the feed notes each time the set in force changes. Model and effort rules apply to agents on this PC (cloud sessions choose their own model); the rest apply to cloud agents too.
 
 ## Department tabs and review
 
@@ -247,6 +261,9 @@ builds/<game>/<id>/   build.log + output/
 | `src/mcp-server.mjs` | the stdio MCP server each local agent loads (board, feed, artifacts, claude.ai mirror) |
 | `src/scheduler.mjs` | check-in schedule, builds, limit probes, artifact syncs, cloud polling |
 | `src/usage.mjs` | token accounting and summaries |
+| `src/policy.mjs` | per-game usage cap and rules, and their presets |
+| `src/audits.mjs` | Bartle Audit: audience ranking and marketing plan per game |
+| `src/whisper.mjs` | local Whisper server for Director Review |
 | `src/cloud.mjs` | claude.ai artifact sync and review routing |
 | `src/remote.mjs` | cloud games: triage, cloud sessions, GitHub report polling |
 | `src/review.mjs` | departments, review modes, approve / request changes, auto-approve |

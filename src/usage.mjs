@@ -61,8 +61,18 @@ export function usageSummary(days = 14) {
   const now = new Date();
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (days - 1)).getTime();
   const weekStart = Date.now() - 7 * 86400e3;
+  const monthStart = Date.now() - 30 * 86400e3;
   const today = dayKey(Date.now());
-  const records = readJsonlTail(usageFile, 500000, 128 * 1024 * 1024).filter((r) => r.ts >= start);
+  const all = readJsonlTail(usageFile, 500000, 128 * 1024 * 1024);
+  // 30-day and all-time totals (API-equivalent cost of Ballast's own runs) for the Studio page.
+  const totals = { month: bucket(), all: bucket(), byGame: {}, byAccount: {}, since: all[0]?.ts || null };
+  for (const r of all) {
+    for (const map of [totals.byGame[r.gameId || '_none'] ||= { month: bucket(), all: bucket() }, totals.byAccount[r.accountId] ||= { month: bucket(), all: bucket() }, totals]) {
+      add(map.all, r);
+      if (r.ts >= monthStart) add(map.month, r);
+    }
+  }
+  const records = all.filter((r) => r.ts >= start);
 
   const series = [];
   for (let i = 0; i < days; i++) series.push({ day: dayKey(start + i * 86400e3 + 3600e3), byAccount: {}, total: 0 });
@@ -87,7 +97,7 @@ export function usageSummary(days = 14) {
       if (day === today) add(b.today, r);
     }
   }
-  const value = { days, series, accounts, games, kinds };
+  const value = { days, series, accounts, games, kinds, totals };
   cache = { at: Date.now(), value };
   return value;
 }

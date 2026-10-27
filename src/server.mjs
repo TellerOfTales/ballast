@@ -20,6 +20,7 @@ import * as targets from './targets.mjs';
 import * as assets from './assets.mjs';
 import * as reports from './reports.mjs';
 import * as whisper from './whisper.mjs';
+import * as audits from './audits.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PUBLIC = path.join(ROOT, 'public');
@@ -184,6 +185,8 @@ route('POST', '/api/games/:id/targets/share', (p) => targets.share(p.id));
 route('PATCH', '/api/targets/:id', (p, body) => targets.update(p.id, body));
 route('DELETE', '/api/targets/:id', (p) => targets.remove(p.id));
 route('POST', '/api/games/:id/tidy-transcript', (p, body) => orch.tidyTranscript(p.id, body));
+route('POST', '/api/audits', (_, body) => audits.start(body));
+route('DELETE', '/api/audits/:id', (p) => audits.remove(p.id));
 route('GET', '/api/whisper', () => whisper.info());
 route('POST', '/api/whisper/warm', () => whisper.warm());
 // One spoken phrase from Director Review. The prompt primes Whisper with the game's own words
@@ -303,6 +306,7 @@ server.on('error', (err) => {
 server.listen(PORT, HOST, async () => {
   orch.runtime.baseUrl = ORIGIN;
   await orch.init();
+  audits.init();
   startScheduler();
   console.log(`\n  BALLAST  ${ORIGIN}\n  data     ${paths.state}\n`);
   if (!argv.includes('--no-open')) openBrowser(ORIGIN);

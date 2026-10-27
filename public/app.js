@@ -166,7 +166,10 @@ const formData = (root) => Object.fromEntries($$('[name]', root).map((el) => [el
 // Sidebar
 
 function renderSide() {
-  const games = [...S.st.games].sort((a, b) => (a.status === 'paused') - (b.status === 'paused'));
+  const all = [...S.st.games].sort((a, b) => STATUS_ORDER[statusOf(a)] - STATUS_ORDER[statusOf(b)]);
+  const archived = all.filter((g) => statusOf(g) === 'archived');
+  // Archived games fold away; the one you have open stays visible.
+  const games = all.filter((g) => statusOf(g) !== 'archived' || S.showArchived || (S.view === 'game' && g.id === S.gameId));
   const running = S.st.agents.filter((a) => a.status === 'running').length; // delegate chats included
   const questions = openQuestions().length;
   $('#games').innerHTML = `<button class="game-link${S.view === 'studio' ? ' active' : ''}" data-act="studio">
@@ -177,12 +180,14 @@ function renderSide() {
     </button>` + (games.length ? games.map((g) => {
     const agents = agentsOf(g.id);
     const unread = S.unread[g.id] || 0;
-    return `<button class="game-link${S.view === 'game' && g.id === S.gameId ? ' active' : ''}${g.status === 'paused' ? ' paused' : ''}" data-act="game" data-id="${g.id}">
+    const s = statusOf(g);
+    return `<button class="game-link${S.view === 'game' && g.id === S.gameId ? ' active' : ''}${s !== 'active' ? ' paused' : ''}" data-act="game" data-id="${g.id}">
       <span class="gname">${esc(g.name)}</span>
       ${unread ? `<span class="badge">${unread}</span>` : ''}
-      ${g.status === 'paused' ? '<span class="hint" style="margin:0">paused</span>' : `<span class="dots">${agents.map((a) => `<span class="dot ${a.status}"></span>`).join('')}</span>`}
+      ${s !== 'active' ? `<span class="hint" style="margin:0">${s === 'shipped' ? '🚀 shipped' : STATUS_LABEL[s]}</span>` : `<span class="dots">${agents.map((a) => `<span class="dot ${a.status}"></span>`).join('')}</span>`}
     </button>`;
-  }).join('') : '<p class="hint" style="padding:0 10px">No games yet.</p>');
+  }).join('') : '<p class="hint" style="padding:0 10px">No games yet.</p>')
+    + (archived.length ? `<button class="game-link archived-toggle" data-act="toggle-archived"><span class="gname hint" style="margin:0">${S.showArchived ? '▾' : '▸'} Archived (${archived.length})</span></button>` : '');
 
   $('#accounts').innerHTML = S.st.accounts.length ? S.st.accounts.map(acctRow).join('') : '<p class="hint" style="padding:0 10px">Add each Claude account you want working.</p>';
 }
@@ -247,7 +252,9 @@ function renderHead() {
     const delegatesOpen = S.st.agents.filter((a) => a.parentId && !a.retired).length;
     const subs = S.st.agents.reduce((n, a) => n + (a.subagents?.active?.length || 0), 0);
     const t = Object.values(S.usage?.accounts || {}).reduce((sum, a) => sum + a.today.tokens, 0);
-    $('#ghead').innerHTML = `<div><h1>Studio</h1><span class="hint" style="margin:0">${S.st.games.length} games · ${S.st.agents.filter((a) => !a.parentId).length} agents${delegatesOpen ? ` + ${delegatesOpen} delegate chat${delegatesOpen > 1 ? 's' : ''}` : ''} · ${running} running${subs ? ` (+${subs} subagents)` : ''} · ${fmtTokens(t)} tokens today</span></div>
+    const inDev = S.st.games.filter((g) => ['active', 'paused'].includes(statusOf(g))).length;
+    const shipped = S.st.games.filter((g) => statusOf(g) === 'shipped').length;
+    $('#ghead').innerHTML = `<div><h1>Studio</h1><span class="hint" style="margin:0">Your games, their output and their audiences · ${inDev} in development${shipped ? ` · ${shipped} shipped` : ''} · ${S.st.agents.filter((a) => !a.parentId).length} agents${delegatesOpen ? ` + ${delegatesOpen} delegate chat${delegatesOpen > 1 ? 's' : ''}` : ''} · ${running} running${subs ? ` (+${subs} subagents)` : ''} · ${fmtTokens(t)} tokens today</span></div>
       <span class="spacer"></span>
       <button class="ghost small" data-act="probe-all" title="Re-check session and weekly limits on every account">Refresh limits</button>
       <button class="ghost small" data-act="sync-all" title="Re-read claude.ai artifacts and comments on every account">Sync claude.ai</button>`;
@@ -269,7 +276,8 @@ function renderHead() {
       const unlinked = agents.filter((a) => a.status === 'unlinked').length;
       return unlinked ? `<button class="primary small" data-act="cloud-connect-all" title="Nothing can start until each cloud agent has a session">Connect ${unlinked} cloud session${unlinked > 1 ? 's' : ''}</button>` : '';
     })()}
-    ${g.status === 'paused' ? '<span class="pill limited">paused</span>' : ''}
+    ${statusOf(g) !== 'active' ? `<span class="pill ${statusOf(g)}">${STATUS_LABEL[statusOf(g)]}${g.releases?.at(-1)?.version ? ` ${esc(g.releases.at(-1).version)}` : ''}</span>` : ''}
+    ${statusOf(g) === 'archived' ? `<button class="primary small" data-act="game-restore" data-id="${g.id}">Restore</button>` : ''}
     ${RS.active && RS.gameId === g.id ? '<button class="pill error" data-act="tab" data-tab="feed" title="Back to the review">● recording review</button>' : ''}
     ${(g.priority ?? 2) !== 2 ? `<span class="pill">${PRIORITY[g.priority]} priority</span>` : ''}
     <span class="spacer"></span>
@@ -398,9 +406,9 @@ function buildShell() {
 
 // The onboarding checklist also depends on login state, so it rebuilds when that changes.
 const shellKey = () => S.view === 'studio'
-  ? `studio|${S.st.games.map((g) => g.id + g.name).join()}|${S.st.accounts.length > 0}|${S.st.accounts.some((a) => a.loggedIn)}`
+  ? `studio|${S.st.games.map((g) => g.id + g.name + statusOf(g)).join()}|${S.st.accounts.length > 0}|${S.st.accounts.some((a) => a.loggedIn)}`
   : S.view === 'inbox' ? `inbox|${S.st.accounts.length > 0}`
-    : `${S.gameId}|${S.tab}|${S.st.accounts.length > 0}|${!!game()}|${!game() && S.st.accounts.some((a) => a.loggedIn)}`;
+    : `${S.gameId}|${S.tab}|${S.tab === 'settings' ? statusOf(game()) : ''}|${S.st.accounts.length > 0}|${!!game()}|${!game() && S.st.accounts.some((a) => a.loggedIn)}`;
 
 function renderLive() {
   if (shellKey() !== S.shellKey) buildShell();
@@ -432,7 +440,7 @@ function onboarding() {
   const loggedIn = S.st.accounts.some((a) => a.loggedIn);
   return `<div class="empty">
     <img src="logo.svg" alt="Ballast" style="width:260px;max-width:80%;margin:0 auto 14px;display:block">
-    <p>Every Claude account you add becomes an agent. Point a game at a repo, send notes to the whole team, and they split the work between themselves.</p>
+    <p><b>Home base for author developers:</b> solo developers making games entirely with AI. Every Claude account you add becomes an agent. Point a game at a repo, direct it with notes and play-session reviews, and track every game's output, costs and audience in one place.</p>
     <div class="steps">
       <div><b>1</b>Add your Claude accounts ${hasAcct ? '✓' : `<button class="primary small" data-act="new-account" style="float:right">Add account</button>`}</div>
       <div><b>2</b>Log each one in ${loggedIn ? '✓' : '<span class="hint" style="display:inline">(use Log in next to the account)</span>'}</div>
@@ -622,6 +630,7 @@ function statusPill(a) {
   if (a.status === 'running') return `<span class="pill running">running <span data-since="${a.startedAt}"></span></span>`;
   if (a.status === 'queued') return `<span class="pill queued">queued ${a.queue}</span>`;
   if (a.status === 'unlinked') return '<span class="pill limited" title="Connect a cloud session before it can take work">needs session</span>';
+  if (a.status === 'capped') return `<span class="pill limited" title="This game's usage cap or a stop rule is holding its ${a.queue} queued item(s) until the account's limits reset (game Settings)">held by usage rules</span>`;
   return `<span class="pill ${a.status}">${a.status}</span>`;
 }
 
@@ -942,15 +951,19 @@ async function openArtifact(id) {
 // ---------------------------------------------------------------------------
 // Studio: every account, every game
 
+// The Studio is an author developer's home: every game, what it's producing, what it costs,
+// and who it's for.
 function studioShell() {
-  const games = S.st.games;
+  const games = S.st.games.filter((g) => statusOf(g) !== 'archived');
   return `<div class="scroll pad studio" style="flex:1">
-    <section><div class="section-head"><h3>Accounts &amp; limits</h3><span class="hint">Session = 5-hour limit · Weekly = 7-day limit · autopilot pauses an account above ${S.st.settings.limitGuardPct}%</span></div><div class="acct-grid" id="st-accounts"></div></section>
+    <section><div class="section-head"><h3>Your output</h3><span class="hint">Finished work across every game, and what it costs you</span></div><div id="st-overview"></div></section>
+    <section><div class="section-head"><h3>Games</h3><span class="hint">In development, shipped and archived</span><button class="ghost small" data-act="new-game">+ New game</button></div><div class="game-grid" id="st-games"></div><div id="st-portfolio"></div></section>
+    <section><div class="section-head"><h3>Audiences</h3><span class="hint">Bartle Audit: which of Bartle's eight player types each game serves best, and how to reach them</span><button class="ghost small" data-act="audit-run">Run Bartle Audit</button></div><div id="st-audiences"></div></section>
+    <section><div class="section-head"><h3>Accounts &amp; limits</h3><span class="hint">Session = 5-hour limit · Weekly = 7-day limit · autopilot pauses an account above ${S.st.settings.limitGuardPct}% · games can set their own cap and rules (game Settings)</span></div><div class="acct-grid" id="st-accounts"></div></section>
     <section><div class="section-head"><h3>Usage reports</h3><span class="hint" id="st-reports-hint"></span><button class="ghost small" data-act="report-now">Report now</button></div><div class="card" id="st-reports"></div></section>
     <section><div class="section-head"><h3>Token usage</h3><span class="hint">Every Claude run Ballast makes: agent turns, artifact syncs, limit checks</span></div><div class="card" id="st-usage"></div></section>
-    <section><div class="section-head"><h3>Games</h3><button class="ghost small" data-act="new-game">+ New game</button></div><div class="game-grid" id="st-games"></div></section>
     <section><div class="section-head"><h3>Note to several games</h3></div>
-      <div class="targets">${games.map((g) => `<label class="check"><input type="checkbox" name="st-game" value="${g.id}" ${g.status === 'paused' ? '' : 'checked'}><span>${esc(g.name)}</span></label>`).join('')}</div>
+      <div class="targets">${games.map((g) => `<label class="check"><input type="checkbox" name="st-game" value="${g.id}" ${statusOf(g) === 'active' ? 'checked' : ''}><span>${esc(g.name)}</span></label>`).join('')}</div>
       <div class="studio-composer">${composer('studio', 'Studio-wide direction: shared tech, art style, a process change… Each ticked game triages it onto its own board.')}</div>
     </section>
     <section><div class="section-head"><h3>claude.ai artifacts</h3><button class="ghost small" data-act="cloud-track">+ Track a link</button></div><div id="st-cloud"></div></section>
@@ -967,8 +980,255 @@ function renderStudio() {
   $('#st-reports-hint').textContent = S.st.settings.usageReportMin
     ? `Every ${S.st.settings.usageReportMin} min during working hours: ${w.start || '?'}–${w.end || '?'}, ${(w.days || []).length === 7 ? 'every day' : (w.days || []).map((d) => dayNames[d]).join(' ')} (change in Settings)`
     : 'Scheduled reports are off (Settings)';
-  $('#st-games').innerHTML = S.st.games.map(gameCard).join('');
+  const live = S.st.games.filter((g) => statusOf(g) !== 'archived').sort((a, b) => STATUS_ORDER[statusOf(a)] - STATUS_ORDER[statusOf(b)]);
+  $('#st-games').innerHTML = live.map(gameCard).join('') || '<p class="hint">Everything is archived. Restore a game from the table below, or start a new one.</p>';
+  $('#st-overview').innerHTML = overviewPanel();
+  $('#st-portfolio').innerHTML = portfolioTable();
+  $('#st-audiences').innerHTML = audiencesPanel();
   $('#st-cloud').innerHTML = cloudInbox();
+}
+
+// ---------------------------------------------------------------------------
+// Author developer stats: output, cost and portfolio
+
+const STATUS_LABEL = { active: 'in development', paused: 'paused', shipped: 'shipped', archived: 'archived' };
+const STATUS_ORDER = { active: 0, paused: 1, shipped: 2, archived: 3 };
+const statusOf = (g) => g?.status || 'active';
+const DAY = 86400e3;
+// Monthly price of each account's plan; set it on the account, otherwise a list-price guess.
+const PLAN_GUESS = { pro: 20, max: 100, team: 30 };
+const planPrice = (a) => (a.monthlyCost != null ? a.monthlyCost : PLAN_GUESS[String(a.plan || '').toLowerCase()] ?? 0);
+const planGuessed = (a) => a.monthlyCost == null;
+const doneTasks = (gid) => S.st.tasks.filter((t) => t.status === 'done' && t.doneAt && (!gid || t.gameId === gid));
+const doneIn = (list, from, to = Date.now()) => list.filter((t) => t.doneAt >= from && t.doneAt < to).length;
+const lastAuditOf = (gid) => [...(S.st.audits || [])].reverse().find((a) => a.gameId === gid && a.status === 'done');
+
+function lastActivity(g) {
+  const times = [...tasksOf(g.id).map((t) => t.updatedAt || t.createdAt || 0), ...S.st.builds.filter((b) => b.gameId === g.id).map((b) => b.startedAt || 0), ...agentsOf(g.id, { all: true }).map((a) => a.lastActive || 0)];
+  return Math.max(0, ...times);
+}
+
+function overviewPanel() {
+  const now = Date.now();
+  const done = doneTasks();
+  const week = doneIn(done, now - 7 * DAY);
+  const lastWeek = doneIn(done, now - 14 * DAY, now - 7 * DAY);
+  const month = doneIn(done, now - 30 * DAY);
+  const builds = S.st.builds.filter((b) => b.startedAt >= now - 7 * DAY);
+  const captures = S.st.artifacts.filter((a) => (a.createdAt || 0) >= now - 7 * DAY).length;
+  const counts = Object.fromEntries(Object.keys(STATUS_LABEL).map((s) => [s, S.st.games.filter((g) => statusOf(g) === s).length]));
+  // Tasks finished per day for the last 14 days, and the streak of days with something finished.
+  const today0 = new Date().setHours(0, 0, 0, 0);
+  const days = Array.from({ length: 14 }, (_, i) => { const from = today0 - (13 - i) * DAY; return { from, n: doneIn(done, from, from + DAY) }; });
+  let streak = 0;
+  for (let d = days[13].n ? today0 : today0 - DAY; doneIn(done, d, d + DAY) > 0; d -= DAY) streak++;
+  const max = Math.max(1, ...days.map((d) => d.n));
+  const spark = `<svg viewBox="0 0 140 36" class="spark">${days.map((d, i) => `<rect x="${i * 10 + 1}" y="${36 - (d.n / max) * 34}" width="8" height="${Math.max(1, (d.n / max) * 34)}" rx="1.5"><title>${new Date(d.from).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}: ${d.n} done</title></rect>`).join('')}</svg>`;
+  const plans = S.st.accounts.reduce((s, a) => s + planPrice(a), 0);
+  const guessed = S.st.accounts.some((a) => planGuessed(a) && a.plan);
+  const api = S.usage?.totals?.month?.cost || 0;
+  const perTask = month ? plans / month : 0;
+  const trend = week === lastWeek ? '' : week > lastWeek ? `<span class="up">▲ ${week - lastWeek}</span>` : `<span class="down">▼ ${lastWeek - week}</span>`;
+  const headroom = S.st.accounts.filter((a) => a.loggedIn).map((a) => ({ a, left: 100 - Math.round(Math.max(0, ...windowsOf(a).filter((w) => /Weekly/.test(w.label)).map((w) => (w.utilization || 0) * 100))) })).sort((x, y) => y.left - x.left);
+  const tile = (label, value, sub = '') => `<div class="tile"><span>${label}</span><b>${value}</b>${sub ? `<small>${sub}</small>` : ''}</div>`;
+  return `<div class="tiles">
+    ${tile('Finished this week', `${week} ${trend}`, `${lastWeek} the week before · ${done.length} all time`)}
+    ${tile('Last 14 days', spark, streak ? `${streak}-day streak of finished work` : 'Nothing finished today yet')}
+    ${tile('Builds this week', `${builds.filter((b) => b.status === 'success' || b.status === 'checkin').length}<span class="of"> / ${builds.length}</span>`, `${captures} captures and artifacts this week`)}
+    ${tile('Games', `${counts.active + counts.paused}<span class="of"> in development</span>`, `${counts.shipped} shipped · ${counts.archived} archived`)}
+    ${tile('Plans', `${money(plans)}<span class="of"> / month</span>`, `${S.st.accounts.length} account${S.st.accounts.length === 1 ? '' : 's'}${guessed ? ' · some prices guessed: set them on each account (✎)' : ''}`)}
+    ${tile('Cost per finished task', month ? money(perTask) : '–', month ? `plans ÷ ${month} tasks in the last 30 days` : 'Finish some tasks first')}
+    ${tile('API value, 30 days', money(api), plans && api / plans >= 0.1 ? `${(api / plans).toFixed(1)}× your plans · runs on this PC only; cloud sessions aren't metered` : "runs on this PC only; cloud sessions aren't metered")}
+    ${tile('Weekly headroom', headroom.length ? `${headroom[0].left}%<span class="of"> left</span>` : '–', headroom.length ? `most on ${esc(headroom[0].a.name)}${headroom.length > 1 ? ` · least: ${esc(headroom.at(-1).a.name)} ${headroom.at(-1).left}%` : ''}` : 'No limit data yet')}
+  </div>`;
+}
+
+// Every game in one table. Plan cost is split by each game's share of the tasks finished in the
+// last 30 days, so cloud games (whose sessions aren't metered) get a fair share too.
+function portfolioTable() {
+  const now = Date.now();
+  const games = [...S.st.games].sort((a, b) => STATUS_ORDER[statusOf(a)] - STATUS_ORDER[statusOf(b)] || lastActivity(b) - lastActivity(a));
+  if (!games.length) return '';
+  const monthAll = doneIn(doneTasks(), now - 30 * DAY);
+  const plans = S.st.accounts.reduce((s, a) => s + planPrice(a), 0);
+  const rows = games.map((g) => {
+    const done = doneTasks(g.id);
+    const m = doneIn(done, now - 30 * DAY);
+    const share = monthAll ? m / monthAll : 0;
+    const s = statusOf(g);
+    const age = Math.max(1, Math.round(((g.shippedAt || now) - (g.createdAt || now)) / DAY));
+    const audit = lastAuditOf(g.id);
+    const rel = g.releases?.at(-1);
+    const api = S.usage?.totals?.byGame?.[g.id]?.month?.cost || 0;
+    const last = lastActivity(g);
+    return `<tr class="${s === 'archived' ? 'archived' : ''}">
+      <td><span class="link" data-act="game" data-id="${g.id}">${esc(g.name)}</span>${rel ? `<div class="hint" style="margin:0">${esc([rel.version, rel.platforms].filter(Boolean).join(' · '))}${rel.url ? ` · <a href="${esc(rel.url)}" target="_blank" rel="noopener">page</a>` : ''}</div>` : ''}</td>
+      <td><span class="pill ${s}">${STATUS_LABEL[s]}</span></td>
+      <td>${s === 'shipped' ? `shipped in ${age}d` : `${age}d`}</td>
+      <td><b>${doneIn(done, now - 7 * DAY)}</b> <span class="hint" style="display:inline">/ ${done.length}</span></td>
+      <td>${tasksOf(g.id).filter((t) => t.status === 'open' || t.status === 'claimed').length}</td>
+      <td>${last ? ago(last) : '–'}</td>
+      <td><span class="share"><i style="width:${Math.round(share * 100)}%"></i></span> ${Math.round(share * 100)}%</td>
+      <td>${plans && m ? money(plans * share) : '–'}</td>
+      <td>${api ? money(api) : '–'}</td>
+      <td>${audit ? `<span class="hint" style="display:inline" title="${esc(audit.result.top.map((t) => `${t.subtype} ${t.fit}`).join(', '))}">${esc(audit.result.top.slice(0, 2).map((t) => t.subtype).join(', '))}</span>` : '<span class="hint" style="display:inline">no audit</span>'}</td>
+      <td class="row-actions">${s === 'archived'
+        ? `<button class="ghost small" data-act="game-restore" data-id="${g.id}">Restore</button>`
+        : `${s !== 'shipped' ? `<button class="ghost small" data-act="game-ship" data-id="${g.id}">Ship</button>` : `<button class="ghost small" data-act="game-ship" data-id="${g.id}" title="Record another release">+ Release</button>`}<button class="ghost small" data-act="game-archive" data-id="${g.id}">Archive</button>`}</td>
+    </tr>`;
+  }).join('');
+  return `<div class="card" style="margin-top:12px;overflow-x:auto"><table class="tbl portfolio" style="margin-top:0"><thead><tr><th>Game</th><th>Status</th><th>Age</th><th>Done 7d / all</th><th>Open</th><th>Last activity</th><th>Share of output (30d)</th><th>Plan cost (30d)</th><th>API value (30d)</th><th>Audience</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+// ---------------------------------------------------------------------------
+// Bartle Audit
+
+const FAMILY_COLOR = { Achiever: 'var(--accent)', Explorer: 'var(--blue)', Socialiser: 'var(--green)', Killer: 'var(--red)' };
+
+function audiencesPanel() {
+  const games = S.st.games.filter((g) => statusOf(g) !== 'archived');
+  const cards = games.map((g) => {
+    const all = (S.st.audits || []).filter((a) => a.gameId === g.id);
+    const running = all.find((a) => a.status === 'running');
+    const latest = [...all].reverse().find((a) => a.status !== 'running');
+    if (!running && !latest) return '';
+    return auditCard(g, latest, running);
+  }).filter(Boolean);
+  return cards.length ? cards.join('') : '<p class="hint" style="margin:0">No audits yet. Run one to find out which kinds of players each game is really for, and get a marketing plan for each.</p>';
+}
+
+function auditCard(g, a, running) {
+  const head = `<div class="row"><b class="grow">${esc(g.name)}</b>
+    ${running ? `<span class="pill queued">auditing… ${dur(Date.now() - running.startedAt).split(' ')[0]}</span>` : ''}
+    ${a ? `<span class="hint" style="margin:0">${clock(a.finishedAt || a.startedAt)}${a.model ? ` · ${esc(a.model)}` : ''}</span>` : ''}
+    ${a?.status === 'done' ? `<button class="ghost small" data-act="audit-copy" data-id="${a.id}">Copy as Markdown</button>` : ''}
+    ${a ? `<button class="icon-btn" data-act="audit-delete" data-id="${a.id}" title="Remove this audit">✕</button>` : ''}</div>`;
+  if (!a) return `<div class="card audit">${head}<p class="hint">Reading the game: repo, brief and board. This takes a few minutes.</p></div>`;
+  if (a.status === 'error') return `<div class="card audit">${head}<p class="hint" style="color:var(--red)">${esc(a.error || 'Failed')}</p></div>`;
+  const r = a.result;
+  const list = (items) => (items?.length ? `<ul>${items.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : '');
+  return `<div class="card audit">${head}
+    <p class="positioning">${esc(r.positioning)}</p>
+    <p class="hint" style="margin:0 0 12px">${esc(r.summary)}</p>
+    <div class="bartle">${r.top.map((t, i) => `<div class="btype" style="--fam:${FAMILY_COLOR[t.family] || 'var(--muted)'}">
+        <div class="row"><b class="grow">${i + 1}. ${esc(t.subtype)}</b><span class="fam">${esc(t.family)}</span></div>
+        <div class="fit"><i style="width:${t.fit}%"></i></div><small>${t.fit}% fit</small>
+        <p>${esc(t.pitch)}</p></div>`).join('')}</div>
+    <div class="ranking hint">All eight: ${r.ranking.map((x) => `${esc(x.subtype)} ${x.fit}`).join(' · ')}</div>
+    <details data-audit="${a.id}" ${S.openAudits?.has(a.id) ? 'open' : ''}><summary>Marketing plan</summary>
+      ${r.top.map((t) => `<div class="bplan"><h4 style="color:${FAMILY_COLOR[t.family] || 'inherit'}">${esc(t.subtype)} <span class="hint" style="display:inline">${esc(t.family)}</span></h4>
+        <p>${esc(t.why)}</p>
+        <div class="two-col"><div><b>In the game now</b>${list(t.evidence)}</div><div><b>What they'd want more of</b>${list(t.gaps)}</div>
+        <div><b>Where to find them</b>${list(t.channels)}</div><div><b>Content that lands</b>${list(t.content)}</div>
+        <div><b>Say</b>${list(t.say)}</div><div><b>Avoid</b>${list(t.avoid)}</div></div></div>`).join('')}
+      <div class="bplan"><h4>Store page draft</h4><p style="white-space:pre-wrap">${esc(r.storeCopy)}</p></div>
+      <div class="two-col"><div><b>Launch plan</b>${r.launchPlan?.length ? `<ol>${r.launchPlan.map((x) => `<li>${esc(x)}</li>`).join('')}</ol>` : ''}</div><div><b>Comparable games</b>${list(r.comparables)}<b>Risks</b>${list(r.risks)}</div></div>
+    </details></div>`;
+}
+
+// The Studio redraws on every update; remember which marketing plans are open.
+document.addEventListener('toggle', (e) => {
+  const id = e.target.dataset?.audit;
+  if (!id) return;
+  S.openAudits ||= new Set();
+  if (e.target.open) S.openAudits.add(id);
+  else S.openAudits.delete(id);
+}, true);
+
+function auditMarkdown(a) {
+  const g = S.st.games.find((x) => x.id === a.gameId);
+  const r = a.result;
+  const bullets = (items) => (items || []).map((x) => `- ${x}`).join('\n');
+  return `# ${g?.name || 'Game'}: Bartle Audit (${new Date(a.finishedAt).toLocaleDateString()})
+
+**${r.positioning}**
+
+${r.summary}
+
+## Top audiences
+${r.top.map((t, i) => `${i + 1}. **${t.subtype}** (${t.family}), ${t.fit}% fit: ${t.pitch}`).join('\n')}
+
+All eight: ${r.ranking.map((x) => `${x.subtype} ${x.fit}`).join(', ')}
+
+${r.top.map((t) => `## ${t.subtype} (${t.family})
+${t.why}
+
+**In the game now**
+${bullets(t.evidence)}
+
+**What they'd want more of**
+${bullets(t.gaps)}
+
+**Where to find them**
+${bullets(t.channels)}
+
+**Content that lands**
+${bullets(t.content)}
+
+**Say**
+${bullets(t.say)}
+
+**Avoid**
+${bullets(t.avoid)}`).join('\n\n')}
+
+## Store page draft
+${r.storeCopy}
+
+## Launch plan
+${(r.launchPlan || []).map((x, i) => `${i + 1}. ${x}`).join('\n')}
+
+## Comparable games
+${bullets(r.comparables)}
+
+## Risks
+${bullets(r.risks)}
+`;
+}
+
+function auditModal() {
+  const games = S.st.games.filter((g) => statusOf(g) !== 'archived');
+  if (!games.length) return toast('Create a game first.', true);
+  modal({
+    title: 'Bartle Audit',
+    body: `<p class="hint" style="margin-top:0">Claude reads each game (repo, brief, board) and ranks Bartle's eight player subtypes by how well the game serves them, then writes a marketing plan for the top four: where to find them, what content lands, what to say and avoid, a store page draft and a launch plan.</p>
+      <div class="targets" style="margin:10px 0">${games.map((g) => `<label class="check"><input type="checkbox" name="g" value="${g.id}" ${statusOf(g) === 'paused' ? '' : 'checked'}><span>${esc(g.name)} <span class="hint" style="display:inline">${STATUS_LABEL[statusOf(g)]}${lastAuditOf(g.id) ? `, last audited ${ago(lastAuditOf(g.id).finishedAt)}` : ''}</span></span></label>`).join('')}</div>
+      <label class="field"><span>Model</span><select name="model"><option value="opus">Opus (best judgement)</option><option value="sonnet">Sonnet (faster, lighter on usage)</option></select><small>Each game takes a few minutes and runs on the account with the most headroom.</small></label>`,
+    actions: [
+      { label: 'Cancel' },
+      {
+        label: 'Run audit', kind: 'primary', onClick: async (root) => {
+          const gameIds = $$('input[name="g"]:checked', root).map((i) => i.value);
+          if (!gameIds.length) throw new Error('Pick at least one game.');
+          const r = await api('POST', '/api/audits', { gameIds, model: $('select[name="model"]', root).value });
+          toast(r.started ? `Auditing ${r.started} game${r.started > 1 ? 's' : ''}…` : 'Those games are already being audited.');
+        },
+      },
+    ],
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Game life cycle: ship, archive, restore
+
+function shipModal(id) {
+  const g = S.st.games.find((x) => x.id === id);
+  const again = statusOf(g) === 'shipped';
+  modal({
+    title: again ? `New release: ${g.name}` : `Ship ${g.name}`,
+    body: `<p class="hint" style="margin-top:0">${again ? 'Record an update you shipped.' : 'Marks the game as shipped. Autopilot stops, check-in builds stop, and your notes still reach the agents for patches. You can move it back into development any time.'}</p>
+      <div class="two"><label class="field"><span>Version</span><input name="version" placeholder="1.0"></label>
+      <label class="field"><span>Platforms</span><input name="platforms" placeholder="Quest, Steam, itch.io…"></label></div>
+      <label class="field"><span>Store or game page</span><input name="url" placeholder="https://…"></label>
+      <label class="field"><span>Release notes</span><textarea name="notes" rows="3"></textarea></label>`,
+    actions: [
+      { label: 'Cancel' },
+      { label: again ? 'Record release' : 'Mark as shipped', kind: 'primary', onClick: async (root) => {
+        const f = formData(root);
+        await api('PATCH', `/api/games/${id}`, { status: 'shipped', release: f, ...(again ? { releaseOnly: true } : {}) });
+        toast(again ? 'Release recorded' : `${g.name} shipped 🎉`);
+      } },
+    ],
+  });
 }
 
 function accountCard(a) {
@@ -1042,10 +1302,13 @@ function gameCard(g) {
   const next = nextCheckin(g.build.checkins);
   const t = S.usage?.games?.[g.id]?.today;
   const reviews = S.st.cloudArtifacts.filter((c) => c.gameId === g.id);
-  return `<div class="card game-card${g.status === 'paused' ? ' paused' : ''}">
+  const s = statusOf(g);
+  const rel = g.releases?.at(-1);
+  return `<div class="card game-card${s === 'paused' ? ' paused' : ''}${s === 'shipped' ? ' shipped' : ''}">
     <div class="row"><b class="grow link" data-act="game" data-id="${g.id}">${esc(g.name)}</b>
-      ${g.status === 'paused' ? '<span class="pill limited">paused</span>' : ''}
-      <span class="pill">${PRIORITY[g.priority ?? 2]}</span></div>
+      ${s !== 'active' ? `<span class="pill ${s}">${STATUS_LABEL[s]}${s === 'shipped' && rel?.version ? ` ${esc(rel.version)}` : ''}</span>` : ''}
+      ${s === 'active' ? `<span class="pill">${PRIORITY[g.priority ?? 2]}</span>` : ''}</div>
+    ${g.usagePolicy?.cap || g.usagePolicy?.rules?.some((r) => r.on) ? `<div class="hint" style="margin:6px 0 0">${g.usagePolicy.cap ? `Stops at ${g.usagePolicy.cap}% of an account` : 'No cap'} · ${g.usagePolicy.rules.filter((r) => r.on).length} usage rule${g.usagePolicy.rules.filter((r) => r.on).length === 1 ? '' : 's'}${agents.some((a) => a.status === 'capped') ? ' · <b style="color:var(--accent)">holding work now</b>' : ''}</div>` : ''}
     <div class="row" style="margin:8px 0">${agents.map((a) => `<span class="dot ${a.status}" title="${esc(a.name)}: ${a.status}"></span>`).join('') || '<span class="hint" style="margin:0">no agents</span>'}
       <span class="hint" style="margin:0 0 0 6px">${agents.filter((a) => a.status === 'running').length}/${agents.length} running</span></div>
     <div class="stats">
@@ -1058,10 +1321,13 @@ function gameCard(g) {
     <div class="hint">${t ? `${fmtTokens(t.tokens)} tokens · ${money(t.cost)} today` : 'No tokens today'}${reviews.length ? ` · ${reviews.length} claude.ai artifact${reviews.length > 1 ? 's' : ''}` : ''}</div>
     <div class="row" style="margin-top:10px">
       <button class="btn small" data-act="game" data-id="${g.id}">Open</button>
-      <button class="ghost small" data-act="game-status" data-id="${g.id}" data-status="${g.status === 'paused' ? 'active' : 'paused'}">${g.status === 'paused' ? 'Resume' : 'Pause'}</button>
+      ${s === 'shipped'
+        ? `<button class="ghost small" data-act="game-status" data-id="${g.id}" data-status="active" title="Autopilot picks up open tasks again">Back to development</button>`
+        : `<button class="ghost small" data-act="game-status" data-id="${g.id}" data-status="${s === 'paused' ? 'active' : 'paused'}">${s === 'paused' ? 'Resume' : 'Pause'}</button>
+      <button class="ghost small" data-act="game-ship" data-id="${g.id}">Ship</button>
       <select class="mini" data-act-change="game-priority" data-id="${g.id}" title="Which game gets account time first when accounts are busy">
         ${[3, 2, 1].map((p) => `<option value="${p}"${(g.priority ?? 2) === p ? ' selected' : ''}>${PRIORITY[p]} priority</option>`).join('')}
-      </select>
+      </select>`}
     </div>
   </div>`;
 }
@@ -1948,7 +2214,12 @@ function settingsForm(g) {
       <label class="field"><span>Subagents per agent</span><select name="subagentLimit">${opt('', g.subagentLimit == null ? '' : 'x', `Studio default (${S.st.settings.subagentLimit || 'no limit'})`)}${[0, 1, 2, 3, 4, 6, 8, 12, 16].map((n) => opt(String(n), g.subagentLimit == null ? 'x' : String(g.subagentLimit), n === 0 ? 'No limit' : `${n} at once`)).join('')}</select><small>Short-lived helpers inside one chat. Enforced on this PC; cloud agents are asked to keep to it.</small></label>
     </div>
     <div class="two">
-      <label class="field"><span>Status</span><select name="status">${opt('active', g.status || 'active', 'Active')}${opt('paused', g.status, 'Paused (agents stop picking up work)')}</select></label>
+      <div class="field"><span class="field-label">Status</span><div class="row" style="gap:6px;flex-wrap:wrap">
+        <span class="pill ${statusOf(g)}">${STATUS_LABEL[statusOf(g)]}</span>
+        ${statusOf(g) === 'active' ? `<button type="button" class="ghost small" data-act="game-status" data-id="${g.id}" data-status="paused">Pause</button>` : ''}
+        ${statusOf(g) === 'paused' || statusOf(g) === 'shipped' ? `<button type="button" class="ghost small" data-act="game-status" data-id="${g.id}" data-status="active">${statusOf(g) === 'shipped' ? 'Back to development' : 'Resume'}</button>` : ''}
+        ${statusOf(g) !== 'archived' ? `<button type="button" class="ghost small" data-act="game-ship" data-id="${g.id}">${statusOf(g) === 'shipped' ? '+ Release' : 'Mark as shipped'}</button><button type="button" class="ghost small" data-act="game-archive" data-id="${g.id}">Archive</button>` : `<button type="button" class="primary small" data-act="game-restore" data-id="${g.id}">Restore</button>`}
+      </div><small>${statusOf(g) === 'shipped' ? `Shipped ${new Date(g.shippedAt).toLocaleDateString()}${g.releases?.length > 1 ? ` · ${g.releases.length} releases` : ''}. Autopilot is off; your notes still reach the agents.` : statusOf(g) === 'archived' ? 'Nothing runs. Restore it to bring it back into development.' : 'Shipped games keep taking your notes for patches; archived games stop entirely.'}</small></div>
       <label class="field"><span>Priority</span><select name="priority">${[3, 2, 1].map((p) => opt(String(p), String(g.priority ?? 2), `${PRIORITY[p][0].toUpperCase()}${PRIORITY[p].slice(1)}`)).join('')}</select><small>Which game gets account time first when accounts are busy.</small></label>
     </div>
     ${g.briefSuggestion ? `<div class="card suggestion"><b>Suggested brief</b> <span class="hint" style="display:inline">from the project survey</span><div class="md" style="margin:8px 0">${md(g.briefSuggestion)}</div>
@@ -1970,6 +2241,19 @@ function settingsForm(g) {
       <label class="field"><span>Effort</span><select name="effort">${opt('', g.effort, 'Default')}${['low', 'medium', 'high', 'xhigh', 'max'].map((e) => opt(e, g.effort)).join('')}</select></label>
       <label class="field"><span>Repo</span><input value="${esc(g.repoPath)}" disabled><small>${g.isolation === 'worktree' ? `Worktrees in ${esc(g.repoPath)}.ballast · shared line ${esc(g.integrationBranch)}` : 'Shared working tree'}</small></label>
     </div>
+    </div>
+
+    <h3>Usage limits &amp; rules</h3>
+    <p class="hint" style="margin-top:-4px">Accounts are shared between your games. Decide how far into each account's limits this game may go, and how its agents should work as an account fills up. Rules are checked before every turn against that agent's own account.</p>
+    <div class="two">
+      <label class="field"><span>Stop at</span><select name="usageCap">${opt('', g.usagePolicy?.cap ? 'x' : '', 'No cap (studio guard only)')}${[50, 60, 70, 75, 80, 85, 90, 95].map((n) => opt(String(n), String(g.usagePolicy?.cap || ''), `${n}% of session or weekly`)).join('')}</select><small>Past this, the game's agents on that account stop taking work (messages you send one agent still go through). They pick up again when the limit resets.</small></label>
+      <div class="field"><span class="field-label">Right now</span>${policyNow(g)}</div>
+    </div>
+    <div id="rules">${(g.usagePolicy?.rules || []).map(ruleRow).join('')}</div>
+    <div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap">
+      <button type="button" class="ghost small" data-act="rule-add">+ Rule</button>
+      <select class="mini" id="rule-preset"><option value="">Add a prefilled rule…</option>${S.st.policy.presets.map((p, i) => `<option value="${i}">${esc(ruleText(p))}</option>`).join('')}</select>
+      <button type="button" class="ghost small" data-act="rule-starter" title="Six rules that stretch an account across the week">Add the starter set</button>
     </div>
 
     <h3>Builds &amp; check-ins</h3>
@@ -1995,13 +2279,73 @@ function settingsForm(g) {
   </form>`;
 }
 
+// ---- Usage rules editor (rows are plain DOM; saved with the settings form)
+
+const ruleText = (r) => `${S.st.policy.metrics[r.metric].replace(/ \(.+\)/, '')} over ${r.above}% → ${r.action === 'instruct' ? `tell agents "${r.text.slice(0, 50)}…"` : S.st.policy.actions[r.action]}`;
+
+function ruleRow(r = { metric: 'weekly', above: 80, action: 'one-task', on: true }) {
+  const opt = (v, cur, label) => `<option value="${esc(v)}"${v === cur ? ' selected' : ''}>${esc(label)}</option>`;
+  return `<div class="rule${r.on === false ? ' off' : ''}" data-rule="${esc(r.id || '')}">
+    <input type="checkbox" class="r-on" title="Rule on" ${r.on === false ? '' : 'checked'}>
+    <span>When</span><select class="mini r-metric">${Object.entries(S.st.policy.metrics).map(([k, l]) => opt(k, r.metric, l)).join('')}</select>
+    <span>is over</span><input class="r-above" type="number" min="1" max="100" value="${r.above}"><span>%</span>
+    <select class="mini r-action">${Object.entries(S.st.policy.actions).map(([k, l]) => opt(k, r.action, l)).join('')}</select>
+    <button type="button" class="icon-btn" data-act="rule-remove" title="Remove rule">✕</button>
+    <input class="r-text" placeholder="What should the agents do? e.g. Only fix bugs; no new features" value="${esc(r.text || '')}" ${r.action === 'instruct' ? '' : 'hidden'}>
+  </div>`;
+}
+
+function readRules() {
+  return $$('#rules .rule').map((el) => ({
+    id: el.dataset.rule || undefined,
+    on: $('.r-on', el).checked,
+    metric: $('.r-metric', el).value,
+    above: Number($('.r-above', el).value),
+    action: $('.r-action', el).value,
+    text: $('.r-text', el).value,
+  }));
+}
+
+function addRuleRows(rules) {
+  const box = $('#rules');
+  for (const r of rules) box.insertAdjacentHTML('beforeend', ruleRow({ ...r, id: '' }));
+  toast(`${rules.length} rule${rules.length > 1 ? 's' : ''} added. Save to apply.`);
+}
+
+// Each account this game's agents use, with its usage and what the policy does on it now.
+function policyNow(g) {
+  const accts = [...new Set(agentsOf(g.id).map((a) => a.accountId))].map(acctOf).filter(Boolean);
+  if (!accts.length) return '<span class="hint">No agents yet.</span>';
+  const pct = (a, kind) => Math.round(Math.max(0, ...windowsOf(a).filter((w) => (kind === 'session' ? w.label === 'Session' : /Weekly/.test(w.label))).map((w) => (w.utilization || 0) * 100)));
+  return accts.map((a) => {
+    const s = pct(a, 'session');
+    const w = pct(a, 'weekly');
+    const p = g.usagePolicy || {};
+    const hit = (r) => r.on && (r.metric === 'session' ? s : r.metric === 'weekly' ? w : Math.max(s, w)) >= r.above;
+    const capped = p.cap && Math.max(s, w) >= p.cap;
+    const live = (p.rules || []).filter(hit);
+    return `<div class="hint" style="margin:2px 0"><b style="color:var(--text)">${esc(a.name)}</b> session ${s}% · weekly ${w}% → ${capped ? '<b style="color:var(--accent)">capped: holding work</b>' : live.length ? esc(live.map((r) => (r.action === 'instruct' ? 'custom instruction' : S.st.policy.actions[r.action].replace(/ \(.+\)/, ''))).join(', ')) : 'normal'}</div>`;
+  }).join('');
+}
+
 function bindSettings(g) {
+  $('#rule-preset').onchange = (e) => {
+    if (e.target.value === '') return;
+    addRuleRows([S.st.policy.presets[Number(e.target.value)]]);
+    e.target.value = '';
+  };
+  $('#rules').addEventListener('change', (e) => {
+    const row = e.target.closest('.rule');
+    if (e.target.classList.contains('r-action')) $('.r-text', row).hidden = e.target.value !== 'instruct';
+    if (e.target.classList.contains('r-on')) row.classList.toggle('off', !e.target.checked);
+  });
   $('#game-settings').onsubmit = async (e) => {
     e.preventDefault();
     const f = formData(e.target);
     try {
       await api('PATCH', `/api/games/${g.id}`, {
-        name: f.name, leadAgentId: f.leadAgentId || null, brief: f.brief, autopilot: f.autopilot, status: f.status, priority: Number(f.priority),
+        usagePolicy: { cap: f.usageCap, rules: readRules() },
+        name: f.name, leadAgentId: f.leadAgentId || null, brief: f.brief, autopilot: f.autopilot, priority: Number(f.priority),
         coordinatorFile: f.coordinatorFile, claimBatch: Number(f.claimBatch), delegateLimit: f.delegateLimit, subagentLimit: f.subagentLimit,
         permissionMode: f.permissionMode, model: f.model, effort: f.effort,
         build: { command: f.command, checkins: f.checkins, outputPath: f.outputPath, shareDir: f.shareDir, webhookUrl: f.webhookUrl, timeoutMin: f.timeoutMin, agentReport: f.agentReport },
@@ -2049,6 +2393,7 @@ function editAccountModal(id) {
     title: `Account: ${a.name}`,
     body: `<label class="field"><span>Name</span><input name="name" value="${esc(a.name)}"></label>
       <label class="field"><span>Parallel turns on this account</span><input name="maxConcurrent" type="number" min="1" value="${a.maxConcurrent || S.st.settings.maxConcurrentPerAccount}"><small>How many of this account's agents may run at the same time.</small></label>
+      <label class="field"><span>Plan price per month (USD)</span><input name="monthlyCost" type="number" min="0" step="1" value="${a.monthlyCost ?? ''}" placeholder="${planPrice(a) ? `${planPrice(a)} (guessed from the ${esc(a.plan || '')} plan)` : 'e.g. 100'}"><small>Used for cost per finished task and each game's share of your plans on the Studio page.</small></label>
       <p class="hint">${a.loggedIn ? `${esc(a.email || '')} · ${esc(a.plan || '')}${a.org ? ` · ${esc(a.org)}` : ''}` : 'Not logged in'}<br>Config folder: ${esc(a.configDir)}</p>
       ${a.limited ? `<label class="check"><input type="checkbox" name="clearLimit"><span>Clear the usage-limit pause now</span></label>` : ''}`,
     actions: [
@@ -2300,6 +2645,22 @@ const ACTIONS = {
     toast(`Syncing claude.ai on ${ids.length} account${ids.length === 1 ? '' : 's'}…`);
   },
   'game-status': (d) => api('PATCH', `/api/games/${d.id}`, { status: d.status }),
+  'game-ship': (d) => shipModal(d.id),
+  'game-archive': (d) => {
+    const g = S.st.games.find((x) => x.id === d.id);
+    confirmModal(`Archive ${g.name}?`, 'Queued work is cleared and nothing runs on it any more. Its board, feed, builds and stats are kept, and you can restore it any time.', 'Archive', () => api('PATCH', `/api/games/${d.id}`, { status: 'archived' }));
+  },
+  'game-restore': (d) => api('PATCH', `/api/games/${d.id}`, { status: 'active' }),
+  'toggle-archived': () => { S.showArchived = !S.showArchived; renderSide(); },
+  'audit-run': auditModal,
+  'audit-delete': (d) => api('DELETE', `/api/audits/${d.id}`),
+  'audit-copy': async (d) => {
+    const a = S.st.audits.find((x) => x.id === d.id);
+    try { await navigator.clipboard.writeText(auditMarkdown(a)); toast('Copied the audit as Markdown'); } catch { modal({ title: 'Bartle Audit', wide: true, body: `<textarea style="width:100%;height:60vh">${esc(auditMarkdown(a))}</textarea>`, actions: [{ label: 'Done' }] }); }
+  },
+  'rule-add': () => $('#rules').insertAdjacentHTML('beforeend', ruleRow()),
+  'rule-remove': (_, el) => el.closest('.rule').remove(),
+  'rule-starter': () => addRuleRows(S.st.policy.presets.filter((p) => p.starter)),
   'cloud-track': (d) => trackModal({ url: d.url || '', accountId: d.account || '', discipline: d.discipline || '' }),
   'cloud-edit': (d) => editCloudModal(d.id),
   'cloud-read': async (d) => {
