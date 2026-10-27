@@ -1198,6 +1198,8 @@ const rsText = () => RS.segments.filter((s) => !s.rejected && s.text.trim())
 // Chrome's recognizer is much more accurate when its accent setting matches the speaker.
 const SPEECH_LANGS = [['en-US', 'English (US)'], ['en-GB', 'English (UK)'], ['en-CA', 'English (Canada)'], ['en-AU', 'English (Australia)'], ['en-IE', 'English (Ireland)'], ['en-NZ', 'English (NZ)'], ['en-IN', 'English (India)'], ['fr-CA', 'Français (Canada)'], ['fr-FR', 'Français'], ['es-ES', 'Español'], ['de-DE', 'Deutsch']];
 const speechLang = () => load('speechLang') || navigator.language || 'en-US';
+// Whisper (on this PC) when it's installed; the browser's recognizer otherwise.
+const speechEngine = () => (RS.whisper?.installed && load('speechEngine') !== 'browser' ? 'whisper' : 'browser');
 
 function rsSaveDraft() {
   store(RS_DRAFT, JSON.stringify({ gameId: RS.gameId, segments: RS.segments, elapsed: rsElapsed(), at: Date.now() }));
@@ -1221,7 +1223,7 @@ function rsRender() {
   if (!$('.rs-text', el)) {
     el.innerHTML = `<div class="rs-head"></div>
       <div class="rs-text" id="rs-text"><div class="rs-empty hint">Start playing and talk through what you notice. Say "mark that" to flag a moment. Click any line to correct it, ✕ to leave it out, or type a line below. Screenshots pasted into the box under this panel go out with your notes.</div><div class="rs-interim"></div></div>
-      <div class="rs-add"><input id="rs-add" placeholder="Type a line (Enter adds it at the current time)…" autocomplete="off"><select id="rs-lang" title="Speech recognition accent: matching yours makes it much more accurate">${SPEECH_LANGS.map(([v, l]) => `<option value="${v}"${v === speechLang() ? ' selected' : ''}>${l}</option>`).join('')}</select></div>`;
+      <div class="rs-add"><input id="rs-add" placeholder="Type a line (Enter adds it at the current time)…" autocomplete="off">${RS.whisper?.installed ? `<select id="rs-engine" title="Who turns your speech into text"><option value="whisper"${speechEngine() === 'whisper' ? ' selected' : ''}>Whisper (this PC)</option><option value="browser"${speechEngine() === 'browser' ? ' selected' : ''}>Chrome</option></select>` : ''}<select id="rs-lang" title="Speech recognition accent: matching yours makes it much more accurate">${SPEECH_LANGS.map(([v, l]) => `<option value="${v}"${v === speechLang() ? ' selected' : ''}>${l}</option>`).join('')}</select></div>`;
     $('#rs-add', el).addEventListener('keydown', (e) => {
       if (e.key !== 'Enter' || !e.target.value.trim()) return;
       e.preventDefault();
@@ -1235,13 +1237,20 @@ function rsRender() {
       // Restart recognition so the new accent takes effect straight away.
       if (RS.active && !RS.paused) { try { RS.rec?.stop(); } catch { /* restarts on end */ } RS.rec = null; rsListen(); }
     };
+    if ($('#rs-engine', el)) $('#rs-engine', el).onchange = (e) => {
+      store('speechEngine', e.target.value);
+      whStop(true);
+      RS.interim = '';
+      if (RS.active && !RS.paused) { try { RS.rec?.stop(); } catch { /* restarts on end */ } RS.rec = null; rsListen(); }
+      rsRender();
+    };
   }
   const state = RS.paused ? 'Paused' : RS.active ? 'Listening… talk as you play' : 'Stopped';
   const kept = RS.segments.filter((s) => !s.mark && !s.rejected).length;
   const rejected = RS.segments.filter((s) => s.rejected).length;
   $('.rs-head', el).innerHTML = `
       <span class="rec-dot${RS.active && !RS.paused ? ' on' : ''}"></span><b>Director Review</b>
-      <span class="rs-time">${mmss(rsElapsed())}</span><span class="hint" style="margin:0">${state} · ${kept} lines${rejected ? ` · ${rejected} left out` : ''}</span>
+      <span class="rs-time">${mmss(rsElapsed())}</span><span class="hint" style="margin:0">${state} · ${kept} lines${rejected ? ` · ${rejected} left out` : ''}${speechEngine() === 'whisper' ? ` · Whisper${RS.whPending ? `, writing ${RS.whPending}…` : ''}` : ''}</span>
       <span class="spacer"></span>
       <button class="ghost small" data-act="review-mark" title="Drop a marker here. Or just say &quot;mark that&quot; while you play.">★ Mark moment</button>
       <button class="ghost small" data-act="review-pause">${RS.paused ? 'Resume' : 'Pause'}</button>
@@ -1272,7 +1281,7 @@ function rsRender() {
     x.textContent = s.rejected ? '↺' : '✕';
     x.title = s.rejected ? 'Put this line back' : 'Leave this line out';
   });
-  interimEl.innerHTML = RS.interim ? `<span class="rs-t">${mmss(rsElapsed())}</span>${esc(RS.interim)}` : '';
+  interimEl.innerHTML = RS.interim ? `<span class="rs-t">${mmss(rsElapsed())}</span>${esc(RS.interim)}${speechEngine() === 'whisper' ? ' …' : ''}` : '';
   if (stick && !editing) box.scrollTop = box.scrollHeight;
 }
 
@@ -1291,8 +1300,13 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && e.target.closest?.('.rs-say')) { e.preventDefault(); e.target.blur(); }
 });
 
+// With Whisper, Chrome's recognizer still runs, but only to show words live as you talk; the
+// line that's kept is Whisper's, written a moment after each phrase ends.
 function rsListen() {
+  const whisper = speechEngine() === 'whisper';
+  if (whisper) whStart();
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return;
   const rec = new SR();
   rec.continuous = true;
   rec.interimResults = true;
@@ -1302,14 +1316,15 @@ function rsListen() {
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const text = e.results[i][0].transcript.trim();
       if (!text) continue;
-      if (e.results[i].isFinal) rsAddSpeech(text);
-      else interim += `${text} `;
+      if (!e.results[i].isFinal) interim += `${text} `;
+      else if (!whisper) rsAddSpeech(text);
     }
     RS.interim = interim.trim();
-    rsSaveDraft();
+    if (!whisper) rsSaveDraft();
     rsRender();
   };
   rec.onerror = (e) => {
+    if (whisper) return; // only the live preview is affected
     if (e.error === 'not-allowed' || e.error === 'service-not-allowed' || e.error === 'audio-capture') {
       RS.active = false;
       toast(e.error === 'audio-capture' ? 'No microphone found. Plug one in and try again.' : 'Microphone access was blocked. Allow it for this page (address bar) and try again.', true);
@@ -1324,7 +1339,7 @@ function rsListen() {
   rec.onend = () => {
     if (RS.rec !== rec) return;
     if (RS.interim) {
-      rsAddSpeech(RS.interim);
+      if (!whisper) rsAddSpeech(RS.interim);
       RS.interim = '';
       rsSaveDraft();
       rsRender();
@@ -1335,18 +1350,137 @@ function rsListen() {
   rec.start();
 }
 
+// Whisper capture: record the mic, cut it into phrases at pauses (a simple loudness gate that
+// adapts to the room), and send each phrase to Ballast to transcribe on this PC, in order.
+const WH = { ctx: null, stream: null, node: null, phrase: null, preroll: [], floor: 0.004, queue: Promise.resolve() };
+const WH_TAP = `registerProcessor('rs-tap', class extends AudioWorkletProcessor {
+  constructor() { super(); this.b = new Float32Array(2048); this.n = 0; }
+  process(inputs) {
+    const ch = inputs[0][0];
+    if (ch) for (let i = 0; i < ch.length; i++) { this.b[this.n++] = ch[i]; if (this.n === this.b.length) { this.port.postMessage(this.b); this.b = new Float32Array(2048); this.n = 0; } }
+    return true;
+  }
+});`;
+const PHRASE_END_MS = 800; // this much quiet ends a phrase
+const PHRASE_MAX_MS = 25000; // long monologues are cut so lines keep coming
+
+async function whStart() {
+  if (WH.ctx) return;
+  WH.ctx = 'starting';
+  api('POST', '/api/whisper/warm').catch(() => {});
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } });
+    const ctx = new AudioContext();
+    await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([WH_TAP], { type: 'text/javascript' })));
+    if (WH.ctx !== 'starting') { stream.getTracks().forEach((tr) => tr.stop()); ctx.close(); return; } // stopped while opening
+    const node = new AudioWorkletNode(ctx, 'rs-tap');
+    node.port.onmessage = (e) => whFrame(e.data, ctx.sampleRate);
+    ctx.createMediaStreamSource(stream).connect(node);
+    Object.assign(WH, { ctx, stream, node, phrase: null, preroll: [] });
+  } catch (err) {
+    WH.ctx = null;
+    toast(err.name === 'NotAllowedError' ? 'Microphone access was blocked. Allow it for this page (address bar) and try again.' : `Couldn't open the microphone: ${err.message}`, true);
+  }
+}
+
+function whFrame(frame, rate) {
+  if (!RS.active || RS.paused) return;
+  const ms = (frame.length / rate) * 1000;
+  let sum = 0;
+  for (let i = 0; i < frame.length; i++) sum += frame[i] * frame[i];
+  const rms = Math.sqrt(sum / frame.length);
+  // The noise floor drops quickly to the room's level and creeps up slowly, so talking doesn't raise it.
+  WH.floor = rms < WH.floor ? WH.floor * 0.8 + rms * 0.2 : WH.floor * 0.998 + rms * 0.002;
+  const voiced = rms > Math.max(WH.floor * 3, 0.006);
+  const p = WH.phrase;
+  if (!p) {
+    WH.preroll.push(frame);
+    if (WH.preroll.length * ms > 400) WH.preroll.shift();
+    if (voiced) {
+      WH.phrase = { frames: WH.preroll, rate, t: Math.max(0, rsElapsed() - WH.preroll.length * ms), voicedMs: ms, quietMs: 0, ms: WH.preroll.length * ms };
+      WH.preroll = [];
+    }
+    return;
+  }
+  p.frames.push(frame);
+  p.ms += ms;
+  if (voiced) { p.voicedMs += ms; p.quietMs = 0; } else p.quietMs += ms;
+  if (p.quietMs >= PHRASE_END_MS || p.ms >= PHRASE_MAX_MS) whFlush();
+}
+
+function whFlush() {
+  const p = WH.phrase;
+  WH.phrase = null;
+  if (!p || p.voicedMs < 250) return;
+  const audio = whWav(p.frames, p.rate);
+  const t = p.t;
+  const tEnd = rsElapsed();
+  const gen = RS.gen;
+  const gameId = RS.gameId;
+  RS.whPending = (RS.whPending || 0) + 1;
+  rsRender();
+  WH.queue = WH.queue.then(async () => {
+    try {
+      const context = RS.segments.filter((s) => !s.mark && !s.rejected).at(-1)?.text || '';
+      const r = await api('POST', `/api/games/${gameId}/transcribe`, { audio, lang: speechLang().slice(0, 2), context });
+      if (r.text && gen === RS.gen) { rsAddSpeech(r.text, t, tEnd); rsSaveDraft(); }
+    } catch (err) {
+      if (!RS.whWarned) { RS.whWarned = true; toast(`${err.message} Switch the engine to Chrome under the transcript if it keeps failing.`, true); }
+    } finally {
+      RS.whPending--;
+      if (gen === RS.gen) rsRender();
+    }
+  });
+}
+
+function whStop(flush) {
+  if (flush) whFlush();
+  else WH.phrase = null;
+  if (WH.ctx && WH.ctx !== 'starting') {
+    WH.stream.getTracks().forEach((tr) => tr.stop());
+    WH.ctx.close().catch(() => {});
+  }
+  Object.assign(WH, { ctx: null, stream: null, node: null, preroll: [] });
+}
+
+// 16 kHz mono 16-bit WAV, base64: what whisper.cpp reads directly.
+function whWav(frames, rate) {
+  const total = frames.reduce((n, f) => n + f.length, 0);
+  const ratio = rate / 16000;
+  const n = Math.floor(total / ratio);
+  const buf = new ArrayBuffer(44 + n * 2);
+  const v = new DataView(buf);
+  const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  str(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); str(8, 'WAVEfmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, 16000, true); v.setUint32(28, 32000, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); str(36, 'data'); v.setUint32(40, n * 2, true);
+  const all = new Float32Array(total);
+  let o = 0;
+  for (const f of frames) { all.set(f, o); o += f.length; }
+  for (let i = 0; i < n; i++) {
+    // Average the samples that fold into each output sample (a simple low-pass before downsampling).
+    const a = Math.floor(i * ratio);
+    const b = Math.min(total, Math.max(a + 1, Math.floor((i + 1) * ratio)));
+    let s = 0;
+    for (let j = a; j < b; j++) s += all[j];
+    v.setInt16(44 + i * 2, Math.max(-1, Math.min(1, s / (b - a))) * 0x7fff, true);
+  }
+  const bytes = new Uint8Array(buf);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
 // Saying "mark that" / "mark moment" while playing drops a ★ marker (you can't click mid-game).
 const MARK_RE = /\b(?:mark(?:ed)?|work)\s+(?:that|this|it|here|(?:the\s+)?moment)\b/i;
 // Speech arrives in short bursts; anything within 10 seconds of the last line joins it,
 // so the transcript reads as sentences instead of fragments.
 const JOIN_MS = 10000;
 
-function rsAddSpeech(text) {
-  const t = rsElapsed();
+function rsAddSpeech(text, t = rsElapsed(), tEnd = t) {
   if (MARK_RE.test(text)) {
     const rest = text.replace(MARK_RE, '').replace(/\s{2,}/g, ' ').trim();
     RS.segments.push({ t, text: rest ? `marked: ${rest}` : 'marked moment', mark: true });
-    RS.lastSpeechAt = t;
+    RS.lastSpeechAt = tEnd;
     return;
   }
   const last = RS.segments.at(-1);
@@ -1355,18 +1489,20 @@ function rsAddSpeech(text) {
   const joinable = last && !last.mark && !last.edited && !last.typed && !last.rejected && focused !== String(RS.segments.length - 1);
   if (joinable && t - (RS.lastSpeechAt ?? -Infinity) < JOIN_MS) last.text = `${last.text} ${text}`;
   else RS.segments.push({ t, text });
-  RS.lastSpeechAt = t;
+  RS.lastSpeechAt = tEnd;
 }
 
-function reviewStart() {
-  if (!(window.SpeechRecognition || window.webkitSpeechRecognition)) {
+async function reviewStart() {
+  if (RS.active) return;
+  RS.whisper = await api('GET', '/api/whisper').catch(() => null);
+  if (!RS.whisper?.installed && !(window.SpeechRecognition || window.webkitSpeechRecognition)) {
     return modal({ title: 'Voice review needs Chrome or Edge', body: '<p>This browser has no speech recognition. Open Ballast in Chrome or Microsoft Edge to talk through a review. Typing notes in the box works everywhere.</p>', actions: [{ label: 'OK' }] });
   }
   if (RS.active) return;
   let draft = null;
   try { draft = JSON.parse(load(RS_DRAFT) || 'null'); } catch { /* none */ }
   const begin = (resume) => {
-    Object.assign(RS, { active: true, paused: false, interim: '', gameId: S.gameId, pausedMs: 0, pausedAt: 0, lastSpeechAt: undefined, netWarned: false });
+    Object.assign(RS, { active: true, paused: false, interim: '', gameId: S.gameId, pausedMs: 0, pausedAt: 0, lastSpeechAt: undefined, netWarned: false, whWarned: false, whPending: 0, gen: (RS.gen || 0) + 1 });
     RS.segments = resume ? draft.segments : [];
     RS.startedAt = Date.now() - (resume ? draft.elapsed : 0);
     rsListen();
@@ -1383,7 +1519,9 @@ function reviewStart() {
   } else begin(false);
 }
 
-function reviewStop() {
+// flush: send the phrase in progress to Whisper (Done) rather than drop it (Discard).
+function reviewStop(flush = false) {
+  whStop(flush);
   RS.active = false;
   RS.paused = false;
   RS.interim = '';
@@ -1392,9 +1530,13 @@ function reviewStop() {
   clearInterval(RS.timer);
 }
 
-function reviewDone() {
+async function reviewDone() {
   const minutes = Math.max(1, Math.round(rsElapsed() / 60000));
-  reviewStop();
+  reviewStop(true);
+  if (RS.whPending) {
+    toast('Writing the last lines…');
+    await WH.queue;
+  }
   rsSaveDraft();
   $('#review-session')?.remove();
   const text = rsText();
@@ -2132,13 +2274,14 @@ const ACTIONS = {
       RS.paused = false;
       rsListen();
     } else {
+      whFlush(); // the phrase you were mid-way through still gets written
       RS.paused = true;
       RS.pausedAt = Date.now();
       try { RS.rec?.stop(); } catch { /* not running */ }
     }
     rsRender();
   },
-  'review-discard': () => confirmModal('Discard this review?', 'The transcript so far will be deleted.', 'Discard', () => { reviewStop(); store(RS_DRAFT, ''); $('#review-session')?.remove(); }),
+  'review-discard': () => confirmModal('Discard this review?', 'The transcript so far will be deleted.', 'Discard', () => { RS.gen = (RS.gen || 0) + 1; reviewStop(); store(RS_DRAFT, ''); $('#review-session')?.remove(); }),
   'queue-earlier': async () => { const r = await api('POST', `/api/games/${S.gameId}/queue-earlier`); toast(`Queued ${r.queued} for review${r.skipped ? `, ${r.skipped} filed as not your field` : ''}`); },
   'review-all': async (d) => { const r = await api('POST', `/api/games/${S.gameId}/approve-all`, { discipline: d.d }); toast(`Approved ${r.approved}`); },
   'q-answer': (d) => answerModal(d.id),

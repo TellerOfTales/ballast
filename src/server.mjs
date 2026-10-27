@@ -19,6 +19,7 @@ import * as deptnotes from './deptnotes.mjs';
 import * as targets from './targets.mjs';
 import * as assets from './assets.mjs';
 import * as reports from './reports.mjs';
+import * as whisper from './whisper.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PUBLIC = path.join(ROOT, 'public');
@@ -183,6 +184,16 @@ route('POST', '/api/games/:id/targets/share', (p) => targets.share(p.id));
 route('PATCH', '/api/targets/:id', (p, body) => targets.update(p.id, body));
 route('DELETE', '/api/targets/:id', (p) => targets.remove(p.id));
 route('POST', '/api/games/:id/tidy-transcript', (p, body) => orch.tidyTranscript(p.id, body));
+route('GET', '/api/whisper', () => whisper.info());
+route('POST', '/api/whisper/warm', () => whisper.warm());
+// One spoken phrase from Director Review. The prompt primes Whisper with the game's own words
+// and the line before, which is most of what makes names come out right.
+route('POST', '/api/games/:id/transcribe', (p, body) => {
+  const game = orch.getGame(p.id);
+  const words = [...new Set(db.tasks.filter((t) => t.gameId === p.id).slice(-40).map((t) => t.title.replace(/^\s*\[[^\]]+\]\s*/, '').replace(/^Changes to #\d+:\s*/, '')))];
+  const prompt = `${game?.name || 'Game'} playtest notes. ${words.join('. ')}. ${String(body.context || '').slice(-300)}`;
+  return whisper.transcribe({ audio: body.audio, lang: body.lang, prompt });
+});
 route('POST', '/api/games/:id/dept-notes', (p, body) => deptnotes.add(p.id, body));
 route('POST', '/api/dept-notes/:id/breakdown', (p) => deptnotes.breakDownNow(p.id));
 route('DELETE', '/api/dept-notes/:id', (p) => deptnotes.remove(p.id));
@@ -305,6 +316,7 @@ function openBrowser(url) {
 
 function shutdown() {
   orch.shutdown();
+  whisper.stop();
   flush();
   process.exit(0);
 }
