@@ -106,7 +106,7 @@ route('PATCH', '/api/settings', (_, body) => {
     const days = (Array.isArray(body.workHours.days) ? body.workHours.days : []).map(Number).filter((n) => n >= 0 && n <= 6);
     db.settings.workHours = { start: t(body.workHours.start, '09:00'), end: t(body.workHours.end, '18:00'), days };
   }
-  for (const key of ['reviewAutoApproveHours', 'deliveryHeadsUpMin', 'deptNoteFallbackMin', 'usageReportMin']) if (body[key] !== undefined) db.settings[key] = Math.max(0, Number(body[key]) || 0);
+  for (const key of ['reviewAutoApproveHours', 'deliveryHeadsUpMin', 'deptNoteFallbackMin', 'usageReportMin', 'subagentLimit', 'delegateLimit', 'delegateDepth']) if (body[key] !== undefined) db.settings[key] = Math.max(0, Number(body[key]) || 0);
   for (const key of ['maxConcurrentPerAccount', 'autopilotDailyTurns']) if (body[key] !== undefined) db.settings[key] = Math.max(1, Number(body[key]) || 1);
   for (const key of ['limitRefreshMin', 'cloudSyncMin', 'contentRefreshMin']) if (body[key] !== undefined) db.settings[key] = Math.max(0, Number(body[key]) || 0);
   if (body.limitGuardPct !== undefined) db.settings.limitGuardPct = Math.min(100, Math.max(1, Number(body.limitGuardPct) || 95));

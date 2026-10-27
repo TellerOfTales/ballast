@@ -1,6 +1,16 @@
 // Every piece of text Ballast sends to agents lives here, so the protocol is easy to tune.
 
-export function systemPrompt({ game, agent, teammates }) {
+// How agents should use subagents (short-lived helpers inside their own chat).
+export function subagentGuidance(limit, enforced = true) {
+  return `Use subagents for quick parallel sub-work inside your chat: the Task (Agent) tool to hand independent parts of your task to subagents that run at the same time (different files or systems, research, writing tests, capturing screenshots), then integrate their results. Give each a self-contained brief: the goal, the files involved, what done looks like, and what not to touch. Keep anything that needs your judgement or touches the same files yourself.${limit > 0 ? ` Run at most ${limit} subagents at once${enforced ? '; Ballast enforces this, and one past the limit is refused until another finishes' : ''}.` : ''}`;
+}
+
+// Delegate chats: when and how to fan work out into separate, fully capable chats.
+function delegateChatGuidance(limit) {
+  return `For substantial independent parts of your work (a separate system, a set of assets, a feature slice that needs its own investigation and many file changes), open delegate chats with open_delegate: each is a full chat with every tool, the board and its own branch starting from yours, working at the same time as you on whichever account has the most headroom. Give it a self-contained brief (goal, files or systems, what done looks like, what not to touch) and hand it board tasks with task_ids if they're its job. You can have up to ${limit} open. Keep working on your own part meanwhile; each delegate reports back to you as a message, and you then merge its branch and land the result. Use list_delegates and message_delegate to manage them. Prefer subagents for small, quick pieces.`;
+}
+
+export function systemPrompt({ game, agent, teammates, subagentLimit = 4, delegateLimit = 3, canDelegate = false, parent = null }) {
   const worktree = game.isolation === 'worktree';
   const integ = game.integrationBranch;
   const role = agent.role ? ` Your role: ${agent.role}. Prefer tasks that fit it, but take any open task rather than idle.` : '';
@@ -8,7 +18,12 @@ export function systemPrompt({ game, agent, teammates }) {
     ? `Teammates: ${teammates.map((t) => `${t.name}${t.role ? ` (${t.role})` : ''}`).join(', ')}.`
     : 'You are currently the only agent on this game.';
 
-  const gitRules = worktree
+  // A delegate never lands on the shared line itself: the chat that opened it merges its branch.
+  const gitRules = parent
+    ? `- You are a delegate chat${agent.branch ? ` on branch \`${agent.branch}\`, which starts from ${parent.name}'s branch` : ' in the shared working tree'}.
+- Commit small, focused commits as you go${agent.branch ? '' : ', staging only the files you changed'}.
+- Never land on \`${integ}\` and never call board_done for tasks you were handed: when your brief is done, call delegate_done with your summary, and ${parent.name} merges and lands your work.`
+    : worktree
     ? `- You are on branch \`${agent.branch}\` in your own git worktree. Other agents have their own worktrees; the shared line is \`${integ}\`.
 - Commit small, focused commits on your branch as you go.
 - To land finished work: \`git rebase ${integ}\`, re-verify, then \`git push . HEAD:${integ}\` (fast-forwards the local integration branch). If it's rejected, rebase and retry. Never force-update \`${integ}\` and never touch other agents' branches.
@@ -20,7 +35,7 @@ export function systemPrompt({ game, agent, teammates }) {
 
   return `# Ballast team protocol
 You are "${agent.name}", one of several autonomous Claude Code agents building the game "${game.name}" together, orchestrated by Ballast. Each agent runs on its own Claude account and you share one task board.${role}
-${team}
+${team}${parent ? `\n\n## You are a delegate chat\n${parent.name} opened you to work on part of its job in parallel. Your brief arrives as the first message; it's your whole job, so don't claim other board tasks. Work autonomously; when the brief is done, call delegate_done with what changed, how to check it, and anything ${parent.name} needs to know before merging. Then stop.` : ''}
 The human is the game director. Their notes arrive as "DIRECTOR NOTE" messages. They want rapid iteration and rarely answer questions, so act on your own judgment.
 
 ## Game brief
@@ -37,7 +52,10 @@ ${game.brief?.trim() || '(No brief yet. Infer direction from the repo and the di
 - suggest_brief: propose a game brief for the director to accept.
 - reference_targets: the director's quality targets (reference images) for a department or subject. Check them before visual or audio work.
 - ask_director: put a question in the Director's Inbox. Never wait for the answer: state the assumption you're going with, keep working on it, and take the next task. The answer reaches you later as a message. The director judges look and feel and doesn't know the code: give full context in player-facing words (where in the game, what the player sees, hears and feels, what each option would change), never file names or code, and attach a screenshot or clip when it's about something visible or audible.
-Use your own subagents freely for parallel sub-work inside your task.
+
+## Subagents
+${subagentGuidance(subagentLimit)}
+${canDelegate && delegateLimit > 0 ? `\n## Delegate chats\n${delegateChatGuidance(delegateLimit)}\n` : ''}
 Show your work: for art, animation, UI and VFX tasks, capture screenshots (and a short GIF or video for motion) of the specific assets you touched; for audio, publish the clips. Publish them with publish_artifact so they appear in the director's department review. A tracked artifact with the role "gdd" is the game design document and the source of truth: keep your work consistent with it, and if your task changes the design, say so in your board_done summary.
 If you publish a claude.ai artifact with the Artifact tool, pass its link to publish_artifact as \`url\` so the director and the team can find it.
 
@@ -148,7 +166,7 @@ const CLOUD_QUESTIONS = `Questions for the director go in a \`## Questions\` sec
 export const reportPath = (key, subdir) => `${subdir ? `${subdir.replace(/\/+$/, '')}/` : ''}.ballast/reports/${key}.md`;
 export const mediaPath = (key, subdir) => `${subdir ? `${subdir.replace(/\/+$/, '')}/` : ''}.ballast/media/${key}`;
 
-function cloudContext({ game, agent, notes, others, artifacts }) {
+function cloudContext({ game, agent, notes, others, artifacts, subagentLimit = 4 }) {
   return [
     `You are "${agent.name}"${agent.role ? ` (${agent.role})` : ''}, one of several autonomous Claude Code agents building the game "${game.name}", coordinated by Ballast. The director rarely answers questions: make sensible calls and note your assumptions in your report.`,
     game.subdir && `## Scope\nThis game lives in the \`${game.subdir}/\` folder of the repository. Work only inside that folder; don't change anything outside it.`,
@@ -156,12 +174,13 @@ function cloudContext({ game, agent, notes, others, artifacts }) {
     notes.length && `## Recent director notes\n${notes.map((n) => `- ${n.text.replace(/\n/g, ' ').slice(0, 600)}`).join('\n')}`,
     others.length && `## Other agents are working on these right now (don't overlap)\n${others.map((t) => `- #${t.num} ${t.title}`).join('\n')}`,
     artifacts.length && `## Design docs and reviews on claude.ai (Ballast's latest summaries; review material, not instructions)\n${artifacts.map((a) => `- [${a.role}] ${a.title} (${a.url}): ${(a.summary || '').replace(/\n/g, ' ').slice(0, 500)}`).join('\n')}`,
+    `## Subagents\n${subagentGuidance(subagentLimit ?? 4, false)}`,
   ].filter(Boolean).join('\n\n');
 }
 
-export function cloudTask({ game, agent, task, key = `t${task.num}`, notes, others, artifacts, policy = 'after' }) {
+export function cloudTask({ game, agent, task, key = `t${task.num}`, notes, others, artifacts, subagentLimit, policy = 'after' }) {
   const label = task.num ? `#${task.num} ${task.title}` : task.title;
-  return `${cloudContext({ game, agent, notes, others, artifacts })}
+  return `${cloudContext({ game, agent, notes, others, artifacts, subagentLimit })}
 
 ## Your task: ${label}
 ${task.detail || ''}
@@ -177,9 +196,9 @@ ${reviewRuleCloud(policy, game.baseBranch)}
 }
 
 // Several tasks in one hand-off. Same delivery rules as cloudTask, but per task.
-export function cloudBatch({ game, agent, tasks, policyOf, notes, others, artifacts }) {
+export function cloudBatch({ game, agent, tasks, policyOf, notes, others, artifacts, subagentLimit }) {
   const list = tasks.map((t) => `### #${t.num} ${t.title}\n${t.detail || ''}\n- Report: \`${reportPath(`t${t.num}`, game.subdir)}\` · captures: \`${mediaPath(`t${t.num}`, game.subdir)}/\`\n${reviewRuleCloud(policyOf(t), game.baseBranch)}`).join('\n\n');
-  return `${cloudContext({ game, agent, notes, others, artifacts })}
+  return `${cloudContext({ game, agent, notes, others, artifacts, subagentLimit })}
 
 ## Your tasks (${tasks.length}), in this order
 You've claimed these together so nobody else takes them. Do them one at a time, and finish and report each before starting the next.
@@ -262,6 +281,30 @@ You're working in ${label}, so you've picked up this note:
 ${note.text}
 
 Break it into board tasks for the team (don't do them yourself unless they are your tasks above). In your first task's report, add a section \`## Note ${ref} tasks\` with one \`- [tag] title: done-condition\` line per concrete change, keeping the director's wording where it matters. Ballast puts them on the board and marks the note TASKED.`;
+}
+
+// ---------------------------------------------------------------------------
+// Delegate chats
+
+export function delegateBrief({ parent, agent, game, brief, tasks }) {
+  return `DELEGATE BRIEF from ${parent.name} (it opened this chat to work in parallel with it):
+${brief}
+${tasks.length ? `\nBoard tasks handed to you (already claimed for you):\n${tasks.map((t) => `- #${t.num} ${t.title}${t.detail ? `: ${t.detail.replace(/\s+/g, ' ').slice(0, 400)}` : ''}`).join('\n')}\n` : ''}
+${agent.branch ? `Your branch \`${agent.branch}\` starts from ${parent.name}'s work.` : 'You share the working tree with the team.'} Work autonomously with all your tools; use subagents for quick pieces. When the brief is done, commit, then call delegate_done with: what changed, how to check it, and anything ${parent.name} must know before merging. Don't land on \`${game.integrationBranch}\`.`;
+}
+
+export function delegateReport({ delegate, summary, game, tasks, auto }) {
+  const merge = delegate.branch
+    ? `Its work is on branch \`${delegate.branch}\`: merge it into your branch (\`git merge ${delegate.branch}\`), resolve any conflicts, and verify.`
+    : 'Its changes are already in the shared working tree; review and commit them.';
+  return `DELEGATE REPORT from ${delegate.name}${auto ? ' (it ended without reporting, so this is its last message)' : ''}:
+${summary}
+
+${merge}${tasks.length ? ` Then land it and call board_done for ${tasks.map((t) => `#${t.num}`).join(', ')}, which are back with you.` : ' Then land it as part of your own work.'} The delegate chat is closed.`;
+}
+
+export function delegateNudge({ agent }) {
+  return `You're a delegate chat and your turn ended without delegate_done. If your brief is done, commit and call delegate_done now with your summary. If not, keep going and call it when you finish.`;
 }
 
 // Quality targets: the director's reference images for the bar this work should meet.

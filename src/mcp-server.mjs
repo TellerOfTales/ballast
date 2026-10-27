@@ -88,6 +88,35 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
   },
   {
+    name: 'open_delegate',
+    description: "Open a delegate chat: a new, fully capable Claude chat (every tool, the board, its own branch starting from yours) that works on part of your job at the same time as you, on whichever account has the most headroom. It reports back to you as a message when done; you then merge its branch. Use it for substantial independent parts; use subagents for small quick pieces.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        brief: { type: 'string', description: 'Self-contained: the goal, files or systems involved, what done looks like, what not to touch.' },
+        name: { type: 'string', description: 'Optional short name, e.g. "Nat1-props".' },
+        role: { type: 'string' },
+        task_ids: { type: 'array', items: { type: 'integer' }, description: 'Board tasks to hand over (open ones, or ones you hold).' },
+      },
+      required: ['brief'],
+    },
+  },
+  {
+    name: 'delegate_done',
+    description: 'Delegate chats only: report back to the chat that opened you when your brief is done. Include what changed, how to check it, and anything needed before merging. Closes this chat.',
+    inputSchema: { type: 'object', properties: { summary: { type: 'string' } }, required: ['summary'] },
+  },
+  {
+    name: 'list_delegates',
+    description: 'Your delegate chats, their status, what they hold, and their reports.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'message_delegate',
+    description: 'Send a message to one of your open delegate chats (more context, a change of plan, an answer).',
+    inputSchema: { type: 'object', properties: { name: { type: 'string' }, text: { type: 'string' } }, required: ['name', 'text'] },
+  },
+  {
     name: 'reference_targets',
     description: "The director's quality targets: reference images (or clips) that set the quality bar per department. With no arguments, returns the ones matching your current task. Open the returned files with Read.",
     inputSchema: {

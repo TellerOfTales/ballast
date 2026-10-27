@@ -47,7 +47,8 @@ function toast(text, isErr = false) {
 const fail = (err) => toast(err.message || String(err), true);
 
 const game = () => S.st?.games.find((g) => g.id === S.gameId);
-const agentsOf = (gid) => S.st.agents.filter((a) => a.gameId === gid);
+// Delegate chats that reported back are closed; only the Agents tab tree still lists them.
+const agentsOf = (gid, { all = false } = {}) => S.st.agents.filter((a) => a.gameId === gid && (all || !a.retired));
 const acctOf = (id) => S.st.accounts.find((a) => a.id === id);
 const agentOf = (id) => S.st.agents.find((a) => a.id === id);
 const tasksOf = (gid) => S.st.tasks.filter((t) => t.gameId === gid);
@@ -166,7 +167,7 @@ const formData = (root) => Object.fromEntries($$('[name]', root).map((el) => [el
 
 function renderSide() {
   const games = [...S.st.games].sort((a, b) => (a.status === 'paused') - (b.status === 'paused'));
-  const running = S.st.agents.filter((a) => a.status === 'running').length;
+  const running = S.st.agents.filter((a) => a.status === 'running').length; // delegate chats included
   const questions = openQuestions().length;
   $('#games').innerHTML = `<button class="game-link${S.view === 'studio' ? ' active' : ''}" data-act="studio">
       <span class="gname">Studio</span><span class="hint" style="margin:0">${running ? `${running} running` : 'overview'}</span>
@@ -243,8 +244,10 @@ function renderHead() {
   if (S.view === 'studio') {
     if (!S.st.accounts.length) { $('#ghead').innerHTML = ''; return; }
     const running = S.st.agents.filter((a) => a.status === 'running').length;
+    const delegatesOpen = S.st.agents.filter((a) => a.parentId && !a.retired).length;
+    const subs = S.st.agents.reduce((n, a) => n + (a.subagents?.active?.length || 0), 0);
     const t = Object.values(S.usage?.accounts || {}).reduce((sum, a) => sum + a.today.tokens, 0);
-    $('#ghead').innerHTML = `<div><h1>Studio</h1><span class="hint" style="margin:0">${S.st.games.length} games · ${S.st.agents.length} agents · ${running} running · ${fmtTokens(t)} tokens today</span></div>
+    $('#ghead').innerHTML = `<div><h1>Studio</h1><span class="hint" style="margin:0">${S.st.games.length} games · ${S.st.agents.filter((a) => !a.parentId).length} agents${delegatesOpen ? ` + ${delegatesOpen} delegate chat${delegatesOpen > 1 ? 's' : ''}` : ''} · ${running} running${subs ? ` (+${subs} subagents)` : ''} · ${fmtTokens(t)} tokens today</span></div>
       <span class="spacer"></span>
       <button class="ghost small" data-act="probe-all" title="Re-check session and weekly limits on every account">Refresh limits</button>
       <button class="ghost small" data-act="sync-all" title="Re-read claude.ai artifacts and comments on every account">Sync claude.ai</button>`;
@@ -626,16 +629,30 @@ function renderAgentList() {
   const el = $('#agent-list');
   if (!el) return;
   const g = game();
-  const agents = agentsOf(g.id);
-  el.innerHTML = agents.map((a) => {
+  const agents = agentsOf(g.id, { all: true });
+  // A tree: main agents, with the delegate chats they opened nested beneath them. Finished
+  // delegates fold into a count so the list stays about what's working now.
+  const card = (a, depth) => {
     const acct = acctOf(a.accountId);
     const held = S.st.tasks.find((t) => t.claimedBy === a.id && t.status === 'claimed');
-    return `<button class="agent-card${a.id === S.agentId ? ' active' : ''}" data-act="agent-select" data-id="${a.id}">
-      <div class="row">${avatar(a.name, a.id)}<span class="name">${esc(a.name)}${g.leadAgentId === a.id ? ' <span class="hint" style="display:inline">lead</span>' : ''}</span>${statusPill(a)}</div>
-      <div class="meta">${esc([a.role, acct?.name, a.branch].filter(Boolean).join(' · '))}</div>
-      <div class="meta">${held ? `on #${held.num} ${esc(held.title)}` : `${a.turns || 0} turns · $${(a.costUsd || 0).toFixed(2)}`}</div>
+    const sn = a.subagents?.active?.length || 0;
+    const kids = agents.filter((k) => k.parentId === a.id && !k.retired).length;
+    return `<button class="agent-card${a.id === S.agentId ? ' active' : ''}${depth ? ' delegate-card' : ''}" style="margin-left:${depth * 16}px" data-act="agent-select" data-id="${a.id}">
+      <div class="row">${avatar(a.name, a.id)}<span class="name">${depth ? '<span class="hint" style="display:inline">↳ </span>' : ''}${esc(a.name)}${g.leadAgentId === a.id ? ' <span class="hint" style="display:inline">lead</span>' : ''}</span>
+        ${kids ? `<span class="pill" title="Delegate chats this agent has open">${kids} delegate${kids > 1 ? 's' : ''}</span>` : ''}${sn ? `<span class="pill queued" title="Subagents running inside this chat">+${sn} sub</span>` : ''}${statusPill(a)}</div>
+      <div class="meta">${esc([depth ? 'delegate chat' : a.role, acct?.name, a.branch].filter(Boolean).join(' · '))}</div>
+      <div class="meta">${held ? `on #${held.num} ${esc(held.title)}` : depth && a.delegateBrief ? esc(a.delegateBrief.slice(0, 90)) : `${a.turns || 0} turns · $${(a.costUsd || 0).toFixed(2)}`}</div>
     </button>`;
-  }).join('') + `<button class="ghost" data-act="agent-add" style="margin-top:4px">+ Add agent</button>
+  };
+  const tree = (a, depth) => {
+    const kids = agents.filter((k) => k.parentId === a.id);
+    const live = kids.filter((k) => !k.retired);
+    const finished = kids.length - live.length;
+    return card(a, depth) + live.map((k) => tree(k, depth + 1)).join('')
+      + (finished ? `<div class="hint" style="margin:0 0 0 ${(depth + 1) * 16 + 4}px">${finished} delegate chat${finished > 1 ? 's' : ''} reported back</div>` : '');
+  };
+  const roots = agents.filter((a) => !a.parentId || !agents.some((p) => p.id === a.parentId));
+  el.innerHTML = roots.map((a) => tree(a, 0)).join('') + `<button class="ghost" data-act="agent-add" style="margin-top:4px">+ Add agent</button>
     ${agents.length ? '' : '<p class="hint">Add an agent per Claude account you want on this game. Agents on the same account share its usage.</p>'}`;
 }
 
@@ -692,7 +709,37 @@ function renderAgentHead() {
     <button class="ghost small" data-act="agent-reset" title="Start a fresh Claude session next time">New session</button>
     <button class="ghost small" data-act="agent-remove">Remove</button>
     <div class="hint" style="flex-basis:100%;margin:0">${esc(a.cwd)}${a.sessionId ? ` · session ${esc(a.sessionId.slice(0, 8))}` : ''}${a.role ? ` · ${esc(a.role)}` : ''}</div>
+    ${delegateChatsPanel(a)}
+    ${subagentsPanel(a)}
     ${a.error ? `<div class="err">${esc(a.error)}</div>` : ''}`;
+}
+
+// Delegate chats: this agent's parent and brief (if it is one), and the chats it has opened.
+function delegateChatsPanel(a) {
+  const parent = a.parentId && agentOf(a.parentId);
+  const kids = S.st.agents.filter((k) => k.parentId === a.id);
+  const head = parent || a.delegateBrief
+    ? `<div class="hint" style="margin:0"><b style="color:var(--text)">Delegate chat</b> opened by ${parent ? `<span class="link" data-act="agent-select" data-id="${parent.id}">${esc(parent.name)}</span>` : 'a closed chat'}${a.retired ? ' · reported back' : ''}</div>
+      ${a.delegateBrief ? `<div class="md" style="font-size:13px">${md(a.delegateBrief.slice(0, 800))}</div>` : ''}
+      ${a.delegateResult ? `<div class="hint" style="margin:4px 0 0">Report: ${esc(a.delegateResult.summary.slice(0, 500))}</div>` : ''}`
+    : '';
+  const list = kids.length
+    ? `<div class="hint" style="margin:${head ? '8px' : '0'} 0 0"><b style="color:var(--text)">Delegate chats</b> ${kids.filter((k) => !k.retired).length} open of ${a.delegateLimit || 'no'} allowed · ${kids.filter((k) => k.retired).length} reported back</div>
+      ${kids.map((k) => `<div class="delegate"><span class="dot ${k.status}"></span><span class="link grow" data-act="agent-select" data-id="${k.id}">${esc(k.name)}</span><span class="hint" style="margin:0">${k.retired ? 'reported back' : esc(k.status)} · ${esc(acctOf(k.accountId)?.name || '')}</span></div>`).join('')}`
+    : '';
+  return head || list ? `<div class="delegates">${head}${list}</div>` : '';
+}
+
+// The subagents a local agent is running inside its chat, live, with the limit and what recently finished.
+function subagentsPanel(a) {
+  const d = a.subagents || { active: [], recent: [] };
+  const limit = a.subagentLimit;
+  if (!d.active.length && !d.recent.length && !a.subagentsRun) return '';
+  return `<div class="delegates">
+    <div class="hint" style="margin:0"><b style="color:var(--text)">Subagents</b> ${d.active.length}${limit ? ` of ${limit}` : ''} running · ${a.subagentsRun || 0} finished${a.subagentsDenied ? ` · ${a.subagentsDenied} held back by the limit` : ''}</div>
+    ${d.active.map((x) => `<div class="delegate"><span class="dot running"></span><span class="grow">${esc(x.description)}</span><span class="hint" style="margin:0">${esc(x.type)}${x.background ? ' · background' : ''} · <span data-since="${x.startedAt}"></span></span></div>`).join('')}
+    ${d.recent.length ? `<details><summary class="hint" style="display:inline;cursor:pointer">Recently finished (${d.recent.length})</summary>${d.recent.map((x) => `<div class="delegate"><span class="dot ${x.ok ? 'idle' : 'error'}"></span><span class="grow">${esc(x.description)}</span><span class="hint" style="margin:0">${esc(x.type)} · ${dur(x.endedAt - x.startedAt)}</span></div>`).join('')}</details>` : ''}
+  </div>`;
 }
 
 async function loadTranscript() {
@@ -1687,6 +1734,10 @@ function settingsForm(g) {
       <label class="field"><span>Tasks per claim</span><select name="claimBatch">${[1, 2, 3, 4, 5].map((n) => opt(String(n), String(g.claimBatch || 1))).join('')}</select><small>How many tasks an agent takes at once (it works through them in order).</small></label>
     </div>
     <div class="two">
+      <label class="field"><span>Delegate chats per agent</span><select name="delegateLimit">${opt('', g.delegateLimit == null ? '' : 'x', `Studio default (${S.st.settings.delegateLimit ?? 3})`)}${[0, 1, 2, 3, 4, 6, 8].map((n) => opt(String(n), g.delegateLimit == null ? 'x' : String(g.delegateLimit), n === 0 ? 'None' : `${n} open at once`)).join('')}</select><small>Full chats an agent may open to fan work out. Agents on this PC only; cloud agents can't open chats.</small></label>
+      <label class="field"><span>Subagents per agent</span><select name="subagentLimit">${opt('', g.subagentLimit == null ? '' : 'x', `Studio default (${S.st.settings.subagentLimit || 'no limit'})`)}${[0, 1, 2, 3, 4, 6, 8, 12, 16].map((n) => opt(String(n), g.subagentLimit == null ? 'x' : String(g.subagentLimit), n === 0 ? 'No limit' : `${n} at once`)).join('')}</select><small>Short-lived helpers inside one chat. Enforced on this PC; cloud agents are asked to keep to it.</small></label>
+    </div>
+    <div class="two">
       <label class="field"><span>Status</span><select name="status">${opt('active', g.status || 'active', 'Active')}${opt('paused', g.status, 'Paused (agents stop picking up work)')}</select></label>
       <label class="field"><span>Priority</span><select name="priority">${[3, 2, 1].map((p) => opt(String(p), String(g.priority ?? 2), `${PRIORITY[p][0].toUpperCase()}${PRIORITY[p].slice(1)}`)).join('')}</select><small>Which game gets account time first when accounts are busy.</small></label>
     </div>
@@ -1741,7 +1792,7 @@ function bindSettings(g) {
     try {
       await api('PATCH', `/api/games/${g.id}`, {
         name: f.name, leadAgentId: f.leadAgentId || null, brief: f.brief, autopilot: f.autopilot, status: f.status, priority: Number(f.priority),
-        coordinatorFile: f.coordinatorFile, claimBatch: Number(f.claimBatch),
+        coordinatorFile: f.coordinatorFile, claimBatch: Number(f.claimBatch), delegateLimit: f.delegateLimit, subagentLimit: f.subagentLimit,
         permissionMode: f.permissionMode, model: f.model, effort: f.effort,
         build: { command: f.command, checkins: f.checkins, outputPath: f.outputPath, shareDir: f.shareDir, webhookUrl: f.webhookUrl, timeoutMin: f.timeoutMin, agentReport: f.agentReport },
       });
@@ -1892,6 +1943,12 @@ function globalSettingsModal() {
         <label class="field"><span>Parallel turns per account</span><input name="maxConcurrentPerAccount" type="number" min="1" value="${s.maxConcurrentPerAccount}"></label>
         <label class="field"><span>Autopilot turns per game per day</span><input name="autopilotDailyTurns" type="number" min="1" value="${s.autopilotDailyTurns}"></label>
       </div>
+      <h4 class="sub-h">Fanning out</h4>
+      <div class="two">
+        <label class="field"><span>Delegate chats per agent</span><input name="delegateLimit" type="number" min="0" max="8" value="${s.delegateLimit ?? 3}"><small>Full chats an agent may have open at once to spread its work (0 = off). Each lands on the account with the most headroom.</small></label>
+        <label class="field"><span>Delegate depth</span><input name="delegateDepth" type="number" min="0" max="4" value="${s.delegateDepth ?? 2}"><small>How many levels deep delegates may open their own delegates.</small></label>
+      </div>
+      <label class="field"><span>Subagents per agent</span><input name="subagentLimit" type="number" min="0" max="16" value="${s.subagentLimit ?? 4}"><small>Short-lived helpers inside each chat, at once (0 = no limit). Games can override both limits.</small></label>
       <h4 class="sub-h">Your review (studio default; each game can override in its department tabs)</h4>
       <div class="two">${[...S.st.disciplines, { id: 'other', label: 'Untagged work' }].map((d) => `<label class="field"><span>${esc(d.label)}</span><select name="review.${d.id}">
         ${['after', 'gate', 'skip'].map((m) => `<option value="${m}"${(s.review?.[d.id] || 'after') === m ? ' selected' : ''}>${MODE_INFO[m].label}</option>`).join('')}</select></label>`).join('')}</div>

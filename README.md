@@ -47,6 +47,19 @@ you ──note──▶ lead agent triages it into board tasks (no coding)
 - **Usage limits.** When an account runs out of usage, its claimed tasks go back on the board for the other accounts. Its agents resume when the limit resets. The sidebar shows each account's 5-hour and 7-day usage.
 - **Stuck turns.** If an agent ends a turn still holding a task, it gets one nudge. If it ends the next turn still holding it, the task is marked blocked so you see it.
 
+## Delegate chats: fanning work out
+
+An agent on this PC can open **delegate chats** with `open_delegate`. A delegate chat is a new, fully capable Claude chat: its own session, every tool, the board, and its own branch starting from the parent's work. It works on part of the parent's job at the same time as the parent. Delegates can open their own delegates, so the work spreads out like a web.
+
+- **Brief and handover.** The parent writes a self-contained brief and can hand over board tasks (`task_ids`). The delegate opens on whichever logged-in account has the most room right now.
+- **Reporting back.** The delegate finishes with `delegate_done` and a summary. The parent gets a message to merge the delegate's branch and land it, and handed-over tasks return to the parent. If a delegate ends without reporting, it gets one nudge, and then its last message is sent back as the report. A delegate whose parent has closed reports to the nearest open chat above it.
+- **Managing.** The parent uses `list_delegates` and `message_delegate`. In the Agents tab, delegates are nested under their parent with their brief, status and report. The Studio header counts open delegate chats.
+- **Limits (Settings).** *Delegate chats per agent* (default 3, open at once) and *delegate depth* (default 2 levels). Games can override the per-agent limit. Account limits still apply, so delegates queue rather than overload an account.
+
+**Subagents** are different: short-lived helpers inside a single chat (Claude Code's Task/Agent tool). Ballast tracks them per agent and enforces *subagents per agent* (default 4 at once) with a hook that asks Ballast before each one starts.
+
+**Cloud games:** cloud agents can't call Ballast, and Claude only creates cloud sessions from a terminal, so they can't open delegate chats. To fan a cloud game out, add more agents per account and connect them all with **Connect cloud sessions**.
+
 ## Git: worktrees vs shared tree
 
 **Worktrees (default for git repos).** Each agent gets its own worktree at `<repo>.ballast/<agent>` on branch `ballast/<agent>`. Finished work is rebased and fast-forwarded onto `ballast/integration` (`git push . HEAD:ballast/integration`), which nothing has checked out. Agents never step on each other's files. Bring the team's work into your branch whenever you like:

@@ -41,7 +41,7 @@ function context(game, agent) {
   const others = db.tasks.filter((t) => t.gameId === game.id && t.status === 'claimed' && t.claimedBy !== agent.id);
   // GDD first: it's the source of truth the rest inherits from.
   const artifacts = db.cloudArtifacts.filter((a) => a.gameId === game.id && a.summary).sort((a, b) => (b.role === 'gdd') - (a.role === 'gdd'));
-  return { notes, others, artifacts };
+  return { notes, others, artifacts, subagentLimit: game.subagentLimit ?? db.settings.subagentLimit ?? 4 };
 }
 
 // ---------------------------------------------------------------------------

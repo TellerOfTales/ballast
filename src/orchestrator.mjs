@@ -19,9 +19,12 @@ import * as review from './review.mjs';
 import * as inbox from './inbox.mjs';
 import * as deptnotes from './deptnotes.mjs';
 import * as targets from './targets.mjs';
+import * as subagents from './subagents.mjs';
+import * as delegates from './delegates.mjs';
 
 export const runtime = { baseUrl: '' }; // filled in by the server once it is listening
 const MCP_SERVER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'mcp-server.mjs');
+const SUBAGENT_HOOK = path.join(path.dirname(fileURLToPath(import.meta.url)), 'subagent-hook.mjs');
 const BATCHABLE = new Set(['message', 'note', 'next']);
 
 // ---------------------------------------------------------------------------
@@ -62,8 +65,11 @@ function must(value, message) {
   return value;
 }
 
+export const publicAgentStatus = (agent) => agentStatus(agent);
+
 function agentStatus(agent) {
   const r = R(agent.id);
+  if (agent.retired && !r.child && !r.queue.length) return 'done';
   if (r.setup || remote.isDispatching(agent.id)) return 'setup';
   if (r.child || agent.cloud) return 'running';
   if (getGame(agent.gameId)?.runner === 'cloud' && !agent.cloudLink) return 'unlinked';
@@ -92,7 +98,7 @@ export function publicState() {
     games: db.games,
     agents: db.agents.map((a) => {
       const r = R(a.id);
-      return { ...a, status: agentStatus(a), queue: r.queue.length, error: r.error, startedAt: r.child ? r.startedAt : a.cloud?.since || null };
+      return { ...a, status: agentStatus(a), queue: r.queue.length, error: r.error, startedAt: r.child ? r.startedAt : a.cloud?.since || null, subagents: subagents.publicFor(a.id), subagentLimit: subagents.limitFor(getGame(a.gameId)), delegateLimit: delegates.limitFor(getGame(a.gameId)) };
     }),
     // Older records predate disciplines; derive one so department tabs can file them.
     tasks: db.tasks.map((t) => (t.discipline ? t : { ...t, discipline: review.disciplineOf(t.title) })),
@@ -280,6 +286,12 @@ export function surveyGame(id) {
 export function updateGame(id, patch) {
   const game = must(getGame(id), 'Unknown game');
   if (patch.claimBatch !== undefined) game.claimBatch = Math.min(5, Math.max(1, Number(patch.claimBatch) || 1));
+  // '' clears an override so the game follows the studio default.
+  for (const key of ['subagentLimit', 'delegateLimit']) {
+    if (patch[key] === undefined) continue;
+    if (patch[key] === '' || patch[key] === null) delete game[key];
+    else game[key] = Math.min(16, Math.max(0, Number(patch[key]) || 0));
+  }
   for (const key of ['name', 'permissionMode', 'model', 'effort', 'leadAgentId', 'coordinatorFile']) {
     if (patch[key] !== undefined) game[key] = typeof patch[key] === 'string' ? patch[key].trim() : patch[key];
   }
@@ -332,7 +344,9 @@ export function removeGame(id) {
 // ---------------------------------------------------------------------------
 // Agents
 
-export async function addAgent(gameId, { accountId, name, role }) {
+// `parent` makes this a delegate chat: it hangs under the parent, starts its worktree from the
+// parent's branch (so it sees the parent's work in progress) and reports back instead of landing.
+export async function addAgent(gameId, { accountId, name, role, parent = null, brief = '' }) {
   const game = must(getGame(gameId), 'Unknown game');
   const acct = must(getAccount(accountId), 'Pick an account for the agent.');
   const siblings = gameAgents(gameId);
@@ -354,9 +368,10 @@ export async function addAgent(gameId, { accountId, name, role }) {
     turns: 0,
     briefRevSeen: game.briefRev,
     createdAt: Date.now(),
+    ...(parent ? { parentId: parent.id, depth: (parent.depth || 0) + 1, delegateBrief: brief } : {}),
   };
   db.agents.push(agent);
-  if (!game.leadAgentId) game.leadAgentId = agent.id;
+  if (!game.leadAgentId && !parent) game.leadAgentId = agent.id;
   save();
 
   if (game.isolation === 'worktree') {
@@ -366,7 +381,7 @@ export async function addAgent(gameId, { accountId, name, role }) {
     try {
       agent.branch = `ballast/${agent.slug}`;
       const wt = path.join(git.worktreeRoot(game.repoPath), agent.slug);
-      await git.ensureWorktree(game.repoPath, wt, agent.branch, game.integrationBranch);
+      await git.ensureWorktree(game.repoPath, wt, agent.branch, parent?.branch || game.integrationBranch);
       agent.cwd = wt;
     } catch (err) {
       r.error = `Worktree setup failed: ${err.message}`;
@@ -375,7 +390,7 @@ export async function addAgent(gameId, { accountId, name, role }) {
       save();
     }
   }
-  feedPost(gameId, { kind: 'system', text: `${agent.name} joined on ${acct.name}${acct.email ? ` (${acct.email})` : ''}, working in ${agent.cwd}.` });
+  if (!parent) feedPost(gameId, { kind: 'system', text: `${agent.name} joined on ${acct.name}${acct.email ? ` (${acct.email})` : ''}, working in ${agent.cwd}.` });
   changed();
   pump();
   return agent;
@@ -629,7 +644,7 @@ export function saveStudioAttachment({ name, data }) {
 // agent first); the lead only breaks ties. Cloud agents need a connected session.
 export function pickTriager(game, exclude) {
   const lead = (a) => (a.id === game.leadAgentId ? -0.001 : 0);
-  const agents = gameAgents(game.id).filter((a) => a.id !== exclude && (game.runner !== 'cloud' || a.cloudLink))
+  const agents = gameAgents(game.id).filter((a) => a.id !== exclude && !a.parentId && !a.retired && (game.runner !== 'cloud' || a.cloudLink))
     .sort((a, b) => (utilization(getAccount(a.accountId)) + lead(a)) - (utilization(getAccount(b.accountId)) + lead(b)));
   const usable = agents.filter((a) => !isLimited(getAccount(a.accountId)));
   const idle = usable.filter((a) => !R(a.id).child && !R(a.id).queue.length && !R(a.id).setup && !a.cloud);
@@ -638,6 +653,22 @@ export function pickTriager(game, exclude) {
 
 // ---------------------------------------------------------------------------
 // Dispatch
+
+export const enqueueItem = (agent, item) => enqueue(agent, item);
+// A closed delegate chat drops anything still waiting for it.
+export function clearQueue(agentId) {
+  R(agentId).queue = [];
+  changed();
+}
+
+// Delegate chats go to the account with the most room right now: spare parallel turns first,
+// then the lowest session/weekly use. Any logged-in account can take one, not just the game's.
+export function pickDelegateAccount(game, parent) {
+  const ok = db.accounts.filter((a) => a.loggedIn && !isLimited(a) && !overGuard(a));
+  const free = (a) => (a.maxConcurrent || db.settings.maxConcurrentPerAccount || 2) - accountLoad(a.id);
+  ok.sort((a, b) => free(b) - free(a) || utilization(a) - utilization(b));
+  return ok[0] || getAccount(parent.accountId);
+}
 
 function enqueue(agent, item, { front = false, noPump = false } = {}) {
   const r = R(agent.id);
@@ -718,9 +749,15 @@ export function setAgentError(id, error) {
 function writeAgentFiles(agent, game) {
   const dir = path.join(paths.agents, agent.id);
   fs.mkdirSync(dir, { recursive: true });
-  const teammates = gameAgents(game.id).filter((a) => a.id !== agent.id);
+  const teammates = gameAgents(game.id).filter((a) => a.id !== agent.id && !a.parentId && !a.retired);
   const sysFile = path.join(dir, 'system-prompt.md');
-  fs.writeFileSync(sysFile, P.systemPrompt({ game, agent, teammates }));
+  fs.writeFileSync(sysFile, P.systemPrompt({
+    game, agent, teammates,
+    subagentLimit: subagents.limitFor(game),
+    delegateLimit: delegates.limitFor(game),
+    canDelegate: game.runner !== 'cloud' && (agent.depth || 0) < delegates.depthMax(),
+    parent: agent.parentId ? getAgent(agent.parentId) : null,
+  }));
   const mcpFile = path.join(dir, 'mcp.json');
   fs.writeFileSync(mcpFile, JSON.stringify({
     mcpServers: {
@@ -732,7 +769,20 @@ function writeAgentFiles(agent, game) {
       },
     },
   }, null, 2));
-  return { sysFile, mcpFile };
+  // Hooks around the subagent tool: "pre" lets Ballast enforce the delegate limit, "post" marks
+  // the delegate finished. On Windows they run in PowerShell, which is always there.
+  const win = process.platform === 'win32';
+  const hook = (phase) => (win
+    ? { type: 'command', shell: 'powershell', command: `& "${process.execPath}" "${SUBAGENT_HOOK}" ${phase}`, timeout: 10 }
+    : { type: 'command', command: `"${process.execPath}" "${SUBAGENT_HOOK}" ${phase}`, timeout: 10 });
+  const settingsFile = path.join(dir, 'settings.json');
+  fs.writeFileSync(settingsFile, JSON.stringify({
+    hooks: {
+      PreToolUse: [{ matcher: 'Agent|Task', hooks: [hook('pre')] }],
+      PostToolUse: [{ matcher: 'Agent|Task', hooks: [hook('post')] }],
+    },
+  }, null, 2));
+  return { sysFile, mcpFile, settingsFile };
 }
 
 function startTurn(agent, acct, item) {
@@ -754,12 +804,13 @@ function startTurn(agent, acct, item) {
 
   const attachDir = attachmentsDir(game.id);
   fs.mkdirSync(attachDir, { recursive: true });
-  const { sysFile, mcpFile } = writeAgentFiles(agent, game);
+  const { sysFile, mcpFile, settingsFile } = writeAgentFiles(agent, game);
   const args = [
     '-p', '--output-format', 'stream-json', '--verbose',
     '--permission-mode', game.permissionMode || 'bypassPermissions',
     '--append-system-prompt-file', sysFile,
     '--mcp-config', mcpFile,
+    '--settings', settingsFile,
     '--add-dir', attachDir, paths.studioAttachments,
     '--allowedTools', 'mcp__ballast',
   ];
@@ -779,7 +830,7 @@ function startTurn(agent, acct, item) {
   const { child, done } = claude.runTurn({
     args,
     cwd: agent.cwd,
-    env: claude.accountEnv(acct, { BALLAST_AGENT_ID: agent.id }),
+    env: claude.accountEnv(acct, { BALLAST_AGENT_ID: agent.id, BALLAST_URL: runtime.baseUrl, BALLAST_KEY: db.secrets.agentKey }),
     prompt,
     onMessage: (msg) => onMessage(agent, acct, msg),
   });
@@ -817,6 +868,7 @@ function onMessage(agent, acct, msg) {
           tx(agent, { kind: 'text', text: c.text });
         } else if (c.type === 'tool_use') {
           tx(agent, { kind: 'tool', ...summarizeTool(c.name, c.input) });
+          if (subagents.TOOL_RE.test(c.name)) subagents.onToolUse(agent.id, c);
         }
       }
       break;
@@ -826,6 +878,7 @@ function onMessage(agent, acct, msg) {
         if (c.type !== 'tool_result') continue;
         const text = typeof c.content === 'string' ? c.content : (c.content || []).map((x) => x.text || `[${x.type}]`).join('\n');
         tx(agent, { kind: 'tool_result', ok: !c.is_error, text: text.slice(0, 800) });
+        subagents.onToolResult(agent.id, c.tool_use_id, !c.is_error);
       }
       break;
     case 'rate_limit_event':
@@ -904,6 +957,7 @@ function finishTurn(agent, acct, item, res) {
   acctRunning.set(acct.id, Math.max(0, (acctRunning.get(acct.id) || 1) - 1));
   r.child = null;
   r.item = null;
+  subagents.endTurn(agent.id);
   const { result, stopped } = r;
   const game = getGame(agent.gameId);
   if (!getAgent(agent.id) || !game) {
@@ -963,12 +1017,22 @@ function finishTurn(agent, acct, item, res) {
 function afterTurn(agent, game, item, ok) {
   if (item.kind === 'triage') {
     const taskNums = gameTasks(game.id).filter((t) => t.noteNum === item.note.num).map((t) => t.num);
-    for (const a of gameAgents(game.id)) {
+    // Delegate chats stay on their brief; the main agents take the note.
+    for (const a of gameAgents(game.id).filter((x) => !x.parentId)) {
       enqueue(a, { kind: 'note', prompt: P.noteBroadcast({ note: item.note, director: director(), taskNums }) }, { noPump: true });
     }
     return;
   }
   if (!ok) return; // never auto-continue after a failure; that's how loops start
+
+  // A delegate that ends a turn without reporting gets one nudge; after that, its last message
+  // goes back to its parent as the report, so a parent is never left waiting.
+  if (agent.parentId && !agent.retired) {
+    if (item.kind === 'delegate-nudge') delegates.done(agent, { summary: R(agent.id).lastText || '', auto: true });
+    else if (!R(agent.id).queue.length) enqueue(agent, { kind: 'delegate-nudge', prompt: P.delegateNudge({ agent }) }, { noPump: true });
+    return;
+  }
+  if (agent.retired) return;
 
   const held = heldTask(agent.id);
   if (held) {
@@ -1017,6 +1081,7 @@ export function wakeIdle(gameId, force = false) {
     if (open <= 0) break;
     const r = R(a.id);
     if (r.child || r.queue.length || r.setup || heldTask(a.id) || a.cloud || remote.isDispatching(a.id)) continue;
+    if (a.parentId || a.retired) continue; // delegate chats work their brief, not the board
     if (game.runner === 'cloud' && !a.cloudLink) continue; // nothing to send tasks to yet
     const acct = getAccount(a.accountId);
     if (isLimited(acct) || (!force && overGuard(acct))) continue;
@@ -1201,6 +1266,20 @@ export async function agentApi(agentId, tool, args = {}) {
       else if (!args.discipline && held) list = targets.forTask(held, game);
       return list.length ? `Quality targets (open the files with Read):\n${targets.describe(list, { local: true })}` : 'No quality targets for that yet.';
     }
+    case 'open_delegate': {
+      const { agent: d, handed, account } = await delegates.open(agent, args);
+      return `Opened delegate chat "${d.name}" on ${account.name}${handed.length ? `, holding ${handed.map((t) => `#${t.num}`).join(', ')}` : ''}. It starts from your branch${d.branch ? ` (its own: ${d.branch})` : ''} and reports back to you with a message when done. Carry on with your own work meanwhile.`;
+    }
+    case 'delegate_done': {
+      const parent = delegates.done(agent, args);
+      return `Reported back${parent ? ` to ${parent.name}` : ''}. This chat is now closed; stop here.`;
+    }
+    case 'message_delegate':
+      return `Sent to ${delegates.message(agent, args).name}.`;
+    case 'list_delegates':
+      return delegates.list(agent);
+    case 'subagent_hook':
+      return args.phase === 'post' ? (subagents.onHookEnd(agent.id, args), { ok: true }) : subagents.requestStart(agent, game, args);
     case 'task_dept_note': {
       const created = deptnotes.taskNote(deptnotes.find(game, args.note_id), args.tasks, agent.name);
       setTimeout(() => wakeIdle(game.id), 500);

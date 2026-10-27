@@ -47,6 +47,9 @@ const DEFAULTS = {
     deptNoteFallbackMin: 15, // a department note nobody picks up is broken down by Ballast after this (0 = never)
     workHours: { start: '09:00', end: '18:00', days: [1, 2, 3, 4, 5] }, // when the director is working (0 = Sunday)
     usageReportMin: 90, // every account reports its limits this often during working hours (0 = off)
+    subagentLimit: 4, // subagents (in-chat helpers) one agent may run at once (0 = no limit); games can override
+    delegateLimit: 3, // delegate chats one agent may have open at once (0 = none); games can override
+    delegateDepth: 2, // how many levels deep delegate chats may open their own delegates
     reportWebhook: '', // Slack/Discord webhook that also gets each usage report
   },
   secrets: {
