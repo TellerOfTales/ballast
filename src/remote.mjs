@@ -26,6 +26,8 @@ export async function prepareClone(game, githubInput) {
   if (!fs.existsSync(path.join(dir, '.git'))) await git.cloneRepo(gh.url, dir);
   game.github = gh.slug;
   game.repoPath = dir;
+  if (gh.subdir) game.subdir = gh.subdir;
+  if (!game.baseBranch && gh.branch) game.baseBranch = gh.branch;
   if (!game.baseBranch) game.baseBranch = await git.git(dir, ['rev-parse', '--abbrev-ref', 'origin/HEAD']).then((r) => r.replace(/^origin\//, ''), () => 'main');
   await git.syncClone(dir, game.baseBranch);
 }
@@ -100,13 +102,15 @@ export async function dispatch(agent, item) {
   dispatching.add(agent.id);
   changed();
   try {
+    if (!agent.cloudLink) throw new Error('Connect a cloud session to this agent first (Agents tab).');
     await git.syncClone(game.repoPath, game.baseBranch);
     const baseline = await git.remoteHeads(game.repoPath);
-    const session = await claude.createCloudSession({ account: acct, cwd: game.repoPath, prompt: prompt.slice(0, 24000) });
-    agent.cloud = { ...session, key, taskId: task?.id || null, kind: item.kind, since: Date.now(), baseline };
+    const { sessionId, url } = agent.cloudLink;
+    await claude.sendCloudMessage({ account: acct, cwd: game.repoPath, sessionId, text: prompt });
+    agent.cloud = { sessionId, url, key, taskId: task?.id || null, kind: item.kind, since: Date.now(), baseline };
     agent.turns = (agent.turns || 0) + 1;
     agent.lastActive = Date.now();
-    orch.feedPost(game.id, { kind: 'system', text: `${agent.name} started a cloud session for ${task ? `#${task.num} ${task.title}` : key === 'survey' ? 'the project survey' : 'your message'}: ${session.url}` });
+    orch.feedPost(game.id, { kind: 'system', text: `${agent.name} sent ${task ? `#${task.num} ${task.title}` : key === 'survey' ? 'the project survey' : 'your message'} to its cloud session: ${url}` });
   } catch (err) {
     if (task) orch.updateTask(task.id, { status: 'open' });
     orch.setAgentError(agent.id, err.message);
@@ -116,6 +120,27 @@ export async function dispatch(agent, item) {
     save();
     changed();
   }
+}
+
+export function connect(agent, link) {
+  if (!agent) throw Object.assign(new Error('Unknown agent'), { status: 400 });
+  const parsed = claude.parseCloudSession(link);
+  if (!parsed) throw Object.assign(new Error('Paste the session link from claude.ai/code (it contains session_… or cse_…).'), { status: 400 });
+  agent.cloudLink = parsed;
+  orch.setAgentError(agent.id, null);
+  orch.feedPost(agent.gameId, { kind: 'system', text: `${agent.name} is connected to cloud session ${parsed.url}` });
+  save();
+  changed();
+  setTimeout(() => orch.wakeIdle(agent.gameId), 300);
+  return agent;
+}
+
+export function openStarter(agent) {
+  if (!agent) throw Object.assign(new Error('Unknown agent'), { status: 400 });
+  const game = orch.getGame(agent.gameId);
+  // Plain words only: this goes through a Windows .cmd file.
+  const intro = `You are ${agent.name.replace(/[^\w -]/g, '')}, an agent Ballast coordinates on the game ${game.name.replace(/[^\w -]/g, '')}${game.subdir ? `. Work only inside the ${game.subdir.replace(/[^\w/ .-]/g, '')} folder` : ''}. Tasks arrive later as follow-up messages. For now just reply ready and wait.`;
+  return claude.openCloudStarter({ account: orch.getAccount(agent.accountId), cwd: game.repoPath, intro, title: `Ballast cloud - ${agent.name}` });
 }
 
 export async function message(agent, text) {
@@ -165,7 +190,7 @@ export async function poll() {
         if (candidates.length) {
           await git.fetchBranches(game.repoPath, candidates).catch(() => {});
           for (const b of candidates) {
-            report = await git.showRemoteFile(game.repoPath, b, P.reportPath(key));
+            report = await git.showRemoteFile(game.repoPath, b, P.reportPath(key, game.subdir));
             if (report) { branch = b; break; }
           }
         }

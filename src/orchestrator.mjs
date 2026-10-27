@@ -625,6 +625,10 @@ export function pump() {
     if (!acct || isLimited(acct)) continue;
     const max = acct.maxConcurrent || db.settings.maxConcurrentPerAccount || 2;
     if (accountLoad(acct.id) >= max) continue;
+    if (game.runner === 'cloud' && !agent.cloudLink) {
+      r.error = 'Connect a cloud session to this agent (Agents tab → Connect cloud session).';
+      continue;
+    }
     if (game.runner === 'cloud') remote.dispatch(agent, r.queue.shift()).then(() => pump());
     else startTurn(agent, acct, takeBatch(r));
   }
@@ -946,6 +950,7 @@ export function wakeIdle(gameId, force = false) {
     if (open <= 0) break;
     const r = R(a.id);
     if (r.child || r.queue.length || r.setup || heldTask(a.id) || a.cloud || remote.isDispatching(a.id)) continue;
+    if (game.runner === 'cloud' && !a.cloudLink) continue; // nothing to send tasks to yet
     const acct = getAccount(a.accountId);
     if (isLimited(acct) || (!force && overGuard(acct))) continue;
     if (r.paused && !force) continue;

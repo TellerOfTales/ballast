@@ -74,7 +74,10 @@ export async function runBuild(gameId, reason = 'manual', slot = null) {
     let cwd = game.repoPath;
     if (game.isolation === 'worktree') cwd = await git.prepareBuildWorktree(game.repoPath, game.integrationBranch);
     // Cloud games build what has been merged on GitHub, in Ballast's own clone.
-    if (game.runner === 'cloud') await git.syncClone(cwd, game.baseBranch);
+    if (game.runner === 'cloud') {
+      await git.syncClone(cwd, game.baseBranch);
+      if (game.subdir) cwd = path.join(cwd, game.subdir);
+    }
     build.cwd = cwd;
     build.commit = await git.head(cwd).catch(() => null);
     if (previous?.commit && build.commit && previous.commit !== build.commit) build.changelog = await git.log(cwd, previous.commit, build.commit);

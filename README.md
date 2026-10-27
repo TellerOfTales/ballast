@@ -94,18 +94,18 @@ Ballast mirrors the artifacts your accounts have on claude.ai: design docs, revi
 A cloud game's agents run as **Claude Code cloud sessions** (claude.ai/code) on its GitHub repo, so your PC doesn't do the work.
 
 - **Notes.** Cloud sessions can't reach Ballast, so Ballast splits each note into tasks itself, with a quick local run.
-- **Dispatch.** Each idle agent gets one task per cloud session (`claude --cloud`), started under that agent's account. The prompt carries the brief, recent notes, what others are working on, and the tracked artifact summaries.
+- **Connect once per agent.** Claude Code only creates a cloud session from an interactive terminal, so each cloud agent gets one session that it keeps. Agent → **Connect cloud session** opens a terminal running `claude --cloud` under that agent's account; paste the link it prints (`https://claude.ai/code/session_…`) back into Ballast. A session you start yourself on claude.ai/code for the repo works too.
+- **Dispatch.** Ballast sends each task to the agent's session as a message (`claude -p --cloud <session>`, which works headless). The message carries the brief, recent notes, what others are working on, and the tracked artifact summaries. One task at a time per agent.
+- **Folder links.** A link like `github.com/owner/name/tree/main/game` keeps agents inside `game/`, and their reports go in `game/.ballast/reports/`.
 - **Delivery.** The agent works on its own branch, opens a pull request into the base branch, and commits `.ballast/reports/t<task>.md`. Its first line is `STATUS: DONE` or `STATUS: BLOCKED`.
 - **Completion.** Ballast checks GitHub every 90 seconds for that report, closes or blocks the task with the PR link, and hands the agent the next task.
-- **Messages.** A message to a cloud agent goes to its live session (`claude -p --cloud <id>`). With no live session, the message starts a new one.
+- **Messages.** A message to a cloud agent goes straight to its session.
 - **Builds.** Builds run in Ballast's own clone (`~/.ballast/clones/<game>`) at the latest base branch, so check-ins show merged PRs.
 
 Requirements:
 - Every account needs GitHub connected on claude.ai/code: run `/web-setup` once in Claude Code, or install the Claude GitHub app.
 - Your git on this PC must be able to read the repo.
 - Model and permissions for cloud sessions are set on claude.ai/code. Attachments in notes stay on this PC.
-
-**Not yet verified end to end.** The Claude Code docs don't say what `claude --cloud` prints when it creates a session. Ballast takes the first `claude.ai/code/...` link from the output. If session creation fails, the feed shows the CLI's output; that's the first place to look.
 
 ## Builds and daily check-ins
 

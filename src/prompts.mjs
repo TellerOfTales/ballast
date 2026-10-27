@@ -120,11 +120,13 @@ export function artifactReview({ title, url, role, summary, dataSummary, comment
 // Cloud games: agents run as Claude Code cloud sessions on the GitHub repo. They can't
 // reach Ballast, so everything they need goes in the prompt and they report through git.
 
-export const reportPath = (key) => `.ballast/reports/${key}.md`;
+// Reports live inside the game's folder so a monorepo stays tidy. Always forward slashes: it's a git path.
+export const reportPath = (key, subdir) => `${subdir ? `${subdir.replace(/\/+$/, '')}/` : ''}.ballast/reports/${key}.md`;
 
 function cloudContext({ game, agent, notes, others, artifacts }) {
   return [
     `You are "${agent.name}"${agent.role ? ` (${agent.role})` : ''}, one of several autonomous Claude Code agents building the game "${game.name}", coordinated by Ballast. The director rarely answers questions: make sensible calls and note your assumptions in your report.`,
+    game.subdir && `## Scope\nThis game lives in the \`${game.subdir}/\` folder of the repository. Work only inside that folder; don't change anything outside it.`,
     `## Game brief\n${game.brief?.trim() || '(No brief yet. Infer direction from the repo.)'}`,
     notes.length && `## Recent director notes\n${notes.map((n) => `- ${n.text.replace(/\n/g, ' ').slice(0, 600)}`).join('\n')}`,
     others.length && `## Other agents are working on these right now (don't overlap)\n${others.map((t) => `- #${t.num} ${t.title}`).join('\n')}`,
@@ -140,9 +142,9 @@ export function cloudTask({ game, agent, task, key = `t${task.num}`, notes, othe
 ${task.detail || ''}
 
 ## How to deliver
-- Branch from \`${game.baseBranch}\`. Name your branch \`ballast/${key}-${agent.slug}\` if you can choose it.
+- This is a new task in your ongoing session: \`git fetch\` first and branch from the latest \`origin/${game.baseBranch}\`, not from your previous task's branch. Name your branch \`ballast/${key}-${agent.slug}\` if you can choose it.
 - Ship the smallest playable increment first; keep the project building.
-- Before you finish, commit \`${reportPath(key)}\` on your branch. First line exactly \`STATUS: DONE\` or \`STATUS: BLOCKED\`, then 2 to 8 lines: what changed, how to see it in game, assumptions, and the PR link.
+- Before you finish, commit \`${reportPath(key, game.subdir)}\` on your branch. First line exactly \`STATUS: DONE\` or \`STATUS: BLOCKED\`, then 2 to 8 lines: what changed, how to see it in game, assumptions, and the PR link.
 - Push the branch and open a pull request into \`${game.baseBranch}\` titled "${label}".
 - Ballast reads only that report file to know you're done, so never skip it, even when blocked.`;
 }
@@ -152,7 +154,7 @@ export function cloudSurvey({ game, agent }) {
 
 ## Your task: survey this project
 This game existed before Ballast. Don't change game code. Read the README and docs, project layout, engine and version, recent git history, and TODO/FIXME hot spots.
-Then commit \`${reportPath('survey')}\` on a branch named \`ballast/survey-${agent.slug}\` (push it; no PR needed) with exactly these sections:
+Then commit \`${reportPath('survey', game.subdir)}\` on a branch named \`ballast/survey-${agent.slug}\` (push it; no PR needed) with exactly these sections:
 ## Brief
 (genre, pillars, target platform, art direction, current state, what "next playable" means)
 ## Tasks

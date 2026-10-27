@@ -62,11 +62,13 @@ export async function prepareBuildWorktree(repo, ref) {
 // ---------------------------------------------------------------------------
 // GitHub-backed games (agents run in Claude's cloud; Ballast watches the remote)
 
-// Accepts "owner/name", https or ssh URLs. Returns a clone URL and "owner/name".
+// Accepts "owner/name", https or ssh URLs, and folder links like
+// https://github.com/owner/name/tree/main/game (branch "main", project folder "game").
 export function parseGithub(input) {
-  const s = String(input || '').trim().replace(/\.git$/, '').replace(/\/+$/, '');
-  const m = s.match(/^(?:https?:\/\/github\.com\/|git@github\.com:)?([\w.-]+)\/([\w.-]+)$/);
-  return m ? { slug: `${m[1]}/${m[2]}`, url: `https://github.com/${m[1]}/${m[2]}.git` } : null;
+  const s = String(input || '').trim().replace(/\/+$/, '');
+  const m = s.match(/^(?:https?:\/\/github\.com\/|git@github\.com:)?([\w.-]+)\/([\w.-]+?)(?:\.git)?(?:\/tree\/([^/]+)(?:\/(.+))?)?$/);
+  if (!m) return null;
+  return { slug: `${m[1]}/${m[2]}`, url: `https://github.com/${m[1]}/${m[2]}.git`, branch: m[3] || null, subdir: m[4] ? decodeURIComponent(m[4]) : null };
 }
 
 export async function remoteSlug(dir) {
@@ -98,10 +100,11 @@ export async function fetchBranches(dir, branches) {
 
 export const showRemoteFile = (dir, branch, file) => git(dir, ['show', `refs/ballast/remote/${branch}:${file}`]).catch(() => null);
 
-// Brings the local clone to the remote base branch (what cloud sessions start from).
+// Brings the local clone to the remote base branch. It must be a real branch, not a detached
+// commit: `claude --cloud` starts the session from the clone's remote at its current branch.
 export async function syncClone(dir, base) {
   await git(dir, ['fetch', '--no-tags', '--quiet', 'origin', base]);
-  await git(dir, ['checkout', '--quiet', '--detach', '--force', `origin/${base}`]);
+  await git(dir, ['checkout', '--quiet', '--force', '-B', base, `origin/${base}`]);
 }
 
 export const log = (dir, from, to) =>

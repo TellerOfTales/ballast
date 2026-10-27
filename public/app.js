@@ -240,7 +240,7 @@ function renderHead() {
       <button class="repo" data-act="open-folder" data-path="${esc(g.repoPath)}" title="Open folder">${esc(g.repoPath)}</button>
     </div>
     ${g.runner === 'cloud'
-      ? `<a class="pill queued" href="https://github.com/${esc(g.github)}" target="_blank" rel="noopener" title="Agents run as Claude cloud sessions and open pull requests into ${esc(g.baseBranch)}">cloud · ${esc(g.github)}</a>`
+      ? `<a class="pill queued" href="https://github.com/${esc(g.github)}${g.subdir ? `/tree/${esc(g.baseBranch)}/${esc(g.subdir)}` : ''}" target="_blank" rel="noopener" title="Agents run as Claude cloud sessions and open pull requests into ${esc(g.baseBranch)}">cloud · ${esc(g.github)}${g.subdir ? `/${esc(g.subdir)}` : ''}</a>`
       : `<span class="pill" title="${g.isolation === 'worktree' ? `Each agent has its own git worktree; finished work lands on ${esc(g.integrationBranch)}` : 'All agents edit the same folder'}">${g.isolation === 'worktree' ? 'worktrees' : 'shared tree'}</span>`}
     ${g.cloudError ? `<span class="pill error" title="${esc(g.cloudError)}">GitHub unreachable</span>` : ''}
     ${g.status === 'paused' ? '<span class="pill limited">paused</span>' : ''}
@@ -602,13 +602,17 @@ function renderAgentHead() {
     const task = live?.taskId && S.st.tasks.find((t) => t.id === live.taskId);
     el.innerHTML = `${avatar(a.name, a.id)}<h3>${esc(a.name)}</h3>${statusPill(a)}<span class="pill">${esc(acct?.name || '?')}</span>
       <span class="spacer"></span>
-      ${live ? `<a class="btn small" href="${esc(live.url)}" target="_blank" rel="noopener">Open cloud session</a><button class="danger small" data-act="agent-stop" title="Stop tracking this session and put its task back on the board">Stop</button>` : ''}
+      ${a.cloudLink
+        ? `<a class="btn small" href="${esc(a.cloudLink.url)}" target="_blank" rel="noopener">Open cloud session</a><button class="ghost small" data-act="cloud-connect">Change session</button>`
+        : '<button class="primary small" data-act="cloud-connect">Connect cloud session</button>'}
+      ${live ? '<button class="danger small" data-act="agent-stop" title="Stop tracking this task and put it back on the board">Stop</button>' : ''}
       <button class="ghost small" data-act="agent-edit">Edit</button>
       <button class="ghost small" data-act="agent-remove">Remove</button>
       <div class="hint" style="flex-basis:100%;margin:0">${live
         ? `Working on ${task ? `#${task.num} ${esc(task.title)}` : live.key === 'survey' ? 'the project survey' : 'your message'} since ${clock(live.since)}. Ballast checks GitHub every 90 seconds for its report.`
         : last ? `Last session finished ${ago(last.at)}: ${last.pr ? `<a href="${esc(last.pr)}" target="_blank" rel="noopener">pull request</a>` : `branch ${esc(last.branch)}`} · <a href="${esc(last.url)}" target="_blank" rel="noopener">session</a>`
-        : 'Idle. Gets a cloud session as soon as there is an open task (with autopilot on) or a message for it.'}
+        : a.cloudLink ? 'Idle. Its cloud session gets the next open task (with autopilot on, or when you press Wake) or your next message.'
+        : 'Needs a cloud session before it can take tasks: press Connect cloud session.'}
         ${a.role ? ` · ${esc(a.role)}` : ''}</div>
       ${a.error ? `<div class="err">${esc(a.error)}</div>` : ''}`;
     return;
@@ -1178,7 +1182,7 @@ function newGameModal() {
       </div>
       <div data-runner="cloud" hidden>
         <div class="two">
-          <label class="field"><span>GitHub repo</span><input name="github" placeholder="owner/name or https://github.com/owner/name"></label>
+          <label class="field"><span>GitHub repo</span><input name="github" placeholder="owner/name, or a folder link like github.com/owner/name/tree/main/game"><small>A folder link keeps agents inside that folder.</small></label>
           <label class="field"><span>Base branch</span><input name="baseBranch" placeholder="Repo default"></label>
         </div>
         <p class="hint">Each agent works in a Claude Code cloud session on its own branch and opens a pull request. Every account needs GitHub connected on claude.ai/code (run <code>/web-setup</code> once in Claude Code, or install the Claude GitHub app). Ballast clones the repo here only to watch for reports and run builds.</p>
@@ -1333,6 +1337,29 @@ const ACTIONS = {
     modal({ title: `${c.title} (Ballast's last copy)`, wide: true, body: `<iframe class="viewer" src="${fileUrl('cloud', c.id, 'page.html')}" sandbox="allow-scripts"></iframe>` });
   },
   'agent-sessions': sessionsModal,
+  'cloud-connect': () => {
+    const a = agentOf(S.agentId);
+    const g = game();
+    modal({
+      title: `Cloud session for ${a.name}`,
+      body: `<p style="margin-top:0">Claude Code only starts a cloud session from an interactive terminal, so this is a one-time step per agent. After that, Ballast sends each task to the session as a message.</p>
+        <ol class="hint" style="padding-left:18px;line-height:1.7">
+          <li><button type="button" class="btn small" data-start>Start a session in a terminal</button> (runs <code>claude --cloud</code> as ${esc(acctOf(a.accountId)?.name || '')} on github.com/${esc(g.github)}), or start one yourself on claude.ai/code on that repo, signed in as ${esc(acctOf(a.accountId)?.email || 'that account')}.</li>
+          <li>Copy the session link from the terminal or the claude.ai/code address bar, then paste it here.</li>
+        </ol>
+        <label class="field"><span>Session link or id</span><input name="link" value="${esc(a.cloudLink?.url || '')}" placeholder="https://claude.ai/code/session_…"></label>`,
+      actions: [{ label: 'Cancel' }, { label: 'Connect', kind: 'primary', onClick: (root) => api('POST', `/api/agents/${a.id}/cloud`, formData(root)) }],
+      onMount: (root) => {
+        $('[data-start]', root).onclick = async () => {
+          try {
+            const r = await api('POST', `/api/agents/${a.id}/cloud/start`);
+            if (r.opened) toast('Terminal opened. Copy the session link it shows.');
+            else modal({ title: 'Start it in a terminal', body: `<div class="cmd">${esc(r.command)}</div>`, actions: [{ label: 'Done' }] });
+          } catch (err) { fail(err); }
+        };
+      },
+    });
+  },
   'survey': async () => { await api('POST', `/api/games/${S.gameId}/survey`); toast('Survey queued for the lead agent.'); },
   'brief-accept': async () => { await api('PATCH', `/api/games/${S.gameId}`, { acceptBriefSuggestion: true }); S.shellKey = ''; renderLive(); },
   'brief-dismiss': async () => { await api('PATCH', `/api/games/${S.gameId}`, { dismissBriefSuggestion: true }); S.shellKey = ''; renderLive(); },

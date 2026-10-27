@@ -12,6 +12,7 @@ import * as orch from './orchestrator.mjs';
 import { runBuild, cancelBuild, startScheduler } from './scheduler.mjs';
 import { usageSummary } from './usage.mjs';
 import * as cloud from './cloud.mjs';
+import * as remote from './remote.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PUBLIC = path.join(ROOT, 'public');
@@ -146,6 +147,8 @@ route('POST', '/api/agents/:id/stop', (p) => orch.stopAgent(p.id));
 route('POST', '/api/agents/:id/reset', (p) => orch.resetAgent(p.id));
 route('POST', '/api/agents/:id/terminal', (p) => orch.openAgentTerminal(p.id));
 route('GET', '/api/agents/:id/sessions', (p) => orch.listSessions(p.id));
+route('POST', '/api/agents/:id/cloud', (p, body) => remote.connect(orch.getAgent(p.id), body.link));
+route('POST', '/api/agents/:id/cloud/start', (p) => remote.openStarter(orch.getAgent(p.id)));
 route('POST', '/api/agents/:id/adopt', (p, body) => orch.adoptSession(p.id, body));
 
 route('PATCH', '/api/tasks/:id', (p, body) => orch.updateTask(p.id, body));

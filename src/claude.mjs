@@ -135,15 +135,16 @@ function collect(args, { account, cwd, input, timeoutMs }) {
   });
 }
 
-const SESSION_URL_RE = /https:\/\/claude\.ai\/code\/[\w/-]+/;
+// Session ids are tagged "cse_…" or "session_…"; accept a bare id or any claude.ai link holding one.
+export function parseCloudSession(input) {
+  const id = String(input || '').match(/\b(?:cse|session)_[\w-]+/)?.[0];
+  return id ? { sessionId: id, url: `https://claude.ai/code/${id}` } : null;
+}
 
-// Creation output isn't documented, so take the first claude.ai/code link it prints.
-export async function createCloudSession({ account, cwd, prompt }) {
-  const { code, out } = await collect(['--cloud', prompt], { account, cwd, timeoutMs: 180e3 });
-  const url = out.match(SESSION_URL_RE)?.[0] || null;
-  const sessionId = url?.split('/').pop() || out.match(/\bsession_[\w-]+/)?.[0] || null;
-  if (!sessionId) throw new Error(`Claude didn't return a cloud session (exit ${code}): ${out.trim().slice(-400) || 'no output'}`);
-  return { sessionId, url: url || `https://claude.ai/code/${sessionId}` };
+// Creating a cloud session needs an interactive terminal (`claude --cloud` refuses to run
+// headless), so it happens once per agent in a terminal window; tasks follow as messages.
+export function openCloudStarter({ account, cwd, intro, title }) {
+  return openTerminal({ account, cwd, commandArgs: ['--cloud', intro], title });
 }
 
 // Documented: posts one message to the session and returns {ok, session_id, url} without waiting.
