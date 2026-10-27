@@ -1191,7 +1191,13 @@ const RS_DRAFT = 'reviewDraft';
 
 const rsElapsed = () => (RS.startedAt ? (RS.paused ? RS.pausedAt : Date.now()) - RS.startedAt - RS.pausedMs : 0);
 const mmss = (ms) => `${String(Math.floor(ms / 60000)).padStart(2, '0')}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}`;
-const rsText = () => RS.segments.map((s) => (s.mark ? `\n[${mmss(s.t)}] ★ ${s.text}\n` : `[${mmss(s.t)}] ${s.text}`)).join('\n').trim();
+// What gets sent: rejected lines are left out; typed lines are the director's own words.
+const rsText = () => RS.segments.filter((s) => !s.rejected && s.text.trim())
+  .map((s) => (s.mark ? `\n[${mmss(s.t)}] ★ ${s.text}\n` : `[${mmss(s.t)}] ${s.typed ? '(typed) ' : ''}${s.text}`)).join('\n').trim();
+
+// Chrome's recognizer is much more accurate when its accent setting matches the speaker.
+const SPEECH_LANGS = [['en-US', 'English (US)'], ['en-GB', 'English (UK)'], ['en-CA', 'English (Canada)'], ['en-AU', 'English (Australia)'], ['en-IE', 'English (Ireland)'], ['en-NZ', 'English (NZ)'], ['en-IN', 'English (India)'], ['fr-CA', 'Français (Canada)'], ['fr-FR', 'Français'], ['es-ES', 'Español'], ['de-DE', 'Deutsch']];
+const speechLang = () => load('speechLang') || navigator.language || 'en-US';
 
 function rsSaveDraft() {
   store(RS_DRAFT, JSON.stringify({ gameId: RS.gameId, segments: RS.segments, elapsed: rsElapsed(), at: Date.now() }));
@@ -1208,30 +1214,89 @@ function rsPanel() {
   return el;
 }
 
+// The live panel is edited while it's recording, so it renders line by line: new speech is
+// appended and a line you're correcting is never redrawn under your cursor.
 function rsRender() {
   const el = rsPanel();
+  if (!$('.rs-text', el)) {
+    el.innerHTML = `<div class="rs-head"></div>
+      <div class="rs-text" id="rs-text"><div class="rs-empty hint">Start playing and talk through what you notice. Say "mark that" to flag a moment. Click any line to correct it, ✕ to leave it out, or type a line below. Screenshots pasted into the box under this panel go out with your notes.</div><div class="rs-interim"></div></div>
+      <div class="rs-add"><input id="rs-add" placeholder="Type a line (Enter adds it at the current time)…" autocomplete="off"><select id="rs-lang" title="Speech recognition accent: matching yours makes it much more accurate">${SPEECH_LANGS.map(([v, l]) => `<option value="${v}"${v === speechLang() ? ' selected' : ''}>${l}</option>`).join('')}</select></div>`;
+    $('#rs-add', el).addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' || !e.target.value.trim()) return;
+      e.preventDefault();
+      RS.segments.push({ t: rsElapsed(), text: e.target.value.trim(), typed: true });
+      e.target.value = '';
+      rsSaveDraft();
+      rsRender();
+    });
+    $('#rs-lang', el).onchange = (e) => {
+      store('speechLang', e.target.value);
+      // Restart recognition so the new accent takes effect straight away.
+      if (RS.active && !RS.paused) { try { RS.rec?.stop(); } catch { /* restarts on end */ } RS.rec = null; rsListen(); }
+    };
+  }
   const state = RS.paused ? 'Paused' : RS.active ? 'Listening… talk as you play' : 'Stopped';
-  el.innerHTML = `<div class="rs-head">
+  const kept = RS.segments.filter((s) => !s.mark && !s.rejected).length;
+  const rejected = RS.segments.filter((s) => s.rejected).length;
+  $('.rs-head', el).innerHTML = `
       <span class="rec-dot${RS.active && !RS.paused ? ' on' : ''}"></span><b>Director Review</b>
-      <span class="rs-time">${mmss(rsElapsed())}</span><span class="hint" style="margin:0">${state} · ${RS.segments.filter((s) => !s.mark).length} lines</span>
+      <span class="rs-time">${mmss(rsElapsed())}</span><span class="hint" style="margin:0">${state} · ${kept} lines${rejected ? ` · ${rejected} left out` : ''}</span>
       <span class="spacer"></span>
       <button class="ghost small" data-act="review-mark" title="Drop a marker here. Or just say &quot;mark that&quot; while you play.">★ Mark moment</button>
       <button class="ghost small" data-act="review-pause">${RS.paused ? 'Resume' : 'Pause'}</button>
       <button class="primary small" data-act="review-done">Done, review notes</button>
-      <button class="ghost small" data-act="review-discard">Discard</button>
-    </div>
-    <div class="rs-text" id="rs-text">${RS.segments.map((s) => `<div class="${s.mark ? 'rs-mark' : ''}"><span class="rs-t">${mmss(s.t)}</span>${esc(s.text)}</div>`).join('')}${RS.interim ? `<div class="rs-interim"><span class="rs-t">${mmss(rsElapsed())}</span>${esc(RS.interim)}</div>` : ''}
-      ${!RS.segments.length && !RS.interim ? '<div class="hint">Start playing and talk through what you notice. Say "mark that" to flag a moment. Paste screenshots into the box below at any time; they go out with your notes.</div>' : ''}</div>`;
+      <button class="ghost small" data-act="review-discard">Discard</button>`;
+
   const box = $('#rs-text', el);
-  box.scrollTop = box.scrollHeight;
+  const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+  const editing = document.activeElement?.closest?.('.rs-line');
+  const interimEl = $('.rs-interim', box);
+  $('.rs-empty', box).style.display = RS.segments.length || RS.interim ? 'none' : '';
+  RS.segments.forEach((s, i) => {
+    let row = box.querySelector(`.rs-line[data-seg="${i}"]`);
+    if (!row) {
+      row = document.createElement('div');
+      row.className = 'rs-line';
+      row.dataset.seg = i;
+      row.innerHTML = `<span class="rs-t"></span><span class="rs-say" contenteditable="true" spellcheck="true"></span><button type="button" class="rs-x" data-act="rs-toggle" data-i="${i}"></button>`;
+      box.insertBefore(row, interimEl);
+    }
+    row.classList.toggle('rs-mark', !!s.mark);
+    row.classList.toggle('rejected', !!s.rejected);
+    row.classList.toggle('typed', !!s.typed);
+    row.classList.toggle('edited', !!s.edited);
+    $('.rs-t', row).textContent = `${mmss(s.t)}${s.mark ? ' ★' : ''}`;
+    if (row !== editing && $('.rs-say', row).textContent !== s.text) $('.rs-say', row).textContent = s.text;
+    const x = $('.rs-x', row);
+    x.textContent = s.rejected ? '↺' : '✕';
+    x.title = s.rejected ? 'Put this line back' : 'Leave this line out';
+  });
+  interimEl.innerHTML = RS.interim ? `<span class="rs-t">${mmss(rsElapsed())}</span>${esc(RS.interim)}` : '';
+  if (stick && !editing) box.scrollTop = box.scrollHeight;
 }
+
+// Corrections typed into a line are kept, and new speech never merges into that line again.
+document.addEventListener('input', (e) => {
+  const say = e.target.closest?.('.rs-say');
+  if (!say) return;
+  const s = RS.segments[Number(say.closest('.rs-line').dataset.seg)];
+  if (!s) return;
+  s.text = say.textContent;
+  s.edited = true;
+  say.closest('.rs-line').classList.add('edited');
+  rsSaveDraft();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && e.target.closest?.('.rs-say')) { e.preventDefault(); e.target.blur(); }
+});
 
 function rsListen() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   const rec = new SR();
   rec.continuous = true;
   rec.interimResults = true;
-  rec.lang = navigator.language || 'en-US';
+  rec.lang = speechLang();
   rec.onresult = (e) => {
     let interim = '';
     for (let i = e.resultIndex; i < e.results.length; i++) {
@@ -1285,7 +1350,10 @@ function rsAddSpeech(text) {
     return;
   }
   const last = RS.segments.at(-1);
-  if (last && !last.mark && t - (RS.lastSpeechAt ?? -Infinity) < JOIN_MS) last.text = `${last.text} ${text}`;
+  // Never merge into a line the director corrected, typed, left out or has their cursor in.
+  const focused = document.activeElement?.closest?.('.rs-line')?.dataset.seg;
+  const joinable = last && !last.mark && !last.edited && !last.typed && !last.rejected && focused !== String(RS.segments.length - 1);
+  if (joinable && t - (RS.lastSpeechAt ?? -Infinity) < JOIN_MS) last.text = `${last.text} ${text}`;
   else RS.segments.push({ t, text });
   RS.lastSpeechAt = t;
 }
@@ -2049,6 +2117,13 @@ const ACTIONS = {
   'dn-breakdown':async (d) => { toast('Breaking it into tasks…'); await api('POST', `/api/dept-notes/${d.id}/breakdown`); },
   'dn-delete': (d) => confirmModal('Delete this note?', "It hasn't been broken into tasks yet, so nothing else changes.", 'Delete', () => api('DELETE', `/api/dept-notes/${d.id}`)),
   'review-start': reviewStart,
+  'rs-toggle': (d) => {
+    const s = RS.segments[Number(d.i)];
+    if (!s) return;
+    s.rejected = !s.rejected;
+    rsSaveDraft();
+    rsRender();
+  },
   'review-done': reviewDone,
   'review-mark': () => { RS.segments.push({ t: rsElapsed(), text: 'marked moment', mark: true }); rsSaveDraft(); rsRender(); },
   'review-pause': () => {

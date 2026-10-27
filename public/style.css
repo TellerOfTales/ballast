@@ -305,6 +305,19 @@ select.mini { width: auto; padding: 4px 8px; font-size: 12px; margin-left: auto;
 @keyframes pulse-red { 50% { box-shadow: 0 0 0 6px #ef5b5b00; } 0% { box-shadow: 0 0 0 0 #ef5b5b66; } }
 .rs-text { overflow: auto; margin: 8px auto 0; max-width: 920px; width: 100%; font-size: 14px; line-height: 1.55; }
 .rs-text > div { padding: 1px 0; }
+.rs-line { display: flex; align-items: baseline; gap: 0; border-radius: 6px; }
+.rs-line:hover { background: #ffffff08; }
+.rs-say { flex: 1; outline: none; padding: 1px 4px; border-radius: 4px; cursor: text; }
+.rs-say:focus { background: var(--panel-2); box-shadow: 0 0 0 1px var(--accent); }
+.rs-line.edited .rs-say { color: var(--accent); }
+.rs-line.typed .rs-say::before { content: '✎ '; color: var(--faint); }
+.rs-line.rejected .rs-say { text-decoration: line-through; color: var(--faint); }
+.rs-x { background: none; border: 0; color: var(--faint); padding: 0 6px; font-size: 12px; opacity: 0; }
+.rs-line:hover .rs-x, .rs-line.rejected .rs-x { opacity: 1; }
+.rs-x:hover { color: var(--text); }
+.rs-add { display: flex; gap: 8px; margin: 8px auto 0; max-width: 920px; width: 100%; }
+.rs-add input { flex: 1; }
+.rs-add select { width: auto; font-size: 12px; }
 .rs-t { font-family: var(--mono); font-size: 11px; color: var(--faint); margin-right: 10px; }
 .rs-interim { color: var(--muted); font-style: italic; }
 .rs-mark { color: var(--accent); font-weight: 600; }
