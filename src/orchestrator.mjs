@@ -569,6 +569,42 @@ export function postNote(gameId, { text = '', target = 'all', attachments = [], 
   enqueue(triager, { kind: 'triage', note, prompt: P.triage({ note, director: from, coordinatorFile: game.coordinatorFile }) }, { front: true });
 }
 
+// Cleans up a Director Review speech transcript before it's sent: fixes words the browser
+// misheard, using the game's own vocabulary, without changing what the director meant.
+const TIDY_SCHEMA = {
+  type: 'object',
+  properties: { text: { type: 'string' }, changes: { type: 'string', description: 'One short line listing the main corrections.' } },
+  required: ['text'],
+};
+
+export async function tidyTranscript(gameId, { text = '' }) {
+  const game = must(getGame(gameId), 'Unknown game');
+  must(String(text).trim(), 'The transcript is empty.');
+  const acct = db.accounts.filter((a) => a.loggedIn && !isLimited(a)).sort((a, b) => utilization(a) - utilization(b))[0];
+  must(acct, 'No logged-in account has usage free right now.');
+  const vocab = [...new Set(gameTasks(gameId).slice(-80).map((t) => t.title.replace(/^\s*\[[^\]]+\]\s*/, '')))].join('; ');
+  const { result } = await claude.runQuick({
+    account: acct,
+    args: ['--model', db.settings.triageModel || 'sonnet', '--tools', 'Read', '--json-schema', JSON.stringify(TIDY_SCHEMA)],
+    prompt: `Tidy a speech-recognition transcript of a game director talking while playing "${game.name}".
+The browser's speech recognition mishears words, splits sentences and repeats itself. Fix that:
+- Correct words that were clearly misheard, using the game's own vocabulary below (character, place, item and mechanic names). "work moment" is usually "mark moment".
+- Drop filler ("um", "okay so", "like") and accidental repeats; join broken sentences.
+- Keep every [mm:ss] timestamp at the start of its line and every ★ marker line.
+- Keep the director's meaning, opinions and wording for anything about look and feel. Never add feedback that isn't there; if a phrase is unclear, leave it as it is.
+
+Game brief: ${game.brief?.trim().slice(0, 1500) || '(none)'}
+Vocabulary from the board: ${vocab.slice(0, 4000) || '(none)'}
+
+Transcript:
+${String(text).slice(0, 30000)}`,
+  });
+  if (result) recordUsage({ account: acct, gameId, kind: 'triage', result });
+  const out = result?.structured_output;
+  must(out?.text, 'The tidy-up run returned nothing; the original transcript is unchanged.');
+  return { text: out.text, changes: out.changes || '' };
+}
+
 // One note to several games at once (studio-wide direction, shared tech, art style...).
 export function studioNote({ gameIds = [], text = '', attachments = [] }) {
   const targets = (gameIds.length ? gameIds : db.games.map((g) => g.id)).filter((id) => getGame(id));

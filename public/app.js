@@ -1147,13 +1147,13 @@ function rsRender() {
       <span class="rec-dot${RS.active && !RS.paused ? ' on' : ''}"></span><b>Director Review</b>
       <span class="rs-time">${mmss(rsElapsed())}</span><span class="hint" style="margin:0">${state} · ${RS.segments.filter((s) => !s.mark).length} lines</span>
       <span class="spacer"></span>
-      <button class="ghost small" data-act="review-mark" title="Drop a marker at this moment (also: say it out loud)">★ Mark moment</button>
+      <button class="ghost small" data-act="review-mark" title="Drop a marker here. Or just say &quot;mark that&quot; while you play.">★ Mark moment</button>
       <button class="ghost small" data-act="review-pause">${RS.paused ? 'Resume' : 'Pause'}</button>
       <button class="primary small" data-act="review-done">Done, review notes</button>
       <button class="ghost small" data-act="review-discard">Discard</button>
     </div>
     <div class="rs-text" id="rs-text">${RS.segments.map((s) => `<div class="${s.mark ? 'rs-mark' : ''}"><span class="rs-t">${mmss(s.t)}</span>${esc(s.text)}</div>`).join('')}${RS.interim ? `<div class="rs-interim"><span class="rs-t">${mmss(rsElapsed())}</span>${esc(RS.interim)}</div>` : ''}
-      ${!RS.segments.length && !RS.interim ? '<div class="hint">Start playing and talk through what you notice. Paste screenshots into the box below at any time; they go out with your notes.</div>' : ''}</div>`;
+      ${!RS.segments.length && !RS.interim ? '<div class="hint">Start playing and talk through what you notice. Say "mark that" to flag a moment. Paste screenshots into the box below at any time; they go out with your notes.</div>' : ''}</div>`;
   const box = $('#rs-text', el);
   box.scrollTop = box.scrollHeight;
 }
@@ -1169,7 +1169,7 @@ function rsListen() {
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const text = e.results[i][0].transcript.trim();
       if (!text) continue;
-      if (e.results[i].isFinal) RS.segments.push({ t: rsElapsed(), text });
+      if (e.results[i].isFinal) rsAddSpeech(text);
       else interim += `${text} `;
     }
     RS.interim = interim.trim();
@@ -1177,16 +1177,49 @@ function rsListen() {
     rsRender();
   };
   rec.onerror = (e) => {
-    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed' || e.error === 'audio-capture') {
       RS.active = false;
-      toast('Microphone access was blocked. Allow it for this page (address bar) and try again.', true);
+      toast(e.error === 'audio-capture' ? 'No microphone found. Plug one in and try again.' : 'Microphone access was blocked. Allow it for this page (address bar) and try again.', true);
       rsRender();
+    } else if (e.error === 'network' && !RS.netWarned) {
+      RS.netWarned = true;
+      toast('Speech recognition lost its connection; it keeps retrying. Lines may be missing for a moment.', true);
     }
   };
-  // Browsers end recognition after silences or ~a minute; keep it going for the whole session.
-  rec.onend = () => { if (RS.active && !RS.paused && RS.rec === rec) setTimeout(() => { try { rec.start(); } catch { /* already started */ } }, 200); };
+  // Browsers end recognition after silences or about a minute. Whatever was mid-sentence at that
+  // moment never becomes "final", so keep it rather than lose it, then restart straight away.
+  rec.onend = () => {
+    if (RS.rec !== rec) return;
+    if (RS.interim) {
+      rsAddSpeech(RS.interim);
+      RS.interim = '';
+      rsSaveDraft();
+      rsRender();
+    }
+    if (RS.active && !RS.paused) setTimeout(() => { try { rec.start(); } catch { /* already restarting */ } }, 60);
+  };
   RS.rec = rec;
   rec.start();
+}
+
+// Saying "mark that" / "mark moment" while playing drops a ★ marker (you can't click mid-game).
+const MARK_RE = /\b(?:mark(?:ed)?|work)\s+(?:that|this|it|here|(?:the\s+)?moment)\b/i;
+// Speech arrives in short bursts; anything within a few seconds of the last line joins it,
+// so the transcript reads as sentences instead of fragments.
+const JOIN_MS = 4000;
+
+function rsAddSpeech(text) {
+  const t = rsElapsed();
+  if (MARK_RE.test(text)) {
+    const rest = text.replace(MARK_RE, '').replace(/\s{2,}/g, ' ').trim();
+    RS.segments.push({ t, text: rest ? `marked: ${rest}` : 'marked moment', mark: true });
+    RS.lastSpeechAt = t;
+    return;
+  }
+  const last = RS.segments.at(-1);
+  if (last && !last.mark && t - (RS.lastSpeechAt ?? -Infinity) < JOIN_MS) last.text = `${last.text} ${text}`;
+  else RS.segments.push({ t, text });
+  RS.lastSpeechAt = t;
 }
 
 function reviewStart() {
@@ -1197,7 +1230,7 @@ function reviewStart() {
   let draft = null;
   try { draft = JSON.parse(load(RS_DRAFT) || 'null'); } catch { /* none */ }
   const begin = (resume) => {
-    Object.assign(RS, { active: true, paused: false, interim: '', gameId: S.gameId, pausedMs: 0, pausedAt: 0 });
+    Object.assign(RS, { active: true, paused: false, interim: '', gameId: S.gameId, pausedMs: 0, pausedAt: 0, lastSpeechAt: undefined, netWarned: false });
     RS.segments = resume ? draft.segments : [];
     RS.startedAt = Date.now() - (resume ? draft.elapsed : 0);
     rsListen();
@@ -1232,8 +1265,9 @@ function reviewDone() {
   modal({
     title: 'Send Director Review to all agents',
     wide: true,
-    body: `<p class="hint" style="margin-top:0">${minutes} min session. Fix anything the transcription got wrong; it doesn't need to be tidy. The agent with the most usage headroom turns it into a task breakdown, then everyone claims work.</p>
+    body: `<p class="hint" style="margin-top:0">${minutes} min session. Fix anything the transcription got wrong, or press <b>Tidy up</b> to have Claude fix misheard words using this game's names and drop the filler. It doesn't need to be neat. The agent with the most usage headroom turns it into a task breakdown, then everyone claims work.</p>
       <textarea name="text" style="width:100%;height:52vh;font-family:var(--mono);font-size:13px">${esc(text)}</textarea>
+      <div class="row" style="margin-top:6px"><button type="button" class="ghost small" data-tidy>Tidy up with Claude</button><button type="button" class="ghost small" data-untidy hidden>Undo tidy-up</button><span class="hint grow" style="margin:0" data-tidy-status></span></div>
       ${S.pending.feed.length ? `<p class="hint">${S.pending.feed.length} attachment(s) from the box below go along with it.</p>` : ''}`,
     actions: [
       { label: 'Discard', kind: 'danger', onClick: () => { store(RS_DRAFT, ''); } },
@@ -1251,6 +1285,29 @@ function reviewDone() {
         },
       },
     ],
+    onMount: (root) => {
+      const ta = $('textarea', root);
+      const status = $('[data-tidy-status]', root);
+      let original = null;
+      $('[data-tidy]', root).onclick = async (e) => {
+        e.target.disabled = true;
+        status.textContent = 'Tidying… (about 10 to 30 seconds)';
+        try {
+          const r = await api('POST', `/api/games/${S.gameId}/tidy-transcript`, { text: ta.value });
+          original = ta.value;
+          ta.value = r.text;
+          $('[data-untidy]', root).hidden = false;
+          status.textContent = r.changes ? `Fixed: ${r.changes}` : 'Tidied.';
+        } catch (err) {
+          status.textContent = err.message;
+        } finally { e.target.disabled = false; }
+      };
+      $('[data-untidy]', root).onclick = (e) => {
+        if (original != null) ta.value = original;
+        e.target.hidden = true;
+        status.textContent = 'Back to the original transcript.';
+      };
+    },
   });
 }
 

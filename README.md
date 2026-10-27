@@ -104,8 +104,8 @@ Notes never stall. If nobody picks a note up within 15 minutes (*Settings*), or 
 ## Director Review (voice)
 
 Press **Director Review** in a game's Feed, play, and talk:
-- **While you play:** the browser transcribes as you speak (Chrome or Edge; allow the microphone once). Lines are timestamped. **★ Mark moment** flags a spot, and you can paste screenshots into the box below at any time. The recording keeps going if you switch tabs, and an unsent review survives a page reload.
-- **When you're done:** fix anything the transcription got wrong, then **Send to all agents**. It goes out as a Director Review note.
+- **While you play:** the browser transcribes as you speak (Chrome or Edge; allow the microphone once). Lines are timestamped, and speech a few seconds apart joins into one line. Say **"mark that"**, or press **★ Mark moment**, to flag a spot. You can paste screenshots into the box below at any time. Words caught mid-sentence when the browser restarts recognition are kept. The recording keeps going if you switch tabs, and an unsent review survives a page reload.
+- **When you're done:** press **Tidy up with Claude** to fix misheard words using the game's own vocabulary and drop filler, keeping timestamps, markers and your meaning. You can undo it. Then **Send to all agents**. It goes out as a Director Review note. Only feedback about the game becomes tasks; remarks about Ballast or testing a feature are ignored.
 - **Coordination:** the agent with the **most usage headroom** coordinates it. It reads through the rambling and recognition errors, merges repeated points, and splits the feedback into department-tagged tasks. If the game has a **Coordinator file** (Settings, e.g. `games/looknormal/coordinator.md`), the feedback and breakdown are recorded there first.
 - **Claiming:** every agent then claims its next tasks, **2 at a time** by default (*Tasks per claim* in Settings). It works through them in order, and each task closes as soon as it's done.
 

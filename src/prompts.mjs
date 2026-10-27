@@ -61,15 +61,21 @@ const attachmentBlock = (attachments) =>
 // repetitive, with recognition errors. It needs extraction, not literal task-per-sentence.
 const REVIEW_SESSION_HINT = `This is a Director Review: a live transcript of the director talking while playing. Expect rambling, repeats and speech-recognition mistakes (read through them for meaning; timestamps like [04:12] mark when it was said, and ★ marks moments they flagged). Pull out every piece of actionable feedback, merge duplicates, and keep the director's own words for anything about feel or look.`;
 
+// Directors also talk about the tools while they play ("testing the transcript", "Ballast should…").
+// That isn't game work and must never land on a game's board.
+const GAME_ONLY = `Only feedback about the game becomes tasks. Ignore anything about Ballast, the review or transcription tool, the agents' workflow, or testing a feature; if nothing in the note is about the game itself, add no tasks and say so.`;
+
 export function triage({ note, director, coordinatorFile }) {
   const session = note.source === 'review-session';
   return `DIRECTOR NOTE #${note.num} from ${director} (triage: you have the most usage headroom on the team, so you're coordinating this one)
 ${note.text}${attachmentBlock(note.attachments)}
 
-${session ? `${REVIEW_SESSION_HINT}\n\n` : ''}You're triaging this note for the whole team. Do not implement anything this turn.
+${session ? `${REVIEW_SESSION_HINT}\n\n` : ''}${GAME_ONLY}
+
+You're triaging this note for the whole team. Do not implement anything this turn.
 1. board_list to see what's already planned.
 2. board_add one task per concrete change the note asks for. Skip anything already on the board. Each task should be doable by one agent, with a clear done-condition, and carry the note's exact wording where it matters. Tag titles: [gameplay] [art] [audio] [ui] [backend] [tech] [qa] [build]. If the note changes the design and a tracked artifact has the "gdd" role, also add a [docs] task to update that GDD.
-${coordinatorFile ? `3. Record the feedback and your task breakdown (task numbers, one line each, grouped by department) in \`${coordinatorFile}\`, commit it, and land it on the shared line so every agent sees it.\n4.` : '3.'} Reply with a 1 to 3 line summary of how you split it, then end your turn. The other agents claim the tasks from here.`;
+${coordinatorFile ? `3. If you added any tasks, record the feedback and your task breakdown (task numbers, one line each, grouped by department) in \`${coordinatorFile}\`, commit it, and land it on the shared line so every agent sees it.\n4.` : '3.'} Reply with a 1 to 3 line summary of how you split it, then end your turn. The other agents claim the tasks from here.`;
 }
 
 export function noteBroadcast({ note, director, taskNums }) {
@@ -212,6 +218,7 @@ ${open.length ? open.map((t) => `- #${t.num} ${t.title}`).join('\n') : '(nothing
 Director note:
 ${note.text}
 ${note.source === 'review-session' ? `\n${REVIEW_SESSION_HINT}\n` : ''}
+${GAME_ONLY}
 
 Return one task per concrete change the note asks for. If the note asks every agent to do something themselves (for example "every agent should read X and introduce themselves"), return it once with everyAgent true; Ballast gives each agent its own copy. Each task must be doable by one agent in one session, with a clear done-condition in its detail, keeping the note's wording where it matters. Tag titles like "[gameplay] ...", "[art] ...", "[ui] ...", "[audio] ...", "[backend] ...", "[qa] ...". If the note changes the design and a GDD is listed below, also return a "[docs] Update the GDD" task describing the change. Return an empty list if everything is already covered. Also return a one-line summary of the split.`;
 }

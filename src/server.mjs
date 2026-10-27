@@ -166,6 +166,7 @@ route('POST', '/api/tasks/:id/approve', (p) => review.approve(p.id));
 route('POST', '/api/tasks/:id/changes', (p, body) => review.requestChanges(p.id, body.feedback));
 route('POST', '/api/games/:id/approve-all', (p, body) => review.approveAll(p.id, body.discipline));
 route('POST', '/api/games/:id/queue-earlier', (p) => review.queueEarlierWork(p.id));
+route('POST', '/api/games/:id/tidy-transcript', (p, body) => orch.tidyTranscript(p.id, body));
 route('POST', '/api/games/:id/dept-notes', (p, body) => deptnotes.add(p.id, body));
 route('POST', '/api/dept-notes/:id/breakdown', (p) => deptnotes.breakDownNow(p.id));
 route('DELETE', '/api/dept-notes/:id', (p) => deptnotes.remove(p.id));
