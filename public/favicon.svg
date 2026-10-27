@@ -1,1 +1,18 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#15181d"/><path d="M7 21h18M9 17h14M11 13h10" stroke="#f2a33a" stroke-width="3" stroke-linecap="round"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="40 -40 1454 1454">
+  <!-- Tab icon: the Ballast U and green half-disc without the wordmark, with heavier bands
+       so it still reads at 16px. -->
+  <defs>
+    <g id="side">
+      <path d="M62 132H256q6 0 9 6l15 32H86q-30 0-30-30q0-8 6-8z"/>
+      <path d="M106 180H372l-34 31H200v8h-34q-12 0-16-8l-6-10H122q-16 0-16-14z"/>
+    </g>
+  </defs>
+  <g fill="#e9a820" transform="translate(0 140)">
+    <use href="#side"/>
+    <use href="#side" transform="translate(1534 0) scale(-1 1)"/>
+  </g>
+  <g fill="none" stroke="#e9a820" transform="translate(0 140)">
+    <path stroke-width="92" d="M190 205V330C190 720 470 960 767 960S1344 720 1344 330V205"/>
+  </g>
+  <path fill="#179a48" transform="translate(0 140)" d="M300 560H1234C1170 760 980 880 767 880S364 760 300 560Z"/>
+</svg>

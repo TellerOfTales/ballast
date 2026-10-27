@@ -407,7 +407,7 @@ function onboarding() {
   const hasAcct = S.st.accounts.length > 0;
   const loggedIn = S.st.accounts.some((a) => a.loggedIn);
   return `<div class="empty">
-    <h2>Ballast</h2>
+    <img src="logo.svg" alt="Ballast" style="width:260px;max-width:80%;margin:0 auto 14px;display:block">
     <p>Every Claude account you add becomes an agent. Point a game at a repo, send notes to the whole team, and they split the work between themselves.</p>
     <div class="steps">
       <div><b>1</b>Add your Claude accounts ${hasAcct ? '✓' : `<button class="primary small" data-act="new-account" style="float:right">Add account</button>`}</div>

@@ -215,7 +215,7 @@ const server = http.createServer(async (req, res) => {
         'set-cookie': `ballast=${db.secrets.uiToken}; HttpOnly; SameSite=Strict; Path=/`,
       });
     }
-    if (/^\/(app\.js|style\.css|favicon\.svg)$/.test(pathname)) return serveFile(res, PUBLIC, pathname.slice(1));
+    if (/^\/(app\.js|style\.css|favicon\.svg|logo\.svg)$/.test(pathname)) return serveFile(res, PUBLIC, pathname.slice(1));
 
     // Sandboxed artifact frames get no cookie, so file URLs can carry a read-only key in
     // the path instead (/f/<key>/...). In the path, relative links inside HTML artifacts keep it.
