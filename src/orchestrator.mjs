@@ -1148,7 +1148,15 @@ export async function agentApi(agentId, tool, args = {}) {
       return `${parked ? `#${t.num} is waiting for the director's approval; don't land it. Ballast tells you when it's approved.` : `Marked #${t.num} done.`}${open ? ` ${open} open task(s) remain on the board: take the next one.` : ' Nothing else is open.'}`;
     }
     case 'ask_director': {
-      const q = inbox.ask({ game, agent, question: args.question, assumption: args.assumption, task: heldTask(agent.id) });
+      // A capture makes a look-and-feel question answerable at a glance.
+      const artifactIds = [];
+      if (args.screenshot) {
+        try {
+          publishArtifact(agent, game, { path: args.screenshot, title: `Question: ${String(args.question || '').slice(0, 80)}` });
+          artifactIds.push(db.artifacts.at(-1).id);
+        } catch { /* the question still goes in without it */ }
+      }
+      const q = inbox.ask({ game, agent, question: args.question, context: args.context, options: args.options, assumption: args.assumption, artifactIds, task: heldTask(agent.id) });
       return `Added to the Director's Inbox (${q.id}). Don't wait for the answer: go ahead with your assumption${q.assumption ? ` ("${q.assumption.slice(0, 120)}")` : ''}. The answer comes to you as a message.`;
     }
     case 'board_block': {

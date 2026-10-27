@@ -322,7 +322,10 @@ button.pill { cursor: pointer; }
 .tline { padding: 4px 0; font-size: 13px; border-bottom: 1px solid var(--line); }
 .tline:last-child { border-bottom: 0; }
 .card > b { display: block; margin-bottom: 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); }
-.assume { margin-top: 8px; font-size: 13px; color: var(--muted); border-left: 2px solid var(--accent); padding-left: 10px; }
+.q-context { margin-top: 8px; font-size: 13.5px; }
+.q-options { margin: 8px 0 0; padding-left: 20px; font-size: 13px; color: var(--text); }
+.q-options li { margin: 2px 0; }
+.assume {margin-top: 8px; font-size: 13px; color: var(--muted); border-left: 2px solid var(--accent); padding-left: 10px; }
 .caps { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; margin-top: 10px; }
 .caps.big { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
 .cap { position: relative; padding: 0; border: 1px solid var(--line-2); border-radius: 8px; overflow: hidden; background: #0a0c0f; aspect-ratio: 16 / 10; display: grid; place-items: center; color: var(--faint); font-size: 12px; font-weight: 700; }

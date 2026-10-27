@@ -8,7 +8,7 @@ import { disciplineOf } from './review.mjs';
 
 db.inbox ||= [];
 
-export function ask({ game, agent, question, assumption = '', task = null, source = 'agent' }) {
+export function ask({ game, agent, question, assumption = '', context = '', options = [], artifactIds = [], task = null, source = 'agent' }) {
   question = String(question || '').trim();
   if (!question) throw Object.assign(new Error('Empty question'), { status: 400 });
   const q = {
@@ -20,13 +20,22 @@ export function ask({ game, agent, question, assumption = '', task = null, sourc
     taskNum: task?.num || null,
     discipline: task?.discipline || disciplineOf(task?.title || ''),
     question: question.slice(0, 2000),
+    context: String(context || '').trim().slice(0, 3000),
+    options: (Array.isArray(options) ? options : [options]).map((o) => String(o || '').trim()).filter(Boolean).slice(0, 6),
     assumption: String(assumption || '').trim().slice(0, 1000),
+    artifactIds,
     source,
     status: 'open',
     createdAt: Date.now(),
   };
   db.inbox.push(q);
-  orch.feedPost(game.id, { kind: 'question', from: q.agentName, agentId: q.agentId, questionId: q.id, text: `${q.question}${q.assumption ? `\nGoing with: ${q.assumption}` : ''}` });
+  orch.feedPost(game.id, {
+    kind: 'question',
+    from: q.agentName,
+    agentId: q.agentId,
+    questionId: q.id,
+    text: [q.question, q.context, q.options.length && q.options.map((o) => `- ${o}`).join('\n'), q.assumption && `Going with: ${q.assumption}`].filter(Boolean).join('\n\n'),
+  });
   save();
   changed();
   return q;

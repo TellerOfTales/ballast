@@ -89,14 +89,17 @@ const TOOLS = [
   },
   {
     name: 'ask_director',
-    description: "Put a question in the Director's Inbox. It never blocks: say what you're assuming, carry on with that assumption, and move to the next task when this one is done. The answer arrives later as a message.",
+    description: "Put a question in the Director's Inbox. It never blocks: say what you're assuming, carry on with that assumption, and move to the next task when this one is done. The answer arrives later as a message.\n\nThe director judges look and feel, not code. They don't know file names, systems or task numbers, and they read the Inbox cold, between play sessions. Every field must stand on its own in player-facing words: where in the game, what the player sees, hears or feels, and what changes with each option. Never mention files, functions, variables or code. Attach a screenshot or short clip whenever the question is about something visible or audible.",
     inputSchema: {
       type: 'object',
       properties: {
-        question: { type: 'string' },
-        assumption: { type: 'string', description: "What you're going with until you hear back." },
+        question: { type: 'string', description: 'The decision in one plain sentence, e.g. "Should the ghost screen stay dark, or lighten so names are readable?"' },
+        context: { type: 'string', description: "Where this is in the game and what the player experiences right now (2 to 5 sentences). How you got here, and why it matters for feel. No file names or code." },
+        options: { type: 'array', items: { type: 'string' }, description: 'The 2 to 4 realistic choices, each with what the player would notice, e.g. "Lighten the overlay: names readable, but the death moment feels less heavy".' },
+        assumption: { type: 'string', description: "Which option you're going with until you hear back, and why, in one or two sentences." },
+        screenshot: { type: 'string', description: 'Optional path to a screenshot, GIF, video or audio clip that shows what the question is about.' },
       },
-      required: ['question', 'assumption'],
+      required: ['question', 'context', 'assumption'],
     },
   },
   {

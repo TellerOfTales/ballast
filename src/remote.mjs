@@ -310,12 +310,29 @@ export async function poll() {
   }
 }
 
-// "## Questions" lines in a report ("- question -> assumption") go to the Director's Inbox.
+// The "## Questions" section of a report goes to the Director's Inbox. Each question is a
+// "### question" block with Context / Options / Going with / Capture lines; older reports
+// used one "- question -> assumption" line each, which still works.
 function reportQuestions(body) {
-  const section = body.match(/##\s*Questions\s*\n([\s\S]*?)(?=\n##\s|$)/i)?.[1] || '';
+  const section = body.match(/^##\s*Questions\s*\n([\s\S]*?)(?=\n##\s|(?![\s\S]))/im)?.[1] || '';
+  const blocks = section.split(/^###\s+/m).slice(1);
+  if (blocks.length) {
+    return blocks.map((block) => {
+      const [first, ...rest] = block.split('\n');
+      const text = rest.join('\n');
+      const field = (name) => text.match(new RegExp(`^[ \\t]*${name}:[ \\t]*([\\s\\S]*?)(?=^[ \\t]*(?:Context|Options|Going with|Capture):|(?![\\s\\S]))`, 'im'))?.[1]?.trim() || '';
+      return {
+        question: first.trim(),
+        context: field('Context'),
+        options: field('Options').split('\n').map((o) => o.replace(/^\s*[-*]\s*/, '').trim()).filter(Boolean),
+        assumption: field('Going with'),
+        capture: field('Capture').split(/\s/)[0] || '',
+      };
+    }).filter((q) => q.question);
+  }
   return [...section.matchAll(/^\s*[-*]\s*(.+)$/gm)].map(([, line]) => {
     const [question, assumption = ''] = line.split(/\s*(?:->|→)\s*/);
-    return { question: question.trim(), assumption: assumption.trim() };
+    return { question: question.trim(), assumption: assumption.trim(), context: '', options: [], capture: '' };
   }).filter((q) => q.question);
 }
 
@@ -340,8 +357,12 @@ async function complete(game, agent, item, report, branch) {
   const body = report.replace(/^STATUS:.*\n?/im, '').trim();
   const pr = body.match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/)?.[0];
   const task = db.tasks.find((t) => t.id === taskId);
-  for (const q of reportQuestions(body)) inbox.ask({ game, agent, task, question: q.question, assumption: q.assumption, source: 'report' });
   const media = await pullMedia(game, agent, task, branch, key);
+  for (const q of reportQuestions(body)) {
+    // "Capture: dagger.gif" points at a file in this task's captures folder, pulled in above.
+    const cap = q.capture && db.artifacts.filter((a) => a.gameId === game.id && a.taskId === (task?.id || null)).find((a) => a.entry === q.capture.replace(/[^\w.\-]+/g, '_') || a.entry.endsWith(q.capture.split('/').pop()));
+    inbox.ask({ game, agent, task, question: q.question, context: q.context, options: q.options, assumption: q.assumption, artifactIds: cap ? [cap.id] : [], source: 'report' });
+  }
   if (key === 'survey') {
     const brief = body.match(/##\s*Brief\s*\n([\s\S]*?)(?=\n##\s|$)/i)?.[1]?.trim();
     const tasks = [...(body.match(/##\s*Tasks\s*\n([\s\S]*?)(?=\n##\s|$)/i)?.[1] || '').matchAll(/^\s*-\s*(.+?)(?::\s*(.+))?$/gm)];

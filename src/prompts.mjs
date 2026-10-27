@@ -35,7 +35,7 @@ ${game.brief?.trim() || '(No brief yet. Infer direction from the repo and the di
 - read_notes: recent director notes.
 - claude_artifacts / read_claude_artifact: the game's tracked claude.ai artifacts (design docs, review pages, trackers), kept current by Ballast, including ones owned by other accounts. Check them when a task touches design or review feedback.
 - suggest_brief: propose a game brief for the director to accept.
-- ask_director: put a question in the Director's Inbox. Never wait for the answer: state the assumption you're going with, keep working on it, and take the next task. The answer reaches you later as a message.
+- ask_director: put a question in the Director's Inbox. Never wait for the answer: state the assumption you're going with, keep working on it, and take the next task. The answer reaches you later as a message. The director judges look and feel and doesn't know the code: give full context in player-facing words (where in the game, what the player sees, hears and feels, what each option would change), never file names or code, and attach a screenshot or clip when it's about something visible or audible.
 Use your own subagents freely for parallel sub-work inside your task.
 Show your work: for art, animation, UI and VFX tasks, capture screenshots (and a short GIF or video for motion) of the specific assets you touched; for audio, publish the clips. Publish them with publish_artifact so they appear in the director's department review. A tracked artifact with the role "gdd" is the game design document and the source of truth: keep your work consistent with it, and if your task changes the design, say so in your board_done summary.
 If you publish a claude.ai artifact with the Artifact tool, pass its link to publish_artifact as \`url\` so the director and the team can find it.
@@ -129,6 +129,14 @@ export function artifactReview({ title, url, role, summary, dataSummary, comment
 // Cloud games: agents run as Claude Code cloud sessions on the GitHub repo. They can't
 // reach Ballast, so everything they need goes in the prompt and they report through git.
 
+// How cloud agents put questions in their report (Ballast files them in the Director's Inbox).
+const CLOUD_QUESTIONS = `Questions for the director go in a \`## Questions\` section, one block per question. Never wait for answers. The director judges look and feel and doesn't know the code, so write every block in player-facing words, never file names or code:
+  ### <the decision in one plain sentence>
+  Context: where this is in the game and what the player sees, hears and feels right now (2 to 5 sentences)
+  Options: - <choice and what the player would notice> (one line each, 2 to 4)
+  Going with: <the option you chose for now, and why>
+  Capture: <file name of a screenshot or clip in this task's captures folder, if it helps>`;
+
 // Reports live inside the game's folder so a monorepo stays tidy. Always forward slashes: it's a git path.
 export const reportPath = (key, subdir) => `${subdir ? `${subdir.replace(/\/+$/, '')}/` : ''}.ballast/reports/${key}.md`;
 export const mediaPath = (key, subdir) => `${subdir ? `${subdir.replace(/\/+$/, '')}/` : ''}.ballast/media/${key}`;
@@ -155,7 +163,7 @@ ${task.detail || ''}
 - This is a new task in your ongoing session: \`git fetch\` first and branch from the latest \`origin/${game.baseBranch}\`, not from your previous task's branch. Name your branch \`ballast/${key}-${agent.slug}\` if you can choose it.
 - Ship the smallest playable increment first; keep the project building.
 - For art, animation, UI, VFX or audio work, commit screenshots, a short GIF or video of motion, or the audio clips to \`${mediaPath(key, game.subdir)}/\` on your branch. The director reviews them in Ballast.
-- Before you finish, commit \`${reportPath(key, game.subdir)}\` on your branch. First line exactly \`STATUS: DONE\` or \`STATUS: BLOCKED\`, then 2 to 8 lines: what changed, how to see it in game, assumptions, and the PR link. If you have questions for the director, add a \`## Questions\` section with one \`- question -> the assumption you went with\` per line. Never wait for answers.
+- Before you finish, commit \`${reportPath(key, game.subdir)}\` on your branch. First line exactly \`STATUS: DONE\` or \`STATUS: BLOCKED\`, then 2 to 8 lines: what changed, how to see it in game, assumptions, and the PR link. ${CLOUD_QUESTIONS}
 - Push the branch and open a pull request into \`${game.baseBranch}\` titled "${label}".
 ${reviewRuleCloud(policy, game.baseBranch)}
 - Ballast reads only that report file to know you're done, so never skip it, even when blocked.`;
@@ -175,7 +183,7 @@ ${list}
 - \`git fetch\` first and branch from the latest \`origin/${game.baseBranch}\` for every task (one branch and one pull request per task, titled "#<number> <title>"). Name the branch \`ballast/t<number>-${agent.slug}\` if you can choose it.
 - Ship the smallest playable increment first; keep the project building.
 - For art, animation, UI, VFX or audio work, commit screenshots, a short GIF or video of motion, or the audio clips to that task's captures folder.
-- Commit that task's report file on its branch: first line exactly \`STATUS: DONE\` or \`STATUS: BLOCKED\`, then 2 to 8 lines: what changed, how to see it in game, assumptions, and the PR link. Questions for the director go in a \`## Questions\` section, one \`- question -> the assumption you went with\` per line. Never wait for answers.
+- Commit that task's report file on its branch: first line exactly \`STATUS: DONE\` or \`STATUS: BLOCKED\`, then 2 to 8 lines: what changed, how to see it in game, assumptions, and the PR link. ${CLOUD_QUESTIONS}
 - Ballast closes each task when its report lands, so report each one as soon as it's done.`;
 }
 

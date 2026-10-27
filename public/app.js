@@ -1274,7 +1274,10 @@ function questionCard(q) {
   const g = S.st.games.find((x) => x.id === q.gameId);
   return `<div class="card question">
     <div class="row"><b class="grow">${esc(q.question)}</b>${S.view === 'inbox' && g ? `<span class="pill link" data-act="game" data-id="${g.id}">${esc(g.name)}</span>` : ''}</div>
-    <div class="hint">${esc(q.agentName)}${q.taskNum ? ` · on #${q.taskNum}` : ''} · ${clock(q.createdAt)}</div>
+    <div class="hint">${esc(q.agentName)}${q.taskNum ? ` · while working on #${q.taskNum}` : ''} · ${clock(q.createdAt)}</div>
+    ${q.context ? `<div class="q-context md">${md(q.context)}</div>` : ''}
+    ${q.options?.length ? `<ul class="q-options">${q.options.map((o) => `<li>${esc(o)}</li>`).join('')}</ul>` : ''}
+    ${(q.artifactIds || []).length ? `<div class="caps">${q.artifactIds.map((id) => S.st.artifacts.find((a) => a.id === id)).filter(Boolean).map(thumb).join('')}</div>` : ''}
     ${q.assumption ? `<div class="assume">Going with: ${esc(q.assumption)}</div>` : ''}
     ${q.status === 'open'
       ? `<div class="row" style="margin-top:8px"><button class="primary small" data-act="q-answer" data-id="${q.id}">Answer</button><button class="ghost small" data-act="q-dismiss" data-id="${q.id}">Assumption is fine</button></div>`
@@ -1346,7 +1349,10 @@ function answerModal(id) {
   const q = S.st.inbox.find((x) => x.id === id);
   modal({
     title: 'Answer',
-    body: `<p style="margin-top:0"><b>${esc(q.question)}</b></p>${q.assumption ? `<p class="hint">${esc(q.agentName)} is going with: ${esc(q.assumption)}</p>` : ''}
+    body: `<p style="margin-top:0"><b>${esc(q.question)}</b></p>
+      ${q.context ? `<div class="md" style="margin-bottom:8px">${md(q.context)}</div>` : ''}
+      ${q.options?.length ? `<ul class="q-options">${q.options.map((o) => `<li>${esc(o)}</li>`).join('')}</ul>` : ''}
+      ${q.assumption ? `<p class="hint">${esc(q.agentName)} is going with: ${esc(q.assumption)}</p>` : ''}
       <label class="field"><span>Your answer</span><textarea name="answer" rows="5"></textarea><small>Sent to ${esc(q.agentName)} as a message. It adjusts its work if your answer differs from its assumption.</small></label>`,
     actions: [{ label: 'Cancel' }, { label: 'Send answer', kind: 'primary', onClick: (root) => api('POST', `/api/inbox/${id}/answer`, formData(root)) }],
   });
