@@ -275,6 +275,8 @@ label.field small, .hint { display: block; color: var(--faint); font-size: 12px;
 .tbl th { text-align: left; font-size: 11px; color: var(--faint); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; padding: 6px 8px; border-bottom: 1px solid var(--line); }
 .tbl td { padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
 .tbl a { color: var(--text); }
+.tbl b.warn { color: var(--accent); }
+.tbl b.hot { color: var(--red); }
 .game-card.paused { opacity: .7; }
 .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 4px 0 10px; }
 .stats div { background: var(--panel-2); border-radius: 8px; padding: 6px 8px; }

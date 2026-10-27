@@ -18,6 +18,7 @@ import * as inbox from './inbox.mjs';
 import * as deptnotes from './deptnotes.mjs';
 import * as targets from './targets.mjs';
 import * as assets from './assets.mjs';
+import * as reports from './reports.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PUBLIC = path.join(ROOT, 'public');
@@ -99,7 +100,13 @@ route('PATCH', '/api/settings', (_, body) => {
   if (body.cloudTaskTimeoutMin !== undefined) db.settings.cloudTaskTimeoutMin = Math.max(10, Number(body.cloudTaskTimeoutMin) || 240);
   if (body.desktopArtifacts !== undefined) db.settings.desktopArtifacts = !!body.desktopArtifacts;
   if (body.review) review.setStudioPolicy(body.review);
-  for (const key of ['reviewAutoApproveHours', 'deliveryHeadsUpMin', 'deptNoteFallbackMin']) if (body[key] !== undefined) db.settings[key] = Math.max(0, Number(body[key]) || 0);
+  if (body.reportWebhook !== undefined) db.settings.reportWebhook = String(body.reportWebhook).trim();
+  if (body.workHours) {
+    const t = (v, d) => (/^([01]?\d|2[0-3]):[0-5]\d$/.test(String(v || '')) ? String(v).padStart(5, '0') : d);
+    const days = (Array.isArray(body.workHours.days) ? body.workHours.days : []).map(Number).filter((n) => n >= 0 && n <= 6);
+    db.settings.workHours = { start: t(body.workHours.start, '09:00'), end: t(body.workHours.end, '18:00'), days };
+  }
+  for (const key of ['reviewAutoApproveHours', 'deliveryHeadsUpMin', 'deptNoteFallbackMin', 'usageReportMin']) if (body[key] !== undefined) db.settings[key] = Math.max(0, Number(body[key]) || 0);
   for (const key of ['maxConcurrentPerAccount', 'autopilotDailyTurns']) if (body[key] !== undefined) db.settings[key] = Math.max(1, Number(body[key]) || 1);
   for (const key of ['limitRefreshMin', 'cloudSyncMin', 'contentRefreshMin']) if (body[key] !== undefined) db.settings[key] = Math.max(0, Number(body[key]) || 0);
   if (body.limitGuardPct !== undefined) db.settings.limitGuardPct = Math.min(100, Math.max(1, Number(body.limitGuardPct) || 95));
@@ -123,7 +130,8 @@ route('POST', '/api/accounts/:id/sync', (p) => {
   return { started: true };
 });
 
-route('GET', '/api/usage', (_, __, q) => usageSummary(Math.min(60, Math.max(1, Number(q.get('days')) || 14))));
+route('POST', '/api/usage/report', () => reports.report({ reason: 'manual' }));
+route('GET', '/api/usage',(_, __, q) => usageSummary(Math.min(60, Math.max(1, Number(q.get('days')) || 14))));
 route('POST', '/api/studio/notes', (_, body) => orch.studioNote(body));
 route('POST', '/api/studio/attachments', (_, body) => orch.saveStudioAttachment(body));
 

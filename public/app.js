@@ -899,6 +899,7 @@ function studioShell() {
   const games = S.st.games;
   return `<div class="scroll pad studio" style="flex:1">
     <section><div class="section-head"><h3>Accounts &amp; limits</h3><span class="hint">Session = 5-hour limit · Weekly = 7-day limit · autopilot pauses an account above ${S.st.settings.limitGuardPct}%</span></div><div class="acct-grid" id="st-accounts"></div></section>
+    <section><div class="section-head"><h3>Usage reports</h3><span class="hint" id="st-reports-hint"></span><button class="ghost small" data-act="report-now">Report now</button></div><div class="card" id="st-reports"></div></section>
     <section><div class="section-head"><h3>Token usage</h3><span class="hint">Every Claude run Ballast makes: agent turns, artifact syncs, limit checks</span></div><div class="card" id="st-usage"></div></section>
     <section><div class="section-head"><h3>Games</h3><button class="ghost small" data-act="new-game">+ New game</button></div><div class="game-grid" id="st-games"></div></section>
     <section><div class="section-head"><h3>Note to several games</h3></div>
@@ -913,6 +914,12 @@ function renderStudio() {
   if (!$('#st-accounts')) return;
   $('#st-accounts').innerHTML = S.st.accounts.map(accountCard).join('');
   $('#st-usage').innerHTML = usagePanel();
+  $('#st-reports').innerHTML = reportsPanel();
+  const w = S.st.settings.workHours || {};
+  const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  $('#st-reports-hint').textContent = S.st.settings.usageReportMin
+    ? `Every ${S.st.settings.usageReportMin} min during working hours: ${w.start || '?'}–${w.end || '?'}, ${(w.days || []).length === 7 ? 'every day' : (w.days || []).map((d) => dayNames[d]).join(' ')} (change in Settings)`
+    : 'Scheduled reports are off (Settings)';
   $('#st-games').innerHTML = S.st.games.map(gameCard).join('');
   $('#st-cloud').innerHTML = cloudInbox();
 }
@@ -938,6 +945,20 @@ function accountCard(a) {
       <button class="ghost small" data-act="sync" data-id="${a.id}" ${a.syncing || !a.loggedIn ? 'disabled' : ''}>${a.syncing ? 'Syncing…' : 'Sync'}</button>
     </div>
   </div>`;
+}
+
+// The latest limit report as a table, with earlier ones folded underneath.
+function reportsPanel() {
+  const reports = [...(S.st.usageReports || [])].reverse();
+  if (!reports.length) return '<p class="hint" style="margin:0">No reports yet. The first one arrives at the start of your working hours, or press Report now.</p>';
+  const resets = (ms) => (ms ? (ms - Date.now() < 36 * 3600e3 ? `resets in ${dur(Math.max(0, ms - Date.now())).replace(/ \d+s$/, '')}` : `resets ${new Date(ms).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}`) : '');
+  const pct = (w) => (w ? `<b class="${w.pct >= 90 ? 'hot' : w.pct >= 70 ? 'warn' : ''}">${w.pct}%</b> <span class="hint" style="display:inline">${resets(w.resetsAt)}</span>` : '<span class="hint" style="display:inline">?</span>');
+  const table = (r) => `<table class="tbl" style="margin-top:0"><thead><tr><th>Account</th><th>Session (5h)</th><th>Weekly (7d)</th><th>Tokens today</th><th></th></tr></thead><tbody>
+    ${r.accounts.map((a) => `<tr><td>${esc(a.name)}<div class="hint" style="margin:0">${esc(a.email)}</div></td><td>${pct(a.session)}</td><td>${pct(a.weekly)}</td><td>${fmtTokens(a.tokensToday)} <span class="hint" style="display:inline">${money(a.costToday)}</span></td>
+      <td>${a.status === 'ok' ? '' : `<span class="pill ${a.status === 'near limit' ? 'limited' : 'error'}">${esc(a.status)}</span>`}</td></tr>`).join('')}</tbody></table>`;
+  const [latest, ...older] = reports;
+  return `<div class="hint" style="margin:0 0 6px">Latest: ${clock(latest.at)}${latest.reason === 'manual' ? ' (on request)' : ''}${latest.shareError ? ` · webhook failed: ${esc(latest.shareError)}` : ''}</div>${table(latest)}
+    ${older.length ? `<details style="margin-top:10px"><summary class="hint" style="display:inline;cursor:pointer">Earlier reports (${older.length})</summary>${older.map((r) => `<div class="hint" style="margin:12px 0 4px">${clock(r.at)}</div>${table(r)}`).join('')}</details>` : ''}`;
 }
 
 function usagePanel() {
@@ -1878,6 +1899,14 @@ function globalSettingsModal() {
         <label class="field"><span>Auto-approve unreviewed work after (hours)</span><input name="reviewAutoApproveHours" type="number" min="0" value="${s.reviewAutoApproveHours}"><small>Only for "Approve first" areas. 0 = never.</small></label>
         <label class="field"><span>Delivery heads-up (minutes before each check-in)</span><input name="deliveryHeadsUpMin" type="number" min="0" value="${s.deliveryHeadsUpMin}"></label>
       </div>
+      <h4 class="sub-h">Working hours and usage reports</h4>
+      <div class="two">
+        <label class="field"><span>Working hours</span><div class="row"><input name="wh.start" type="time" value="${esc(s.workHours?.start || '09:00')}"><span class="hint" style="margin:0">to</span><input name="wh.end" type="time" value="${esc(s.workHours?.end || '18:00')}"></div></label>
+        <label class="field"><span>Report every (min)</span><input name="usageReportMin" type="number" min="0" value="${s.usageReportMin}"><small>Each account's session and weekly limits, during working hours. 0 = off.</small></label>
+      </div>
+      <div class="field"><span class="field-label">Working days</span><div class="row">${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((n, i) => `<label class="check" style="margin:0 10px 0 0"><input type="checkbox" name="wh.day${i}" ${(s.workHours?.days || []).includes(i) ? 'checked' : ''}><span>${n}</span></label>`).join('')}</div>
+        <small class="hint">Background limit checks also only run in these hours.</small></div>
+      <label class="field"><span>Send reports to (Slack or Discord webhook, optional)</span><input name="reportWebhook" value="${esc(s.reportWebhook || '')}" placeholder="https://hooks.slack.com/…"></label>
       <h4 class="sub-h">Limits</h4>
       <div class="two">
         <label class="field"><span>Re-check idle accounts every (min)</span><input name="limitRefreshMin" type="number" min="0" value="${s.limitRefreshMin}"><small>A one-word run on a small model; 0 turns it off. Busy accounts update with every turn.</small></label>
@@ -1904,7 +1933,9 @@ function globalSettingsModal() {
         const f = formData(root);
         const reviewModes = {};
         for (const k of Object.keys(f)) if (k.startsWith('review.')) { reviewModes[k.slice(7)] = f[k]; delete f[k]; }
-        return api('PATCH', '/api/settings', { ...f, review: reviewModes });
+        const workHours = { start: f['wh.start'], end: f['wh.end'], days: [0, 1, 2, 3, 4, 5, 6].filter((i) => f[`wh.day${i}`]) };
+        for (const k of Object.keys(f)) if (k.startsWith('wh.')) delete f[k];
+        return api('PATCH', '/api/settings', { ...f, review: reviewModes, workHours });
       },
     }],
   });
@@ -1941,6 +1972,7 @@ const ACTIONS = {
   'dept-mode': (d) => api('PATCH', `/api/games/${S.gameId}`, { review: { [d.d]: d.mode } }),
   'review-approve': async (d) => { const t = await api('POST', `/api/tasks/${d.id}/approve`); toast(`Approved #${t.num}`); },
   'review-changes': (d) => changesModal(d.id),
+  'report-now': async () => { toast('Checking every account…'); await api('POST', '/api/usage/report'); },
   'targets-add': (d) => {
     const input = document.createElement('input');
     input.type = 'file';

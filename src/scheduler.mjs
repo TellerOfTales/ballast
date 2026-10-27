@@ -12,6 +12,7 @@ import { syncAccount, isSyncing } from './cloud.mjs';
 import { poll as pollCloudSessions } from './remote.mjs';
 import { autoApproveTick } from './review.mjs';
 import { tick as deptNotesTick } from './deptnotes.mjs';
+import { tick as reportsTick, inWorkHours } from './reports.mjs';
 
 const running = new Map(); // gameId -> child process
 const SLOT_WINDOW_MS = 90 * 60e3; // a missed check-in still fires if Ballast starts within 90 min
@@ -159,7 +160,8 @@ async function keepFresh() {
     const now = Date.now();
     const s = db.settings;
     const ready = db.accounts.filter((a) => a.loggedIn && !(a.limitedUntil > now));
-    if (s.limitRefreshMin > 0) {
+    // Background limit checks only run in working hours; busy accounts still report with every turn.
+    if (s.limitRefreshMin > 0 && inWorkHours()) {
       for (const acct of ready) {
         const last = Math.max(acct.usage?.updatedAt || 0, acct.usage?.probedAt || 0);
         // Busy accounts report limits with every turn, so they never need a probe.
@@ -185,6 +187,7 @@ function tick() {
   if (ticks++ % 3 === 0) pollCloudSessions().catch(() => {}); // every 90s
   if (ticks % 10 === 0) autoApproveTick().catch(() => {}); // every 5 min
   deptNotesTick().catch(() => {});
+  reportsTick();
   const now = Date.now();
   for (const game of db.games) {
     if (game.status === 'paused') continue;

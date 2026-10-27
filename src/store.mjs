@@ -45,6 +45,9 @@ const DEFAULTS = {
     reviewAutoApproveHours: 24, // gated work nobody looked at is approved after this (0 = never)
     deliveryHeadsUpMin: 45, // tell the team this long before each check-in build
     deptNoteFallbackMin: 15, // a department note nobody picks up is broken down by Ballast after this (0 = never)
+    workHours: { start: '09:00', end: '18:00', days: [1, 2, 3, 4, 5] }, // when the director is working (0 = Sunday)
+    usageReportMin: 90, // every account reports its limits this often during working hours (0 = off)
+    reportWebhook: '', // Slack/Discord webhook that also gets each usage report
   },
   secrets: {
     uiToken: crypto.randomBytes(24).toString('hex'),
@@ -63,6 +66,7 @@ const DEFAULTS = {
   inbox: [], // Director's Inbox: questions agents asked without stopping
   deptNotes: [], // notes left for a whole department, tracked until their tasks are done
   targets: [], // quality targets: reference images per department
+  usageReports: [], // periodic session/weekly limit reports, newest last
 };
 
 function load() {

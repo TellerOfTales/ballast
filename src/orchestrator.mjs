@@ -87,6 +87,7 @@ export function publicState() {
     inbox: db.inbox,
     deptNotes: db.deptNotes,
     targets: db.targets,
+    usageReports: db.usageReports.slice(-20),
     disciplines: review.DISCIPLINES.map(({ id, label }) => ({ id, label })),
     games: db.games,
     agents: db.agents.map((a) => {
