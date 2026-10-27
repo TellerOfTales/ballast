@@ -322,7 +322,17 @@ button.pill { cursor: pointer; }
 .tline { padding: 4px 0; font-size: 13px; border-bottom: 1px solid var(--line); }
 .tline:last-child { border-bottom: 0; }
 .card > b { display: block; margin-bottom: 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); }
-.dept-note-form { margin-top: 16px; display: grid; gap: 8px; }
+.targets-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+.target-card { padding: 8px; }
+.target-card .cap { width: 100%; }
+.cap-badge { position: absolute; top: 6px; left: 6px; background: var(--accent); color: var(--accent-ink); font-size: 10px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; padding: 1px 6px; border-radius: 4px; }
+.target-cap { border-color: var(--accent); }
+.drop-hint { border: 1px dashed var(--line-2); border-radius: var(--radius); padding: 22px; text-align: center; color: var(--muted); font-size: 13px; }
+[data-target-drop].drag .drop-hint, [data-target-drop].drag .targets-grid { outline: 2px dashed var(--accent); outline-offset: 4px; border-radius: var(--radius); }
+.compare { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 4px 10px; margin-top: 10px; }
+.compare > .hint { margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+.compare .caps { margin: 0; }
+.dept-note-form {margin-top: 16px; display: grid; gap: 8px; }
 .dept-note-form textarea { min-height: 64px; }
 .deptnote { margin-bottom: 10px; }
 .deptnote .num { font-family: var(--mono); color: var(--accent); font-weight: 700; }

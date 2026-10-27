@@ -138,6 +138,26 @@ export const readRemoteBlob = (dir, branch, file) => git(dir, ['show', `refs/bal
 
 export const showRemoteFile =(dir, branch, file) => git(dir, ['show', `refs/ballast/remote/${branch}:${file}`]).catch(() => null);
 
+// Publishes a set of files as the only contents of `branch` on origin, without touching the
+// clone's working tree, index or other branches: blobs are written straight to the object store,
+// a tree is built in a throwaway index, and a parentless commit is force-pushed to the branch.
+export async function publishFlatBranch(dir, branch, files, message) {
+  const tmpIndex = path.join(dir, '.git', `ballast-index-${Date.now()}`);
+  const env = { ...process.env, GIT_INDEX_FILE: tmpIndex };
+  try {
+    for (const f of files) {
+      const sha = await git(dir, ['hash-object', '-w', f.path]);
+      await git(dir, ['update-index', '--add', '--cacheinfo', `100644,${sha},${f.name}`], { env });
+    }
+    const tree = await git(dir, ['write-tree'], { env });
+    const commit = await git(dir, [...(await identityArgs(dir)), 'commit-tree', tree, '-m', message]);
+    await git(dir, ['push', '--force', '--quiet', 'origin', `${commit}:refs/heads/${branch}`]);
+    return commit;
+  } finally {
+    fs.rmSync(tmpIndex, { force: true });
+  }
+}
+
 // Brings the local clone to the remote base branch. It must be a real branch, not a detached
 // commit: `claude --cloud` starts the session from the clone's remote at its current branch.
 export async function syncClone(dir, base) {

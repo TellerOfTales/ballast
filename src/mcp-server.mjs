@@ -88,6 +88,17 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
   },
   {
+    name: 'reference_targets',
+    description: "The director's quality targets: reference images (or clips) that set the quality bar per department. With no arguments, returns the ones matching your current task. Open the returned files with Read.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        subject: { type: 'string', description: 'What you are working on, e.g. "barrels" or "lantern lighting".' },
+        discipline: { type: 'string', enum: ['gameplay', 'art', 'audio', 'backend'] },
+      },
+    },
+  },
+  {
     name: 'task_dept_note',
     description: "Break a department note from the director (e.g. \"D3\") into board tasks. Creates the tasks for the whole team, links them to the note and marks the note TASKED; it's archived automatically once they're all done.",
     inputSchema: {

@@ -15,6 +15,7 @@ export const paths = {
   builds: path.join(HOME, 'builds'),
   cloud: path.join(HOME, 'cloud'),
   clones: path.join(HOME, 'clones'), // GitHub repos of cloud-run games
+  targets: path.join(HOME, 'targets'), // quality target images per game
   studioAttachments: path.join(HOME, 'studio', 'attachments'),
   tmp: path.join(HOME, 'tmp'),
 };
@@ -60,6 +61,7 @@ const DEFAULTS = {
   cloudIndex: {}, // accountId -> last artifact listing, for discovery
   inbox: [], // Director's Inbox: questions agents asked without stopping
   deptNotes: [], // notes left for a whole department, tracked until their tasks are done
+  targets: [], // quality targets: reference images per department
 };
 
 function load() {

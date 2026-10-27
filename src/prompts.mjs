@@ -35,6 +35,7 @@ ${game.brief?.trim() || '(No brief yet. Infer direction from the repo and the di
 - read_notes: recent director notes.
 - claude_artifacts / read_claude_artifact: the game's tracked claude.ai artifacts (design docs, review pages, trackers), kept current by Ballast, including ones owned by other accounts. Check them when a task touches design or review feedback.
 - suggest_brief: propose a game brief for the director to accept.
+- reference_targets: the director's quality targets (reference images) for a department or subject. Check them before visual or audio work.
 - ask_director: put a question in the Director's Inbox. Never wait for the answer: state the assumption you're going with, keep working on it, and take the next task. The answer reaches you later as a message. The director judges look and feel and doesn't know the code: give full context in player-facing words (where in the game, what the player sees, hears and feels, what each option would change), never file names or code, and attach a screenshot or clip when it's about something visible or audible.
 Use your own subagents freely for parallel sub-work inside your task.
 Show your work: for art, animation, UI and VFX tasks, capture screenshots (and a short GIF or video for motion) of the specific assets you touched; for audio, publish the clips. Publish them with publish_artifact so they appear in the director's department review. A tracked artifact with the role "gdd" is the game design document and the source of truth: keep your work consistent with it, and if your task changes the design, say so in your board_done summary.
@@ -261,6 +262,21 @@ You're working in ${label}, so you've picked up this note:
 ${note.text}
 
 Break it into board tasks for the team (don't do them yourself unless they are your tasks above). In your first task's report, add a section \`## Note ${ref} tasks\` with one \`- [tag] title: done-condition\` line per concrete change, keeping the director's wording where it matters. Ballast puts them on the board and marks the note TASKED.`;
+}
+
+// Quality targets: the director's reference images for the bar this work should meet.
+export function targetsLocal(described) {
+  return `QUALITY TARGETS from the director (open them with the Read tool before you start):
+${described}
+Meet this bar: detail, palette, wear, lighting, silhouette, feel. Don't copy them. When you publish captures, frame them like the closest target and say in board_done which target you compared against and how close you got.`;
+}
+
+export function targetsCloud(described, branch) {
+  return `## Quality targets from the director
+Reference images that set the quality bar for this work. They're on the \`${branch}\` branch (not main). Read them with:
+\`git fetch origin ${branch} && mkdir -p /tmp/ballast-targets && git archive FETCH_HEAD | tar -x -C /tmp/ballast-targets\`
+${described}
+Meet this bar (detail, palette, wear, lighting, silhouette, feel) without copying them. Frame your captures like the closest target and say in your report which target you compared against and how close you got.`;
 }
 
 // Appended to every task hand-off so agents plan around the daily build times.

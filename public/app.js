@@ -1331,16 +1331,36 @@ function thumb(a) {
   return `<button class="cap" data-act="art-open" data-id="${a.id}" title="${esc(a.title)}">${inner}<span class="cap-title">${esc(a.title)}</span></button>`;
 }
 
+// Same matching the server uses to hand targets to agents: shared subject words with the task,
+// else the department's whole set.
+const words = (s) => String(s || '').toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2);
+function targetsFor(task, g) {
+  const pool = (S.st.targets || []).filter((x) => x.gameId === g.id && x.discipline === task.discipline);
+  const tw = new Set(words(`${task.title} ${task.detail || ''}`));
+  const hits = pool.map((x) => ({ x, n: [...x.tags.flatMap(words), ...words(x.title)].filter((w) => tw.has(w)).length })).filter((s) => s.n).sort((a, b) => b.n - a.n).map((s) => s.x);
+  return (hits.length ? hits : pool).slice(0, 4);
+}
+const targetUrl = (x) => fileUrl('targets', x.gameId, x.id, x.file);
+function targetThumb(x) {
+  const inner = x.kind === 'image' ? `<img src="${targetUrl(x)}" loading="lazy" alt="">`
+    : x.kind === 'video' ? `<video src="${targetUrl(x)}" muted loop playsinline preload="metadata" onmouseenter="this.play()" onmouseleave="this.pause()"></video>`
+    : `<span>${esc(x.kind.toUpperCase())}</span>`;
+  return `<button class="cap target-cap" data-act="target-view" data-id="${x.id}" title="${esc(x.title)}">${inner}<span class="cap-badge">target</span><span class="cap-title">${esc(x.title)}</span></button>`;
+}
+
 function reviewCard(t, g) {
   const agent = agentOf(t.doneBy || t.claimedBy);
   const caps = capturesFor(g.id, (a) => a.taskId === t.id);
+  const refs = caps.length ? targetsFor(t, g) : [];
   const waiting = t.status === 'review';
   return `<div class="card review-card">
     <div class="row"><span class="num">#${t.num}</span><b class="grow">${esc(t.title.replace(/^\s*\[[^\]]+\]\s*/, ''))}</b>
       <span class="pill ${waiting ? 'limited' : 'success'}">${waiting ? 'waiting to merge' : 'merged'}</span></div>
     <div class="hint">${esc(agent?.name || 'agent')} · ${clock(t.doneAt || t.updatedAt)}${t.pr ? ` · <a href="${esc(t.pr)}" target="_blank" rel="noopener">pull request</a>` : ''}${t.branch && !t.pr ? ` · branch ${esc(t.branch)}` : ''}</div>
     ${t.summary ? clamp(t.summary, md(t.summary)) : ''}
-    ${caps.length ? `<div class="caps">${caps.slice(0, 8).map(thumb).join('')}</div>` : ''}
+    ${refs.length
+      ? `<div class="compare"><span class="hint">Target</span><div class="caps">${refs.map(targetThumb).join('')}</div><span class="hint">Result</span><div class="caps">${caps.slice(0, 8).map(thumb).join('')}</div></div>`
+      : caps.length ? `<div class="caps">${caps.slice(0, 8).map(thumb).join('')}</div>` : ''}
     <div class="row" style="margin-top:10px">
       <button class="primary small" data-act="review-approve" data-id="${t.id}">${waiting ? 'Approve & merge' : 'Looks good'}</button>
       <button class="ghost small" data-act="review-changes" data-id="${t.id}">Request changes</button>
@@ -1411,6 +1431,20 @@ function renderDept(d) {
         <div class="card"><b>Up next</b>${upNext.slice(0, 12).map(line).join('') || '<div class="hint">Nothing on the board.</div>'}${upNext.length > 12 ? `<div class="hint">and ${upNext.length - 12} more</div>` : ''}</div>
       </div></section>
 
+    ${(() => {
+      const tg = (S.st.targets || []).filter((x) => x.gameId === g.id && x.discipline === d).sort((a, b) => b.createdAt - a.createdAt);
+      const sh = g.targetsShared;
+      const cloudLine = g.runner === 'cloud' ? `<p class="hint" style="margin:0 0 8px">Cloud agents read these from the <code>ballast/targets</code> branch on GitHub (never main). ${sh ? (sh.error ? `<span style="color:var(--red)">Last share failed: ${esc(sh.error)}</span> <a href="#" data-act="targets-share">Try again</a>` : `Shared ${ago(sh.at)} (${sh.count}).`) : 'Shared when you add the first one.'}</p>` : '';
+      return `<section data-target-drop="${d}"><div class="section-head"><h3>Quality targets</h3><span class="hint">Reference images that set the bar for ${esc(label.toLowerCase())} work. Agents get the matching ones with each task.</span><button class="primary small" data-act="targets-add" data-d="${d}">+ Add targets</button></div>
+        ${cloudLine}
+        ${tg.length ? `<div class="targets-grid">${tg.map((x) => `<div class="card target-card">${targetThumb(x)}
+            <div class="row" style="margin-top:8px"><b class="grow">${esc(x.title)}</b><button class="icon-btn" data-act="target-edit" data-id="${x.id}" title="Edit">✎</button><button class="icon-btn" data-act="target-delete" data-id="${x.id}" title="Remove">✕</button></div>
+            ${x.tags.length ? `<div class="hint" style="margin:0">${x.tags.map(esc).join(' · ')}</div>` : ''}
+            ${x.notes ? `<div class="hint" style="margin:4px 0 0">Match: ${esc(x.notes)}</div>` : ''}</div>`).join('')}</div>`
+          : `<div class="drop-hint">Drop images here, or use <b>Add targets</b>: concept art, a screenshot from a game you admire, a lighting look, a texture with the right amount of wear.</div>`}
+      </section>`;
+    })()}
+
     <section><div class="section-head"><h3>Captures</h3><span class="hint">Screenshots, GIFs, video and clips agents attached to ${esc(label.toLowerCase())} work</span></div>
       ${caps.length ? `<div class="caps big">${caps.slice(0, 48).map(thumb).join('')}</div>` : `<p class="hint">None yet. Agents attach captures to ${d === 'audio' ? 'audio work as clips' : 'visual work as screenshots and GIFs'}.</p>`}</section>
 
@@ -1450,6 +1484,64 @@ function renderInbox() {
   el.innerHTML = `${open.length ? open.map(questionCard).join('') : '<div class="empty"><h2>Inbox zero</h2><p>When an agent has a question it adds it here, writes down what it is assuming, and keeps going. Your answer goes back to that agent.</p></div>'}
     ${done.length ? `<details style="margin-top:18px"><summary class="hint" style="display:inline;cursor:pointer">Answered (${done.length})</summary>${done.map(questionCard).join('')}</details>` : ''}`;
 }
+
+// Add quality targets: one title per file, shared subjects and "what to match" for the batch.
+function addTargetsModal(d, files) {
+  files = [...files].filter((f) => /^(image|video|audio)\//.test(f.type));
+  if (!files.length) return toast('Pick images (or video/audio clips).', true);
+  const g = game();
+  const label = S.st.disciplines.find((x) => x.id === d)?.label || d;
+  const previews = files.map((f) => (f.type.startsWith('image/') ? URL.createObjectURL(f) : null));
+  modal({
+    title: `Add ${label} quality targets`,
+    wide: files.length > 2,
+    body: `<div class="targets-grid">${files.map((f, i) => `<div class="card">${previews[i] ? `<img src="${previews[i]}" style="width:100%;border-radius:6px;max-height:160px;object-fit:cover">` : `<div class="hint">${esc(f.name)}</div>`}
+        <label class="field" style="margin:8px 0 0"><span>Title</span><input name="title${i}" value="${esc(f.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' '))}"></label></div>`).join('')}</div>
+      <label class="field" style="margin-top:12px"><span>Subjects</span><input name="tags" placeholder="e.g. barrels, crates, dock props"><small>Comma-separated. Agents working on tasks about these get the targets.</small></label>
+      <label class="field"><span>What to match</span><textarea name="notes" rows="3" placeholder="e.g. this level of grime and rust, warm lantern light, chunky readable silhouettes"></textarea></label>
+      ${g.runner === 'cloud' ? '<p class="hint">This is a cloud game, so Ballast also pushes the targets to a <code>ballast/targets</code> branch of its GitHub repo (never main) so the cloud agents can see them.</p>' : ''}`,
+    actions: [{ label: 'Cancel' }, {
+      label: `Add ${files.length} target${files.length > 1 ? 's' : ''}`, kind: 'primary', onClick: async (root) => {
+        const f = formData(root);
+        for (const [i, file] of files.entries()) {
+          if (file.size > 60e6) { toast(`${file.name} is over 60 MB`, true); continue; }
+          const data = await new Promise((resolve, reject) => {
+            const r = new FileReader();
+            r.onload = () => resolve(String(r.result).split(',')[1] || '');
+            r.onerror = reject;
+            r.readAsDataURL(file);
+          });
+          await api('POST', `/api/games/${g.id}/targets`, { discipline: d, title: f[`title${i}`], tags: f.tags, notes: f.notes, name: file.name, data });
+        }
+        previews.forEach((u) => u && URL.revokeObjectURL(u));
+        toast(`Added ${files.length} target${files.length > 1 ? 's' : ''}`);
+      },
+    }],
+  });
+}
+
+function editTargetModal(id) {
+  const x = S.st.targets.find((t) => t.id === id);
+  modal({
+    title: 'Quality target',
+    body: `${x.kind === 'image' ? `<img src="${targetUrl(x)}" style="width:100%;border-radius:8px;max-height:260px;object-fit:contain;background:#0a0c0f">` : ''}
+      <label class="field" style="margin-top:10px"><span>Title</span><input name="title" value="${esc(x.title)}"></label>
+      <label class="field"><span>Subjects</span><input name="tags" value="${esc(x.tags.join(', '))}"></label>
+      <label class="field"><span>What to match</span><textarea name="notes" rows="3">${esc(x.notes)}</textarea></label>`,
+    actions: [{ label: 'Cancel' }, { label: 'Save', kind: 'primary', onClick: (root) => api('PATCH', `/api/targets/${id}`, formData(root)) }],
+  });
+}
+
+// Dropping files anywhere on a department's targets section adds them.
+document.addEventListener('dragover', (e) => { if (e.target.closest?.('[data-target-drop]')) { e.preventDefault(); e.target.closest('[data-target-drop]').classList.add('drag'); } });
+document.addEventListener('dragleave', (e) => e.target.closest?.('[data-target-drop]')?.classList.remove('drag'));
+document.addEventListener('drop', (e) => {
+  const zone = e.target.closest?.('[data-target-drop]');
+  if (!zone) return;
+  e.preventDefault();
+  zone.classList.remove('drag');
+  addTargetsModal(zone.dataset.targetDrop, e.dataTransfer.files);
+});
 
 function answerModal(id) {
   const q = S.st.inbox.find((x) => x.id === id);
@@ -1767,7 +1859,23 @@ const ACTIONS = {
   'dept-mode': (d) => api('PATCH', `/api/games/${S.gameId}`, { review: { [d.d]: d.mode } }),
   'review-approve': async (d) => { const t = await api('POST', `/api/tasks/${d.id}/approve`); toast(`Approved #${t.num}`); },
   'review-changes': (d) => changesModal(d.id),
-  'dn-breakdown': async (d) => { toast('Breaking it into tasks…'); await api('POST', `/api/dept-notes/${d.id}/breakdown`); },
+  'targets-add': (d) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.multiple = true;
+    input.accept = 'image/*,video/*,audio/*';
+    input.onchange = () => addTargetsModal(d.d, input.files);
+    input.click();
+  },
+  'target-view': (d) => {
+    const x = S.st.targets.find((t) => t.id === d.id);
+    const media = x.kind === 'image' ? `<img class="viewer-img" src="${targetUrl(x)}">` : x.kind === 'video' ? `<video src="${targetUrl(x)}" controls style="width:100%"></video>` : `<audio src="${targetUrl(x)}" controls style="width:100%"></audio>`;
+    modal({ title: `Target: ${x.title}`, wide: true, body: `${x.notes ? `<p class="hint" style="margin-top:0">Match: ${esc(x.notes)}</p>` : ''}${media}` });
+  },
+  'target-edit': (d) => editTargetModal(d.id),
+  'target-delete': (d) => confirmModal('Remove this target?', 'Agents stop getting it with their tasks.', 'Remove', () => api('DELETE', `/api/targets/${d.id}`)),
+  'targets-share': async () => { toast('Sharing targets…'); await api('POST', `/api/games/${S.gameId}/targets/share`); },
+  'dn-breakdown':async (d) => { toast('Breaking it into tasks…'); await api('POST', `/api/dept-notes/${d.id}/breakdown`); },
   'dn-delete': (d) => confirmModal('Delete this note?', "It hasn't been broken into tasks yet, so nothing else changes.", 'Delete', () => api('DELETE', `/api/dept-notes/${d.id}`)),
   'review-start': reviewStart,
   'review-done': reviewDone,

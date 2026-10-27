@@ -90,6 +90,15 @@ Backend defaults to *Not my field*. *Approve first* needs per-agent worktrees or
 
 **Captures.** Local agents publish captures with `publish_artifact`. Cloud agents commit them to `.ballast/media/t<task>/` on their branch, and Ballast pulls them in when the task reports.
 
+## Quality targets
+
+Each department tab has a **Quality targets** section for reference images (or clips) that set the bar: concept art, a screenshot from a game you admire, a lighting look, a texture with the right wear. Drop files on it or use **Add targets**. Give each a title, the **subjects** it covers (e.g. `barrels, crates, dock props`) and **what to match** (e.g. "this level of grime, warm lantern light").
+
+- **On every task:** an agent claiming a task in that department gets the matching targets with it, matched on shared words between the subjects and the task. With no match, it gets the department's whole set. Local agents open the files directly and can look them up with `reference_targets`.
+- **Cloud games:** Ballast pushes the targets and an index to a separate `ballast/targets` branch of the game's GitHub repo (never `main`), and cloud agents read them from there.
+- **Agents' captures:** agents are told to meet the bar without copying, frame their captures like the closest target, and say how close they got.
+- **In review:** review cards show the matching **target** next to the agent's **result**.
+
 ## Department notes
 
 Each department tab has a **Leave a note** box for feedback aimed at the whole department, like "everything looks too clean" in Art. A note goes through four stages:

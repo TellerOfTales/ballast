@@ -18,6 +18,7 @@ import * as remote from './remote.mjs';
 import * as review from './review.mjs';
 import * as inbox from './inbox.mjs';
 import * as deptnotes from './deptnotes.mjs';
+import * as targets from './targets.mjs';
 
 export const runtime = { baseUrl: '' }; // filled in by the server once it is listening
 const MCP_SERVER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'mcp-server.mjs');
@@ -85,6 +86,7 @@ export function publicState() {
     cloudIndex: db.cloudIndex,
     inbox: db.inbox,
     deptNotes: db.deptNotes,
+    targets: db.targets,
     disciplines: review.DISCIPLINES.map(({ id, label }) => ({ id, label })),
     games: db.games,
     agents: db.agents.map((a) => {
@@ -1175,7 +1177,8 @@ export async function agentApi(agentId, tool, args = {}) {
       const policy = review.policyFor(game, discipline);
       // Working in a department means picking up that department's waiting notes too.
       const note = deptnotes.pickFor(agent, game, discipline);
-      return `Claimed #${t.num}: ${t.title}${t.detail ? `\n${t.detail}` : ''}\n\n${P.reviewRuleLocal({ task: t, game, policy })}\n${P.deliveryLine(nextDelivery(game))}${note ? `\n\n${P.deptNoteLocal({ note, label: deptnotes.label(discipline), ref: deptnotes.ref(note), taskNum: t.num })}` : ''}`;
+      const refs = targets.forTask({ ...t, discipline }, game);
+      return `Claimed #${t.num}: ${t.title}${t.detail ? `\n${t.detail}` : ''}\n\n${P.reviewRuleLocal({ task: t, game, policy })}\n${P.deliveryLine(nextDelivery(game))}${refs.length ? `\n\n${P.targetsLocal(targets.describe(refs, { local: true }))}` : ''}${note ? `\n\n${P.deptNoteLocal({ note, label: deptnotes.label(discipline), ref: deptnotes.ref(note), taskNum: t.num })}` : ''}`;
     }
     case 'board_done': {
       const t = byNum(args.task_id);
@@ -1188,6 +1191,14 @@ export async function agentApi(agentId, tool, args = {}) {
       changed();
       const open = openTasks(game.id).length;
       return `${parked ? `#${t.num} is waiting for the director's approval; don't land it. Ballast tells you when it's approved.` : `Marked #${t.num} done.`}${open ? ` ${open} open task(s) remain on the board: take the next one.` : ' Nothing else is open.'}`;
+    }
+    case 'reference_targets': {
+      const held = heldTask(agent.id);
+      let list = db.targets.filter((x) => x.gameId === game.id);
+      if (args.discipline) list = list.filter((x) => x.discipline === args.discipline);
+      if (args.subject) list = targets.forTask({ title: args.subject, discipline: args.discipline || held?.discipline || 'art' }, game);
+      else if (!args.discipline && held) list = targets.forTask(held, game);
+      return list.length ? `Quality targets (open the files with Read):\n${targets.describe(list, { local: true })}` : 'No quality targets for that yet.';
     }
     case 'task_dept_note': {
       const created = deptnotes.taskNote(deptnotes.find(game, args.note_id), args.tasks, agent.name);

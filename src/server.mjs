@@ -16,6 +16,7 @@ import * as remote from './remote.mjs';
 import * as review from './review.mjs';
 import * as inbox from './inbox.mjs';
 import * as deptnotes from './deptnotes.mjs';
+import * as targets from './targets.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PUBLIC = path.join(ROOT, 'public');
@@ -166,6 +167,10 @@ route('POST', '/api/tasks/:id/approve', (p) => review.approve(p.id));
 route('POST', '/api/tasks/:id/changes', (p, body) => review.requestChanges(p.id, body.feedback));
 route('POST', '/api/games/:id/approve-all', (p, body) => review.approveAll(p.id, body.discipline));
 route('POST', '/api/games/:id/queue-earlier', (p) => review.queueEarlierWork(p.id));
+route('POST', '/api/games/:id/targets', (p, body) => targets.add(p.id, body));
+route('POST', '/api/games/:id/targets/share', (p) => targets.share(p.id));
+route('PATCH', '/api/targets/:id', (p, body) => targets.update(p.id, body));
+route('DELETE', '/api/targets/:id', (p) => targets.remove(p.id));
 route('POST', '/api/games/:id/tidy-transcript', (p, body) => orch.tidyTranscript(p.id, body));
 route('POST', '/api/games/:id/dept-notes', (p, body) => deptnotes.add(p.id, body));
 route('POST', '/api/dept-notes/:id/breakdown', (p) => deptnotes.breakDownNow(p.id));
@@ -242,10 +247,10 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Artifacts are agent-written HTML: sandbox them so they can't act as the Ballast UI.
-    const files = pathname.match(/^\/files\/(artifacts|builds|attachments|studio|cloud)\/(.+)$/);
+    const files = pathname.match(/^\/files\/(artifacts|builds|attachments|studio|cloud|targets)\/(.+)$/);
     if (fileRead && !files) return send(res, 404, 'Not found');
     if (files) {
-      const roots = { attachments: paths.games, studio: paths.studioAttachments, cloud: paths.cloud };
+      const roots = { attachments: paths.games, studio: paths.studioAttachments, cloud: paths.cloud, targets: paths.targets };
       const root = roots[files[1]] || paths[files[1]];
       const rel = files[1] === 'attachments' ? files[2].replace(/^([^/]+)\//, '$1/attachments/') : files[2];
       const download = url.searchParams.has('download') ? { 'content-disposition': `attachment; filename="${path.basename(rel)}"` } : {};

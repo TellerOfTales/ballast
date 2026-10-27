@@ -14,6 +14,7 @@ import * as orch from './orchestrator.mjs';
 import * as review from './review.mjs';
 import * as inbox from './inbox.mjs';
 import * as deptnotes from './deptnotes.mjs';
+import * as targets from './targets.mjs';
 
 const dispatching = new Set(); // agentIds with a session being created
 export const isDispatching = (agentId) => dispatching.has(agentId);
@@ -141,6 +142,9 @@ export async function dispatch(agent, item) {
     prompt = tasks.length === 1
       ? P.cloudTask({ game, agent, task: tasks[0], policy: policy(tasks[0]), ...context(game, agent) }) + delivery
       : P.cloudBatch({ game, agent, tasks, policyOf: policy, ...context(game, agent) }) + delivery;
+    // Quality targets for these tasks, read from the targets branch (cloud can't see this PC).
+    const refs = [...new Map(tasks.flatMap((t) => targets.forTask({ ...t, discipline: t.discipline || review.disciplineOf(t.title) }, game)).map((r) => [r.id, r])).values()];
+    if (refs.length && game.targetsShared && !game.targetsShared.error) prompt += `\n\n${P.targetsCloud(targets.describe(refs, { local: false }), targets.TARGETS_BRANCH)}`;
     // Working in a department means picking up its waiting note; the breakdown comes back in
     // the first task's report.
     for (const t of tasks) {
