@@ -164,6 +164,7 @@ route('DELETE', '/api/tasks/:id', (p) => orch.removeTask(p.id));
 route('POST', '/api/tasks/:id/approve', (p) => review.approve(p.id));
 route('POST', '/api/tasks/:id/changes', (p, body) => review.requestChanges(p.id, body.feedback));
 route('POST', '/api/games/:id/approve-all', (p, body) => review.approveAll(p.id, body.discipline));
+route('POST', '/api/games/:id/queue-earlier', (p) => review.queueEarlierWork(p.id));
 route('POST', '/api/inbox/:id/answer', (p, body) => inbox.answer(p.id, body.answer));
 route('POST', '/api/inbox/:id/dismiss', (p) => inbox.dismiss(p.id));
 route('DELETE', '/api/artifacts/:id', (p) => orch.removeArtifact(p.id));

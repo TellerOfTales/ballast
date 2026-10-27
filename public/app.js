@@ -1151,6 +1151,7 @@ function renderDept(d) {
   const upNext = tasks.filter((t) => t.status === 'open').sort((a, b) => a.num - b.num);
   const recent = tasks.filter((t) => t.status === 'done' && t.review?.state !== 'pending').sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0)).slice(0, 25);
   const caps = capturesFor(g.id, (a) => a.discipline === d && ['image', 'video', 'audio'].includes(a.kind));
+  const unfiled = tasksOf(g.id).filter((t) => t.status === 'done' && !t.review).length;
   const refs = S.st.cloudArtifacts.filter((c) => c.gameId === g.id && (c.discipline === d || c.role === 'gdd'));
   const line = (t) => `<div class="tline"><span class="num">#${t.num}</span> ${esc(t.title.replace(/^\s*\[[^\]]+\]\s*/, ''))} <span class="hint" style="display:inline">${t.claimedBy ? `· ${esc(agentOf(t.claimedBy)?.name || '')}` : t.assignee ? `· for ${esc(agentOf(t.assignee)?.name || '')}` : ''}</span></div>`;
 
@@ -1161,6 +1162,8 @@ function renderDept(d) {
       <span class="hint" style="margin:0">${override ? `Set for this game · <a href="#" data-act="dept-mode" data-d="${d}" data-mode="default">use studio default</a>` : 'Studio default'}</span>
     </div>
     <p class="hint" style="margin-top:4px">${esc(MODE_INFO[mode].text(g))}</p>
+    ${unfiled ? `<div class="card suggestion" style="margin-top:10px"><b>Earlier work</b><span class="hint" style="margin:0">${unfiled} task${unfiled > 1 ? 's' : ''} on this game finished before review was set up.</span>
+      <div style="margin-top:8px"><button class="btn small" data-act="queue-earlier">Queue them for review</button> <span class="hint" style="display:inline">Each department follows its mode; nothing is un-merged.</span></div></div>` : ''}
 
     ${mode !== 'skip' || pending.length ? `<section><div class="section-head"><h3>Waiting for you</h3><span class="hint">${pending.length ? `${pending.length} item${pending.length > 1 ? 's' : ''}` : 'Nothing to review.'}</span>${pending.length > 1 ? `<button class="ghost small" data-act="review-all" data-d="${d}">Approve all</button>` : ''}</div>
       ${pending.map((t) => reviewCard(t, g)).join('')}</section>` : ''}
@@ -1502,6 +1505,7 @@ const ACTIONS = {
   'dept-mode': (d) => api('PATCH', `/api/games/${S.gameId}`, { review: { [d.d]: d.mode } }),
   'review-approve': async (d) => { const t = await api('POST', `/api/tasks/${d.id}/approve`); toast(`Approved #${t.num}`); },
   'review-changes': (d) => changesModal(d.id),
+  'queue-earlier': async () => { const r = await api('POST', `/api/games/${S.gameId}/queue-earlier`); toast(`Queued ${r.queued} for review${r.skipped ? `, ${r.skipped} filed as not your field` : ''}`); },
   'review-all': async (d) => { const r = await api('POST', `/api/games/${S.gameId}/approve-all`, { discipline: d.d }); toast(`Approved ${r.approved}`); },
   'q-answer': (d) => answerModal(d.id),
   'q-dismiss': (d) => api('POST', `/api/inbox/${d.id}/dismiss`),

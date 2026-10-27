@@ -119,6 +119,35 @@ export async function approveAll(gameId, discipline) {
   return { approved: tasks.length };
 }
 
+// Work finished before review existed (or before a game came into Ballast) has no review state.
+// This files it by each department's mode. It's already merged, so even "Approve first" areas
+// just queue it for a look; nothing is un-merged.
+export function queueEarlierWork(gameId) {
+  const game = must(orch.getGame(gameId), 'Unknown game');
+  const counts = { queued: 0, skipped: 0 };
+  // Older reports kept the PR link only in the feed ("Done #8 …\nhttps://github.com/…/pull/10").
+  const prFromFeed = {};
+  for (const e of orch.readFeed(gameId, 5000)) {
+    const m = e.kind === 'task' && String(e.text || '').match(/^(?:Done|Ready for review) #(\d+)[\s\S]*?(https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+)/);
+    if (m) prFromFeed[m[1]] = m[2];
+  }
+  for (const t of db.tasks.filter((x) => x.gameId === gameId && !x.pr && prFromFeed[x.num])) t.pr = prFromFeed[t.num];
+  for (const t of db.tasks.filter((x) => x.gameId === gameId && x.status === 'done' && !x.review)) {
+    t.discipline ||= disciplineOf(t.title);
+    t.pr ||= String(t.summary || '').match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/)?.[0];
+    if (policyFor(game, t.discipline) === 'skip') {
+      t.review = { state: 'skipped', at: Date.now() };
+      counts.skipped++;
+    } else {
+      t.review = { state: 'pending', since: t.doneAt || Date.now(), earlier: true };
+      counts.queued++;
+    }
+  }
+  save();
+  changed();
+  return counts;
+}
+
 // Safety valve: nothing gated waits on the director forever.
 export async function autoApproveTick() {
   const hours = Number(db.settings.reviewAutoApproveHours) || 0;
