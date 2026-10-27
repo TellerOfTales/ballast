@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ballast</title>
+  <link rel="icon" href="favicon.svg">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <aside id="side">
+      <div class="brand"><span class="mark"></span>BALLAST</div>
+      <section>
+        <h4>Games <button class="icon-btn" id="new-game" title="New game">+</button></h4>
+        <nav id="games"></nav>
+      </section>
+      <section class="grow">
+        <h4>Accounts <button class="icon-btn" id="new-account" title="Add a Claude account">+</button></h4>
+        <div id="accounts"></div>
+      </section>
+      <footer>
+        <button class="ghost small" id="open-settings">Settings</button>
+        <span id="conn" class="conn" title="Connection to Ballast"></span>
+      </footer>
+    </aside>
+    <main id="main">
+      <header id="ghead"></header>
+      <nav id="tabs"></nav>
+      <div id="view"></div>
+    </main>
+  </div>
+  <div id="modal-root"></div>
+  <div id="toasts"></div>
+  <script src="app.js"></script>
+</body>
+</html>

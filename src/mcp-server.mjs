@@ -1,0 +1,136 @@
+#!/usr/bin/env node
+// Stdio MCP server that each agent's Claude Code session launches. It exposes the
+// shared board and director feed as tools and forwards every call to Ballast.
+import readline from 'node:readline';
+
+const { BALLAST_URL, BALLAST_AGENT_ID, BALLAST_KEY } = process.env;
+
+const task = { type: 'integer', description: 'Task number, e.g. 12 for #12' };
+const TOOLS = [
+  {
+    name: 'board_list',
+    description: 'List the shared task board for this game. Default shows open, claimed and blocked tasks plus the most recent done ones.',
+    inputSchema: {
+      type: 'object',
+      properties: { status: { type: 'string', enum: ['active', 'open', 'claimed', 'blocked', 'done', 'all'] } },
+    },
+  },
+  {
+    name: 'board_add',
+    description: 'Add a task to the shared board so any agent (including you) can claim it. One concrete, verifiable outcome per task. Tag the title, e.g. "[gameplay] Double jump".',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string' },
+        detail: { type: 'string', description: 'What done looks like, relevant files, the director wording that matters.' },
+      },
+      required: ['title'],
+    },
+  },
+  {
+    name: 'board_claim',
+    description: 'Claim an open task before working on it. You can hold one task at a time.',
+    inputSchema: { type: 'object', properties: { task_id: task }, required: ['task_id'] },
+  },
+  {
+    name: 'board_done',
+    description: 'Mark your task done once the work has landed. The summary goes to the director feed.',
+    inputSchema: {
+      type: 'object',
+      properties: { task_id: task, summary: { type: 'string', description: 'What changed and how to see it in game.' } },
+      required: ['task_id', 'summary'],
+    },
+  },
+  {
+    name: 'board_block',
+    description: 'Give a task back as blocked, with the reason and what you need.',
+    inputSchema: {
+      type: 'object',
+      properties: { task_id: task, reason: { type: 'string' } },
+      required: ['task_id', 'reason'],
+    },
+  },
+  {
+    name: 'post_update',
+    description: "Post a short update to the director's feed: a milestone, a decision you made, an assumption.",
+    inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+  },
+  {
+    name: 'publish_artifact',
+    description: "Put something on the director's artifact shelf for review: HTML prototypes, mockups, design docs, screenshots, videos, reports. Pass `path` to an existing file or folder (a folder with index.html is shown as a web page), or `content` plus `filename` to write a new file.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string' },
+        path: { type: 'string', description: 'File or folder, absolute or relative to your working directory.' },
+        content: { type: 'string' },
+        filename: { type: 'string', description: 'With content, e.g. "combat-pass-notes.md" or "hud-mock.html".' },
+        description: { type: 'string', description: 'One or two lines on what to look at.' },
+      },
+      required: ['title'],
+    },
+  },
+  {
+    name: 'read_notes',
+    description: 'Read the most recent director notes for this game.',
+    inputSchema: { type: 'object', properties: { limit: { type: 'integer', minimum: 1, maximum: 30 } } },
+  },
+];
+
+function send(msg) {
+  process.stdout.write(JSON.stringify(msg) + '\n');
+}
+
+async function callBallast(name, args) {
+  const res = await fetch(`${BALLAST_URL}/agent-api/${name}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-ballast-key': BALLAST_KEY },
+    body: JSON.stringify({ agentId: BALLAST_AGENT_ID, args }),
+  });
+  const body = await res.json().catch(() => ({ error: `Ballast returned HTTP ${res.status}` }));
+  if (!res.ok || body.error) throw new Error(body.error || `HTTP ${res.status}`);
+  return body.result;
+}
+
+async function handle(msg) {
+  const { id, method, params } = msg;
+  if (id === undefined) return; // notifications need no reply
+  try {
+    switch (method) {
+      case 'initialize':
+        return send({
+          jsonrpc: '2.0',
+          id,
+          result: {
+            protocolVersion: params?.protocolVersion || '2025-06-18',
+            capabilities: { tools: {} },
+            serverInfo: { name: 'ballast', version: '0.1.0' },
+          },
+        });
+      case 'ping':
+        return send({ jsonrpc: '2.0', id, result: {} });
+      case 'tools/list':
+        return send({ jsonrpc: '2.0', id, result: { tools: TOOLS } });
+      case 'tools/call': {
+        try {
+          const text = await callBallast(params.name, params.arguments || {});
+          return send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: String(text) }] } });
+        } catch (err) {
+          const reason = err.cause?.code === 'ECONNREFUSED' ? 'Ballast is not running.' : err.message;
+          return send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: reason }], isError: true } });
+        }
+      }
+      default:
+        return send({ jsonrpc: '2.0', id, error: { code: -32601, message: `Method not found: ${method}` } });
+    }
+  } catch (err) {
+    send({ jsonrpc: '2.0', id, error: { code: -32603, message: err.message } });
+  }
+}
+
+readline.createInterface({ input: process.stdin }).on('line', (line) => {
+  if (!line.trim()) return;
+  let msg;
+  try { msg = JSON.parse(line); } catch { return; }
+  handle(msg);
+});

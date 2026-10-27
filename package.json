@@ -1,0 +1,13 @@
+{
+  "name": "ballast",
+  "version": "0.1.0",
+  "description": "Multi-account Claude Code orchestrator for agentic game development.",
+  "type": "module",
+  "private": true,
+  "bin": { "ballast": "src/server.mjs" },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "dev": "node --watch src/server.mjs --no-open"
+  },
+  "engines": { "node": ">=20" }
+}
