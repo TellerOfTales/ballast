@@ -27,7 +27,7 @@ The human is the game director. Their notes arrive as "DIRECTOR NOTE" messages. 
 ${game.brief?.trim() || '(No brief yet. Infer direction from the repo and the director notes.)'}
 
 ## Board and team tools (ballast MCP server)
-- board_list: see tasks. board_claim: claim exactly one open task before working on it; never work on a task someone else claimed.
+- board_list: see tasks. board_claim: claim before you work; you may hold up to ${game.claimBatch || 1} at once, so claim your next ${game.claimBatch > 1 ? `${game.claimBatch} together, then finish them one by one` : 'one'}. Never work on a task someone else claimed.
 - board_add: split work or hand work to other agents. One concrete, verifiable outcome per task; tag the title, e.g. "[gameplay] ...", "[art] ...", "[ui] ...".
 - board_done: finish your task with what changed and how to check it. board_block: give a task back with the reason.
 - post_update: a short note to the director's feed for milestones, decisions and assumptions.
@@ -57,14 +57,19 @@ const attachmentBlock = (attachments) =>
     ? `\n\nAttached files (open them with the Read tool; images are reference material):\n${attachments.map((a) => `- ${a.path}`).join('\n')}`
     : '';
 
-export function triage({ note, director }) {
-  return `DIRECTOR NOTE #${note.num} from ${director} (triage)
+// A Director Review is a live speech transcript taken while the director plays: rambling,
+// repetitive, with recognition errors. It needs extraction, not literal task-per-sentence.
+const REVIEW_SESSION_HINT = `This is a Director Review: a live transcript of the director talking while playing. Expect rambling, repeats and speech-recognition mistakes (read through them for meaning; timestamps like [04:12] mark when it was said, and ★ marks moments they flagged). Pull out every piece of actionable feedback, merge duplicates, and keep the director's own words for anything about feel or look.`;
+
+export function triage({ note, director, coordinatorFile }) {
+  const session = note.source === 'review-session';
+  return `DIRECTOR NOTE #${note.num} from ${director} (triage: you have the most usage headroom on the team, so you're coordinating this one)
 ${note.text}${attachmentBlock(note.attachments)}
 
-You're triaging this note for the whole team. Do not implement anything this turn.
+${session ? `${REVIEW_SESSION_HINT}\n\n` : ''}You're triaging this note for the whole team. Do not implement anything this turn.
 1. board_list to see what's already planned.
 2. board_add one task per concrete change the note asks for. Skip anything already on the board. Each task should be doable by one agent, with a clear done-condition, and carry the note's exact wording where it matters. Tag titles: [gameplay] [art] [audio] [ui] [backend] [tech] [qa] [build]. If the note changes the design and a tracked artifact has the "gdd" role, also add a [docs] task to update that GDD.
-3. Reply with a 1 to 3 line summary of how you split it, then end your turn.`;
+${coordinatorFile ? `3. Record the feedback and your task breakdown (task numbers, one line each, grouped by department) in \`${coordinatorFile}\`, commit it, and land it on the shared line so every agent sees it.\n4.` : '3.'} Reply with a 1 to 3 line summary of how you split it, then end your turn. The other agents claim the tasks from here.`;
 }
 
 export function noteBroadcast({ note, director, taskNums }) {
@@ -82,8 +87,9 @@ export function direct({ text, director, attachments }) {
 ${text}${attachmentBlock(attachments)}`;
 }
 
-export function nextTask({ openCount }) {
-  return `AUTOPILOT: the board has ${openCount} open task${openCount === 1 ? '' : 's'}. Run board_list, claim the one that best fits your role, complete it, then board_done.`;
+export function nextTask({ openCount, batch = 1 }) {
+  const take = Math.min(batch, openCount);
+  return `AUTOPILOT: the board has ${openCount} open task${openCount === 1 ? '' : 's'}. Run board_list, claim ${take > 1 ? `the ${take} that best fit your role (tasks marked for you first)` : 'the one that best fits your role'}, complete ${take > 1 ? 'them one at a time, calling board_done on each' : 'it, then board_done'}.`;
 }
 
 export function nudge({ task }) {
@@ -155,6 +161,24 @@ ${reviewRuleCloud(policy, game.baseBranch)}
 - Ballast reads only that report file to know you're done, so never skip it, even when blocked.`;
 }
 
+// Several tasks in one hand-off. Same delivery rules as cloudTask, but per task.
+export function cloudBatch({ game, agent, tasks, policyOf, notes, others, artifacts }) {
+  const list = tasks.map((t) => `### #${t.num} ${t.title}\n${t.detail || ''}\n- Report: \`${reportPath(`t${t.num}`, game.subdir)}\` · captures: \`${mediaPath(`t${t.num}`, game.subdir)}/\`\n${reviewRuleCloud(policyOf(t), game.baseBranch)}`).join('\n\n');
+  return `${cloudContext({ game, agent, notes, others, artifacts })}
+
+## Your tasks (${tasks.length}), in this order
+You've claimed these together so nobody else takes them. Do them one at a time, and finish and report each before starting the next.
+
+${list}
+
+## How to deliver each one
+- \`git fetch\` first and branch from the latest \`origin/${game.baseBranch}\` for every task (one branch and one pull request per task, titled "#<number> <title>"). Name the branch \`ballast/t<number>-${agent.slug}\` if you can choose it.
+- Ship the smallest playable increment first; keep the project building.
+- For art, animation, UI, VFX or audio work, commit screenshots, a short GIF or video of motion, or the audio clips to that task's captures folder.
+- Commit that task's report file on its branch: first line exactly \`STATUS: DONE\` or \`STATUS: BLOCKED\`, then 2 to 8 lines: what changed, how to see it in game, assumptions, and the PR link. Questions for the director go in a \`## Questions\` section, one \`- question -> the assumption you went with\` per line. Never wait for answers.
+- Ballast closes each task when its report lands, so report each one as soon as it's done.`;
+}
+
 export function cloudSurvey({ game, agent }) {
   return `${cloudContext({ game, agent, notes: [], others: [], artifacts: [] })}
 
@@ -179,6 +203,7 @@ ${open.length ? open.map((t) => `- #${t.num} ${t.title}`).join('\n') : '(nothing
 
 Director note:
 ${note.text}
+${note.source === 'review-session' ? `\n${REVIEW_SESSION_HINT}\n` : ''}
 
 Return one task per concrete change the note asks for. If the note asks every agent to do something themselves (for example "every agent should read X and introduce themselves"), return it once with everyAgent true; Ballast gives each agent its own copy. Each task must be doable by one agent in one session, with a clear done-condition in its detail, keeping the note's wording where it matters. Tag titles like "[gameplay] ...", "[art] ...", "[ui] ...", "[audio] ...", "[backend] ...", "[qa] ...". If the note changes the design and a GDD is listed below, also return a "[docs] Update the GDD" task describing the change. Return an empty list if everything is already covered. Also return a one-line summary of the split.`;
 }

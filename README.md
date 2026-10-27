@@ -90,6 +90,14 @@ Backend defaults to *Not my field*. *Approve first* needs per-agent worktrees or
 
 **Captures.** Local agents publish captures with `publish_artifact`. Cloud agents commit them to `.ballast/media/t<task>/` on their branch, and Ballast pulls them in when the task reports.
 
+## Director Review (voice)
+
+Press **Director Review** in a game's Feed, play, and talk:
+- **While you play:** the browser transcribes as you speak (Chrome or Edge; allow the microphone once). Lines are timestamped. **★ Mark moment** flags a spot, and you can paste screenshots into the box below at any time. The recording keeps going if you switch tabs, and an unsent review survives a page reload.
+- **When you're done:** fix anything the transcription got wrong, then **Send to all agents**. It goes out as a Director Review note.
+- **Coordination:** the agent with the **most usage headroom** coordinates it. It reads through the rambling and recognition errors, merges repeated points, and splits the feedback into department-tagged tasks. If the game has a **Coordinator file** (Settings, e.g. `games/looknormal/coordinator.md`), the feedback and breakdown are recorded there first.
+- **Claiming:** every agent then claims its next tasks, **2 at a time** by default (*Tasks per claim* in Settings). It works through them in order, and each task closes as soon as it's done.
+
 ## Director's Inbox
 
 One place (sidebar) for every question from every agent, on every game and account. An agent asks with `ask_director`, or adds a `## Questions` section to a cloud report. It writes down the assumption it's going with and keeps working. **It never waits.** Your answer goes back to that agent as a message, and it adjusts if your answer differs. *Assumption is fine* closes a question without a reply.

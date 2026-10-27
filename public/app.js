@@ -120,7 +120,8 @@ const clamp = (text, html) => (text.length > 1400 || text.split('\n').length > 1
   ? `<div class="md clamp">${html}</div><button class="more" data-act="more">Show more</button>`
   : `<div class="md">${html}</div>`;
 
-const ICON_CLIP = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.4 11.1l-9.2 9.2a6 6 0 01-8.5-8.5l9.2-9.2a4 4 0 015.7 5.7l-9.2 9.2a2 2 0 01-2.8-2.8l8.5-8.5"/></svg>';
+const ICON_MIC = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0014 0M12 17v5"/></svg>';
+const ICON_CLIP ='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.4 11.1l-9.2 9.2a6 6 0 01-8.5-8.5l9.2-9.2a4 4 0 015.7 5.7l-9.2 9.2a2 2 0 01-2.8-2.8l8.5-8.5"/></svg>';
 
 // ---------------------------------------------------------------------------
 // Modals
@@ -266,6 +267,7 @@ function renderHead() {
       return unlinked ? `<button class="primary small" data-act="cloud-connect-all" title="Nothing can start until each cloud agent has a session">Connect ${unlinked} cloud session${unlinked > 1 ? 's' : ''}</button>` : '';
     })()}
     ${g.status === 'paused' ? '<span class="pill limited">paused</span>' : ''}
+    ${RS.active && RS.gameId === g.id ? '<button class="pill error" data-act="tab" data-tab="feed" title="Back to the review">● recording review</button>' : ''}
     ${(g.priority ?? 2) !== 2 ? `<span class="pill">${PRIORITY[g.priority]} priority</span>` : ''}
     <span class="spacer"></span>
     <span class="dots" title="${agents.map((a) => `${a.name}: ${a.status}`).join('\n')}">${agents.map((a) => `<span class="dot ${a.status}"></span>`).join('')}</span>
@@ -325,6 +327,7 @@ function buildShell() {
       bindComposer('feed');
       updateTargetSelect();
       loadFeed();
+      if (RS.active && RS.gameId === g.id) rsRender(); // a review keeps recording across tab switches
       break;
     case 'agents':
       v.innerHTML = '<div class="split"><div class="agent-list" id="agent-list"></div><div class="agent-pane" id="agent-pane"></div></div>';
@@ -424,7 +427,8 @@ function composer(kind, placeholder) {
       <div class="chips" id="chips-${kind}"></div>
       <textarea rows="2" placeholder="${esc(placeholder)}"></textarea>
       <div class="bar">
-        ${kind === 'feed' ? '<select id="target" title="Who gets this message"></select>' : ''}
+        ${kind === 'feed' ? `<select id="target" title="Who gets this message"></select>
+          <button type="button" class="ghost small mic-btn" data-act="review-start" title="Talk while you play: Ballast transcribes and sends your notes to every agent when you're done">${ICON_MIC} Director Review</button>` : ''}
         <button type="button" class="icon-btn" data-attach title="Attach images or files">${ICON_CLIP}</button>
         <input type="file" multiple hidden>
         <p class="hint">Enter to send · Shift+Enter for a new line · paste or drop screenshots</p>
@@ -551,7 +555,7 @@ function feedEntry(e) {
   let label = '';
   if (e.kind === 'note') {
     av = e.source === 'review' ? '<span class="avatar" style="background:var(--violet)">R</span>' : '<span class="avatar" style="background:var(--accent)">★</span>';
-    const src = e.source === 'review' ? 'review · ' : e.source === 'studio' ? 'studio · ' : '';
+    const src = e.source === 'review-session' ? 'director review · ' : e.source === 'review' ? 'review · ' : e.source === 'studio' ? 'studio · ' : '';
     label = e.to ? `<span class="pill">to ${esc(e.to)} only</span>` : `<span class="pill limited">${src}note #${e.num} · all agents</span>`;
   } else if (e.kind === 'question') {
     label = '<span class="pill limited">question · not blocking</span>';
@@ -639,7 +643,8 @@ function renderAgentHead() {
   if (game()?.runner === 'cloud') {
     const live = a.cloud;
     const last = a.lastCloud;
-    const task = live?.taskId && S.st.tasks.find((t) => t.id === live.taskId);
+    const liveItems = live ? live.items || [{ key: live.key, taskId: live.taskId }] : [];
+    const liveTasks = liveItems.map((i) => ({ ...i, task: S.st.tasks.find((t) => t.id === i.taskId) }));
     el.innerHTML = `${avatar(a.name, a.id)}<h3>${esc(a.name)}</h3>${statusPill(a)}<span class="pill">${esc(acct?.name || '?')}</span>
       <span class="spacer"></span>
       ${a.cloudLink
@@ -649,7 +654,7 @@ function renderAgentHead() {
       <button class="ghost small" data-act="agent-edit">Edit</button>
       <button class="ghost small" data-act="agent-remove">Remove</button>
       <div class="hint" style="flex-basis:100%;margin:0">${live
-        ? `Working on ${task ? `#${task.num} ${esc(task.title)}` : live.key === 'survey' ? 'the project survey' : 'your message'} since ${clock(live.since)}. Ballast checks GitHub every 90 seconds for its report.`
+        ? `Working on ${liveTasks.map((i) => (i.task ? `${i.done ? '<s>' : ''}#${i.task.num} ${esc(i.task.title)}${i.done ? '</s>' : ''}` : i.key === 'survey' ? 'the project survey' : 'your message')).join(', ')} since ${clock(live.since)}. Ballast checks GitHub every 90 seconds for reports.`
         : last ? `Last session finished ${ago(last.at)}: ${last.pr ? `<a href="${esc(last.pr)}" target="_blank" rel="noopener">pull request</a>` : `branch ${esc(last.branch)}`} · <a href="${esc(last.url)}" target="_blank" rel="noopener">session</a>`
         : a.cloudLink ? 'Idle. Its cloud session gets the next open task (with autopilot on, or when you press Wake) or your next message.'
         : 'Needs a cloud session before it can take tasks: press Connect cloud session.'}
@@ -1089,6 +1094,146 @@ async function sessionsModal() {
 }
 
 // ---------------------------------------------------------------------------
+// Director Review: talk while you play. The browser transcribes as you speak (Web Speech API,
+// Chrome/Edge); when you're done, the cleaned-up transcript goes to every agent on the game.
+
+const RS = { rec: null, active: false, paused: false, segments: [], interim: '', startedAt: 0, pausedMs: 0, pausedAt: 0, gameId: null, timer: null };
+const RS_DRAFT = 'reviewDraft';
+
+const rsElapsed = () => (RS.startedAt ? (RS.paused ? RS.pausedAt : Date.now()) - RS.startedAt - RS.pausedMs : 0);
+const mmss = (ms) => `${String(Math.floor(ms / 60000)).padStart(2, '0')}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}`;
+const rsText = () => RS.segments.map((s) => (s.mark ? `\n[${mmss(s.t)}] ★ ${s.text}\n` : `[${mmss(s.t)}] ${s.text}`)).join('\n').trim();
+
+function rsSaveDraft() {
+  store(RS_DRAFT, JSON.stringify({ gameId: RS.gameId, segments: RS.segments, elapsed: rsElapsed(), at: Date.now() }));
+}
+
+function rsPanel() {
+  let el = $('#review-session');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'review-session';
+    el.className = 'review-session';
+    $('#composer-feed')?.before(el);
+  }
+  return el;
+}
+
+function rsRender() {
+  const el = rsPanel();
+  const state = RS.paused ? 'Paused' : RS.active ? 'Listening… talk as you play' : 'Stopped';
+  el.innerHTML = `<div class="rs-head">
+      <span class="rec-dot${RS.active && !RS.paused ? ' on' : ''}"></span><b>Director Review</b>
+      <span class="rs-time">${mmss(rsElapsed())}</span><span class="hint" style="margin:0">${state} · ${RS.segments.filter((s) => !s.mark).length} lines</span>
+      <span class="spacer"></span>
+      <button class="ghost small" data-act="review-mark" title="Drop a marker at this moment (also: say it out loud)">★ Mark moment</button>
+      <button class="ghost small" data-act="review-pause">${RS.paused ? 'Resume' : 'Pause'}</button>
+      <button class="primary small" data-act="review-done">Done, review notes</button>
+      <button class="ghost small" data-act="review-discard">Discard</button>
+    </div>
+    <div class="rs-text" id="rs-text">${RS.segments.map((s) => `<div class="${s.mark ? 'rs-mark' : ''}"><span class="rs-t">${mmss(s.t)}</span>${esc(s.text)}</div>`).join('')}${RS.interim ? `<div class="rs-interim"><span class="rs-t">${mmss(rsElapsed())}</span>${esc(RS.interim)}</div>` : ''}
+      ${!RS.segments.length && !RS.interim ? '<div class="hint">Start playing and talk through what you notice. Paste screenshots into the box below at any time; they go out with your notes.</div>' : ''}</div>`;
+  const box = $('#rs-text', el);
+  box.scrollTop = box.scrollHeight;
+}
+
+function rsListen() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const rec = new SR();
+  rec.continuous = true;
+  rec.interimResults = true;
+  rec.lang = navigator.language || 'en-US';
+  rec.onresult = (e) => {
+    let interim = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const text = e.results[i][0].transcript.trim();
+      if (!text) continue;
+      if (e.results[i].isFinal) RS.segments.push({ t: rsElapsed(), text });
+      else interim += `${text} `;
+    }
+    RS.interim = interim.trim();
+    rsSaveDraft();
+    rsRender();
+  };
+  rec.onerror = (e) => {
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+      RS.active = false;
+      toast('Microphone access was blocked. Allow it for this page (address bar) and try again.', true);
+      rsRender();
+    }
+  };
+  // Browsers end recognition after silences or ~a minute; keep it going for the whole session.
+  rec.onend = () => { if (RS.active && !RS.paused && RS.rec === rec) setTimeout(() => { try { rec.start(); } catch { /* already started */ } }, 200); };
+  RS.rec = rec;
+  rec.start();
+}
+
+function reviewStart() {
+  if (!(window.SpeechRecognition || window.webkitSpeechRecognition)) {
+    return modal({ title: 'Voice review needs Chrome or Edge', body: '<p>This browser has no speech recognition. Open Ballast in Chrome or Microsoft Edge to talk through a review. Typing notes in the box works everywhere.</p>', actions: [{ label: 'OK' }] });
+  }
+  if (RS.active) return;
+  let draft = null;
+  try { draft = JSON.parse(load(RS_DRAFT) || 'null'); } catch { /* none */ }
+  const begin = (resume) => {
+    Object.assign(RS, { active: true, paused: false, interim: '', gameId: S.gameId, pausedMs: 0, pausedAt: 0 });
+    RS.segments = resume ? draft.segments : [];
+    RS.startedAt = Date.now() - (resume ? draft.elapsed : 0);
+    rsListen();
+    clearInterval(RS.timer);
+    RS.timer = setInterval(() => { const t = $('#review-session .rs-time'); if (t) t.textContent = mmss(rsElapsed()); }, 1000);
+    rsRender();
+  };
+  if (draft?.segments?.length && draft.gameId === S.gameId) {
+    modal({
+      title: 'Unsent review',
+      body: `<p>You have an unsent review from ${clock(draft.at)} (${draft.segments.length} lines, ${mmss(draft.elapsed)}).</p>`,
+      actions: [{ label: 'Start over', onClick: () => begin(false) }, { label: 'Continue it', kind: 'primary', onClick: () => begin(true) }],
+    });
+  } else begin(false);
+}
+
+function reviewStop() {
+  RS.active = false;
+  RS.paused = false;
+  RS.interim = '';
+  try { RS.rec?.stop(); } catch { /* not running */ }
+  RS.rec = null;
+  clearInterval(RS.timer);
+}
+
+function reviewDone() {
+  const minutes = Math.max(1, Math.round(rsElapsed() / 60000));
+  reviewStop();
+  rsSaveDraft();
+  $('#review-session')?.remove();
+  const text = rsText();
+  modal({
+    title: 'Send Director Review to all agents',
+    wide: true,
+    body: `<p class="hint" style="margin-top:0">${minutes} min session. Fix anything the transcription got wrong; it doesn't need to be tidy. The agent with the most usage headroom turns it into a task breakdown, then everyone claims work.</p>
+      <textarea name="text" style="width:100%;height:52vh;font-family:var(--mono);font-size:13px">${esc(text)}</textarea>
+      ${S.pending.feed.length ? `<p class="hint">${S.pending.feed.length} attachment(s) from the box below go along with it.</p>` : ''}`,
+    actions: [
+      { label: 'Discard', kind: 'danger', onClick: () => { store(RS_DRAFT, ''); } },
+      { label: 'Keep recording', onClick: () => { reviewStart(); } },
+      {
+        label: 'Send to all agents', kind: 'primary', onClick: async (root) => {
+          const body = $('textarea', root).value.trim();
+          if (!body) throw new Error('The transcript is empty.');
+          const header = `Director Review: play session, ${minutes} min, ${new Date().toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}`;
+          await api('POST', `/api/games/${S.gameId}/notes`, { text: `${header}\n\n${body}`, target: 'all', source: 'review-session', attachments: S.pending.feed.map(({ name, path, url }) => ({ name, path, url })) });
+          S.pending.feed = [];
+          renderChips('feed');
+          store(RS_DRAFT, '');
+          toast('Sent to every agent');
+        },
+      },
+    ],
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Department tabs (Gameplay / Art / Audio / Backend): review, questions, work, captures
 
 const MODE_INFO = {
@@ -1228,7 +1373,11 @@ function settingsForm(g) {
     <h3>Game</h3>
     <div class="two">
       <label class="field"><span>Name</span><input name="name" value="${esc(g.name)}"></label>
-      <label class="field"><span>Lead agent</span><select name="leadAgentId">${agents.map((a) => opt(a.id, g.leadAgentId, a.name)).join('') || '<option value="">(no agents)</option>'}</select><small>Triages director notes into board tasks when idle.</small></label>
+      <label class="field"><span>Lead agent</span><select name="leadAgentId">${agents.map((a) => opt(a.id, g.leadAgentId, a.name)).join('') || '<option value="">(no agents)</option>'}</select><small>Breaks ties. Notes are coordinated by whichever agent has the most usage headroom.</small></label>
+    </div>
+    <div class="two">
+      <label class="field"><span>Coordinator file</span><input name="coordinatorFile" value="${esc(g.coordinatorFile || '')}" placeholder="${g.subdir ? `${esc(g.subdir)}/coordinator.md` : 'coordinator.md'}"><small>Optional. The coordinating agent records each note's feedback and task breakdown here, in the repo.</small></label>
+      <label class="field"><span>Tasks per claim</span><select name="claimBatch">${[1, 2, 3, 4, 5].map((n) => opt(String(n), String(g.claimBatch || 1))).join('')}</select><small>How many tasks an agent takes at once (it works through them in order).</small></label>
     </div>
     <div class="two">
       <label class="field"><span>Status</span><select name="status">${opt('active', g.status || 'active', 'Active')}${opt('paused', g.status, 'Paused (agents stop picking up work)')}</select></label>
@@ -1285,6 +1434,7 @@ function bindSettings(g) {
     try {
       await api('PATCH', `/api/games/${g.id}`, {
         name: f.name, leadAgentId: f.leadAgentId || null, brief: f.brief, autopilot: f.autopilot, status: f.status, priority: Number(f.priority),
+        coordinatorFile: f.coordinatorFile, claimBatch: Number(f.claimBatch),
         permissionMode: f.permissionMode, model: f.model, effort: f.effort,
         build: { command: f.command, checkins: f.checkins, outputPath: f.outputPath, shareDir: f.shareDir, webhookUrl: f.webhookUrl, timeoutMin: f.timeoutMin, agentReport: f.agentReport },
       });
@@ -1505,6 +1655,22 @@ const ACTIONS = {
   'dept-mode': (d) => api('PATCH', `/api/games/${S.gameId}`, { review: { [d.d]: d.mode } }),
   'review-approve': async (d) => { const t = await api('POST', `/api/tasks/${d.id}/approve`); toast(`Approved #${t.num}`); },
   'review-changes': (d) => changesModal(d.id),
+  'review-start': reviewStart,
+  'review-done': reviewDone,
+  'review-mark': () => { RS.segments.push({ t: rsElapsed(), text: 'marked moment', mark: true }); rsSaveDraft(); rsRender(); },
+  'review-pause': () => {
+    if (RS.paused) {
+      RS.pausedMs += Date.now() - RS.pausedAt;
+      RS.paused = false;
+      rsListen();
+    } else {
+      RS.paused = true;
+      RS.pausedAt = Date.now();
+      try { RS.rec?.stop(); } catch { /* not running */ }
+    }
+    rsRender();
+  },
+  'review-discard': () => confirmModal('Discard this review?', 'The transcript so far will be deleted.', 'Discard', () => { reviewStop(); store(RS_DRAFT, ''); $('#review-session')?.remove(); }),
   'queue-earlier': async () => { const r = await api('POST', `/api/games/${S.gameId}/queue-earlier`); toast(`Queued ${r.queued} for review${r.skipped ? `, ${r.skipped} filed as not your field` : ''}`); },
   'review-all': async (d) => { const r = await api('POST', `/api/games/${S.gameId}/approve-all`, { discipline: d.d }); toast(`Approved ${r.approved}`); },
   'q-answer': (d) => answerModal(d.id),

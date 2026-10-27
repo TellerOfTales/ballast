@@ -291,6 +291,22 @@ select.mini { width: auto; padding: 4px 8px; font-size: 12px; margin-left: auto;
 .suggestion { border-color: #2c4a6a; margin-bottom: 14px; }
 .sub-h { margin: 18px 0 10px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
 
+/* ---------- director review (voice) ---------- */
+.mic-btn { display: inline-flex; align-items: center; gap: 6px; }
+.review-session { border-top: 1px solid #6a2c2c; background: #160f10; padding: 10px 24px; max-height: 42vh; display: flex; flex-direction: column; }
+.rs-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; max-width: 920px; width: 100%; margin: 0 auto; }
+.rs-head .spacer { flex: 1; }
+.rs-time { font-family: var(--mono); font-size: 15px; font-weight: 700; }
+.rec-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--faint); }
+.rec-dot.on { background: var(--red); animation: pulse-red 1.2s infinite; }
+@keyframes pulse-red { 50% { box-shadow: 0 0 0 6px #ef5b5b00; } 0% { box-shadow: 0 0 0 0 #ef5b5b66; } }
+.rs-text { overflow: auto; margin: 8px auto 0; max-width: 920px; width: 100%; font-size: 14px; line-height: 1.55; }
+.rs-text > div { padding: 1px 0; }
+.rs-t { font-family: var(--mono); font-size: 11px; color: var(--faint); margin-right: 10px; }
+.rs-interim { color: var(--muted); font-style: italic; }
+.rs-mark { color: var(--accent); font-weight: 600; }
+button.pill { cursor: pointer; }
+
 /* ---------- department tabs + inbox ---------- */
 .dept section { margin-top: 22px; }
 .dept-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }

@@ -40,6 +40,7 @@ const gameAgents = (gameId) => db.agents.filter((a) => a.gameId === gameId);
 const gameTasks = (gameId) => db.tasks.filter((t) => t.gameId === gameId).sort((a, b) => a.num - b.num);
 const openTasks = (gameId) => gameTasks(gameId).filter((t) => t.status === 'open');
 const heldTask = (agentId) => db.tasks.find((t) => t.claimedBy === agentId && t.status === 'claimed');
+const heldTasks = (agentId) => db.tasks.filter((t) => t.claimedBy === agentId && t.status === 'claimed');
 const isLimited = (acct) => !!(acct?.limitedUntil && acct.limitedUntil > Date.now());
 const isPaused = (game) => game?.status === 'paused';
 
@@ -234,6 +235,8 @@ export async function createGame({ name, repoPath, isolation = 'worktree', brief
     autopilot: true,
     status: 'active',
     priority: 2,
+    claimBatch: 2, // tasks an agent claims at once
+    coordinatorFile: '', // repo file where the coordinating agent records each note's breakdown
     briefSuggestion: '',
     leadAgentId: null,
     noteSeq: 0,
@@ -270,7 +273,8 @@ export function surveyGame(id) {
 
 export function updateGame(id, patch) {
   const game = must(getGame(id), 'Unknown game');
-  for (const key of ['name', 'permissionMode', 'model', 'effort', 'leadAgentId']) {
+  if (patch.claimBatch !== undefined) game.claimBatch = Math.min(5, Math.max(1, Number(patch.claimBatch) || 1));
+  for (const key of ['name', 'permissionMode', 'model', 'effort', 'leadAgentId', 'coordinatorFile']) {
     if (patch[key] !== undefined) game[key] = typeof patch[key] === 'string' ? patch[key].trim() : patch[key];
   }
   if (patch.autopilot !== undefined) {
@@ -558,7 +562,8 @@ export function postNote(gameId, { text = '', target = 'all', attachments = [], 
     feedPost(gameId, { kind: 'system', text: 'No agents on this game yet. Add one from the Agents tab, then send the note again.' });
     return;
   }
-  enqueue(triager, { kind: 'triage', note, prompt: P.triage({ note, director: from }) }, { front: true });
+  feedPost(gameId, { kind: 'system', text: `${triager.name} is coordinating note #${note.num} (most usage headroom right now): breaking it into tasks for everyone.` });
+  enqueue(triager, { kind: 'triage', note, prompt: P.triage({ note, director: from, coordinatorFile: game.coordinatorFile }) }, { front: true });
 }
 
 // One note to several games at once (studio-wide direction, shared tech, art style...).
@@ -578,13 +583,15 @@ export function saveStudioAttachment({ name, data }) {
   return { name: safe, path: path.join(paths.studioAttachments, file), url: `/files/studio/${encodeURIComponent(file)}` };
 }
 
-function pickTriager(game, exclude) {
-  const agents = gameAgents(game.id).filter((a) => a.id !== exclude)
-    .sort((a, b) => utilization(getAccount(a.accountId)) - utilization(getAccount(b.accountId)));
+// The coordinator for a note is whoever has the most usage headroom right now (an idle
+// agent first); the lead only breaks ties. Cloud agents need a connected session.
+export function pickTriager(game, exclude) {
+  const lead = (a) => (a.id === game.leadAgentId ? -0.001 : 0);
+  const agents = gameAgents(game.id).filter((a) => a.id !== exclude && (game.runner !== 'cloud' || a.cloudLink))
+    .sort((a, b) => (utilization(getAccount(a.accountId)) + lead(a)) - (utilization(getAccount(b.accountId)) + lead(b)));
   const usable = agents.filter((a) => !isLimited(getAccount(a.accountId)));
-  const idle = usable.filter((a) => !R(a.id).child && !R(a.id).queue.length && !R(a.id).setup);
-  const lead = (list) => list.find((a) => a.id === game.leadAgentId);
-  return lead(idle) || idle[0] || lead(usable) || usable[0] || agents[0] || null;
+  const idle = usable.filter((a) => !R(a.id).child && !R(a.id).queue.length && !R(a.id).setup && !a.cloud);
+  return idle[0] || usable[0] || agents[0] || null;
 }
 
 // ---------------------------------------------------------------------------
@@ -936,7 +943,7 @@ function afterTurn(agent, game, item, ok) {
 
   if (isPaused(game) || overGuard(getAccount(agent.accountId))) return;
   if (game.autopilot && !R(agent.id).queue.length && openTasks(game.id).length && autopilotBudget(game)) {
-    enqueue(agent, { kind: 'next', prompt: P.nextTask({ openCount: openTasks(game.id).length }) }, { noPump: true });
+    enqueue(agent, { kind: 'next', prompt: P.nextTask({ openCount: openTasks(game.id).length, batch: game.claimBatch || 1 }) }, { noPump: true });
   }
 }
 
@@ -974,8 +981,8 @@ export function wakeIdle(gameId, force = false) {
     if (r.paused && !force) continue;
     if (force) r.paused = false;
     if (!force && !autopilotBudget(game)) break;
-    enqueue(a, { kind: 'next', prompt: P.nextTask({ openCount: openTasks(gameId).length }) }, { noPump: true });
-    open--;
+    enqueue(a, { kind: 'next', prompt: P.nextTask({ openCount: openTasks(gameId).length, batch: game.claimBatch || 1 }) }, { noPump: true });
+    open -= game.claimBatch || 1; // each woken agent claims a batch
     woken++;
   }
   pump();
@@ -1119,8 +1126,9 @@ export async function agentApi(agentId, tool, args = {}) {
       if (t.claimedBy === agent.id && t.status === 'claimed') return `You already hold #${t.num}.`;
       if (t.status !== 'open') throw new Error(`#${t.num} is ${t.status}${t.claimedBy ? ` by ${agentName(t.claimedBy)}` : ''}. Pick another open task.`);
       if (t.assignee && t.assignee !== agent.id) throw new Error(`#${t.num} is for ${agentName(t.assignee)}. Pick another open task.`);
-      const held = heldTask(agent.id);
-      if (held) throw new Error(`You still hold #${held.num}. Finish it (board_done) or give it back (board_block) first.`);
+      const held = heldTasks(agent.id);
+      const limit = game.claimBatch || 1;
+      if (held.length >= limit) throw new Error(`You already hold ${held.map((h) => `#${h.num}`).join(', ')} (the limit is ${limit}). Finish one (board_done) or give one back (board_block) first.`);
       Object.assign(t, { status: 'claimed', claimedBy: agent.id, claimedAt: Date.now(), updatedAt: Date.now(), nudges: 0 });
       save();
       changed();
@@ -1304,7 +1312,7 @@ export function requestCheckinReport(gameId, build, time) {
 export async function init() {
   // Local turns don't survive a restart, so their claimed work goes back on the board.
   // Cloud sessions keep running on claude.ai, so their tasks stay claimed.
-  const cloudHeld = new Set(db.agents.filter((a) => a.cloud?.taskId).map((a) => a.cloud.taskId));
+  const cloudHeld = new Set(db.agents.filter((a) => a.cloud).flatMap((a) => (a.cloud.items || [a.cloud]).map((i) => i.taskId)).filter(Boolean));
   for (const t of db.tasks) {
     if (t.status === 'claimed' && !cloudHeld.has(t.id)) Object.assign(t, { status: 'open', claimedBy: null, nudges: 0, note: 'Released: Ballast restarted' });
   }

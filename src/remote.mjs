@@ -66,6 +66,7 @@ const TRIAGE_SCHEMA = {
 };
 
 export async function triage(game, note) {
+  if (note.source === 'review-session') orch.feedPost(game.id, { kind: 'system', text: `Breaking Director Review #${note.num} into tasks…` });
   const acct = db.accounts.filter((a) => a.loggedIn && !(a.limitedUntil > Date.now()))
     .sort((a, b) => orch.utilization(a) - orch.utilization(b))[0];
   if (!acct) {
@@ -92,29 +93,53 @@ export async function triage(game, note) {
   const nums = out.tasks.flatMap((t) => (t.everyAgent && agents.length > 1
     ? agents.map((a) => orch.addTask(game.id, { title: `${t.title} (${a.name})`, detail: t.detail, noteNum: note.num, createdBy: 'Ballast triage', assignee: a.id }).num)
     : [orch.addTask(game.id, { title: t.title, detail: t.detail, noteNum: note.num, createdBy: 'Ballast triage' }).num]));
+  // The agent with the most headroom records the feedback and breakdown in the coordinator file;
+  // assigned tasks are claimed first, so it lands before the rest of the team gets far.
+  const coordinator = game.coordinatorFile && nums.length ? orch.pickTriager(game) : null;
+  if (coordinator) {
+    const t = orch.addTask(game.id, {
+      title: `[docs] Record note #${note.num} in ${game.coordinatorFile}`,
+      detail: `Add the director's feedback from note #${note.num} and its task breakdown (${nums.map((n) => `#${n}`).join(', ')}, one line each, grouped by department) to ${game.coordinatorFile}. Merge it right away so every agent sees it.\n\nNote:\n${note.text.slice(0, 6000)}`,
+      noteNum: note.num,
+      createdBy: 'Ballast triage',
+      assignee: coordinator.id,
+    });
+    nums.unshift(t.num);
+  }
   orch.feedPost(game.id, { kind: 'system', text: nums.length ? `Note #${note.num} split into ${nums.map((n) => `#${n}`).join(', ')}. ${out.summary || ''}` : `Note #${note.num}: already covered by the board. ${out.summary || ''}` });
 }
 
 // ---------------------------------------------------------------------------
 // Dispatch
 
+// A cloud agent gets a small batch (the game's "tasks per claim") in one message. Each task
+// still has its own branch, PR and report file, and is closed as soon as its report lands.
 export async function dispatch(agent, item) {
   const game = orch.getGame(agent.gameId);
   const acct = orch.getAccount(agent.accountId);
-  let task = null;
-  let key;
+  let tasks = [];
+  let items;
   let prompt;
+  const delivery = `\n- ${P.deliveryLine(orch.nextDelivery(game)) || 'Keep the base branch buildable whenever you merge.'}`;
   if (item.kind === 'survey') {
-    key = 'survey';
+    items = [{ key: 'survey', taskId: null }];
     prompt = P.cloudSurvey({ game, agent });
   } else if (item.kind === 'message') {
-    key = `m${Date.now().toString(36)}`;
+    const key = `m${Date.now().toString(36)}`;
+    items = [{ key, taskId: null }];
     prompt = P.cloudTask({ game, agent, key, task: { title: 'Message from the director', detail: item.text }, ...context(game, agent) });
   } else {
-    task = orch.claimForAgent(agent);
-    if (!task) return;
-    key = `t${task.num}`;
-    prompt = `${P.cloudTask({ game, agent, task, policy: review.policyFor(game, task.discipline || review.disciplineOf(task.title)), ...context(game, agent) })}\n- ${P.deliveryLine(orch.nextDelivery(game)) || 'Keep the base branch buildable whenever you merge.'}`;
+    for (let i = 0; i < (game.claimBatch || 1); i++) {
+      const t = orch.claimForAgent(agent);
+      if (!t) break;
+      tasks.push(t);
+    }
+    if (!tasks.length) return;
+    items = tasks.map((t) => ({ key: `t${t.num}`, taskId: t.id }));
+    const policy = (t) => review.policyFor(game, t.discipline || review.disciplineOf(t.title));
+    prompt = tasks.length === 1
+      ? P.cloudTask({ game, agent, task: tasks[0], policy: policy(tasks[0]), ...context(game, agent) }) + delivery
+      : P.cloudBatch({ game, agent, tasks, policyOf: policy, ...context(game, agent) }) + delivery;
   }
 
   dispatching.add(agent.id);
@@ -125,12 +150,13 @@ export async function dispatch(agent, item) {
     const baseline = await git.remoteHeads(game.repoPath);
     const { sessionId, url } = agent.cloudLink;
     await claude.sendCloudMessage({ account: acct, cwd: game.repoPath, sessionId, text: prompt });
-    agent.cloud = { sessionId, url, key, taskId: task?.id || null, kind: item.kind, since: Date.now(), baseline };
+    agent.cloud = { sessionId, url, items, kind: item.kind, since: Date.now(), baseline };
     agent.turns = (agent.turns || 0) + 1;
     agent.lastActive = Date.now();
-    orch.feedPost(game.id, { kind: 'system', text: `${agent.name} sent ${task ? `#${task.num} ${task.title}` : key === 'survey' ? 'the project survey' : 'your message'} to its cloud session: ${url}` });
+    const what = tasks.length ? tasks.map((t) => `#${t.num} ${t.title}`).join(', ') : items[0].key === 'survey' ? 'the project survey' : 'your message';
+    orch.feedPost(game.id, { kind: 'system', text: `${agent.name} took ${what}: ${url}` });
   } catch (err) {
-    if (task) orch.updateTask(task.id, { status: 'open' });
+    for (const task of tasks) orch.updateTask(task.id, { status: 'open' });
     orch.setAgentError(agent.id, err.message);
     orch.feedPost(game.id, { kind: 'error', from: agent.name, agentId: agent.id, text: `Couldn't start a cloud session: ${err.message}` });
   } finally {
@@ -212,10 +238,13 @@ export async function message(agent, text) {
 
 export function forget(agent, why) {
   if (!agent.cloud) return;
-  const { url, taskId } = agent.cloud;
+  const { url } = agent.cloud;
+  const items = agent.cloud.items || [{ taskId: agent.cloud.taskId }];
   agent.cloud = null;
-  const task = db.tasks.find((t) => t.id === taskId);
-  if (task?.status === 'claimed') orch.updateTask(task.id, { status: 'open' });
+  for (const item of items.filter((i) => !i.done && i.taskId)) {
+    const task = db.tasks.find((t) => t.id === item.taskId);
+    if (task?.status === 'claimed') orch.updateTask(task.id, { status: 'open' });
+  }
   orch.feedPost(agent.gameId, { kind: 'system', text: `${agent.name}: ${why}. The cloud session may still be running; stop it on claude.ai if needed: ${url}` });
   save();
   changed();
@@ -242,25 +271,31 @@ export async function poll() {
       }
       game.cloudError = null;
       for (const agent of active) {
-        const { baseline = {}, key, since } = agent.cloud;
+        // Sessions from before batching carried a single key/taskId.
+        agent.cloud.items ||= [{ key: agent.cloud.key, taskId: agent.cloud.taskId }];
+        const { baseline = {}, since, items } = agent.cloud;
         const moved = Object.keys(heads).filter((b) => heads[b] !== baseline[b]);
-        // Likely branches first: the suggested name, then anything new or updated since dispatch.
-        moved.sort((a, b) => (b.includes(key) - a.includes(key)) || (b.startsWith('ballast/') - a.startsWith('ballast/')));
-        const candidates = moved.slice(0, 12);
-        let report = null;
-        let branch = null;
-        if (candidates.length) {
-          await git.fetchBranches(game.repoPath, candidates).catch(() => {});
+        if (moved.length) await git.fetchBranches(game.repoPath, moved.slice(0, 20)).catch(() => {});
+        for (const item of items.filter((i) => !i.done)) {
+          // Likely branches first: the suggested name, then anything new or updated since dispatch.
+          const candidates = [...moved].sort((a, b) => (b.includes(item.key) - a.includes(item.key)) || (b.startsWith('ballast/') - a.startsWith('ballast/'))).slice(0, 20);
           for (const b of candidates) {
-            report = await git.showRemoteFile(game.repoPath, b, P.reportPath(key, game.subdir));
-            if (report) { branch = b; break; }
+            const report = await git.showRemoteFile(game.repoPath, b, P.reportPath(item.key, game.subdir));
+            if (report) {
+              await complete(game, agent, item, report, b);
+              break;
+            }
           }
         }
-        if (report) await complete(game, agent, report, branch);
-        else if (Date.now() - since > timeout) {
-          const task = db.tasks.find((t) => t.id === agent.cloud.taskId);
-          if (task) orch.updateTask(task.id, { status: 'blocked', blockReason: `No report from the cloud session after ${Math.round(timeout / 3600e3)}h: ${agent.cloud.url}` });
-          orch.feedPost(game.id, { kind: 'error', from: agent.name, agentId: agent.id, text: `No report pushed after ${Math.round(timeout / 3600e3)}h; check the session: ${agent.cloud.url}` });
+        if (agent.cloud && items.every((i) => i.done)) {
+          agent.cloud = null;
+          setTimeout(() => orch.wakeIdle(game.id), 500);
+        } else if (agent.cloud && Date.now() - since > timeout * items.length) {
+          const hours = Math.round((timeout * items.length) / 3600e3);
+          for (const item of items.filter((i) => !i.done && i.taskId)) {
+            orch.updateTask(item.taskId, { status: 'blocked', blockReason: `No report from the cloud session after ${hours}h: ${agent.cloud.url}` });
+          }
+          orch.feedPost(game.id, { kind: 'error', from: agent.name, agentId: agent.id, text: `No report pushed after ${hours}h; check the session: ${agent.cloud.url}` });
           agent.cloud = null;
           setTimeout(() => orch.wakeIdle(game.id), 500);
         }
@@ -294,8 +329,11 @@ async function pullMedia(game, agent, task, branch, key) {
   return files.length;
 }
 
-async function complete(game, agent, report, branch) {
-  const { taskId, url, key } = agent.cloud;
+// Closes one item of the agent's batch; poll() frees the agent once every item has reported.
+async function complete(game, agent, item, report, branch) {
+  const { taskId, key } = item;
+  const { url } = agent.cloud;
+  item.done = true;
   const blocked = /^STATUS:\s*BLOCKED/im.test(report);
   const body = report.replace(/^STATUS:.*\n?/im, '').trim();
   const pr = body.match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/)?.[0];
@@ -320,6 +358,4 @@ async function complete(game, agent, report, branch) {
     orch.feedPost(game.id, { kind: 'agent', from: agent.name, agentId: agent.id, text: `${body.slice(0, 2000)}\n${pr || `branch ${branch}`}` });
   }
   agent.lastCloud = { url, branch, pr, at: Date.now() };
-  agent.cloud = null;
-  setTimeout(() => orch.wakeIdle(game.id), 500);
 }
