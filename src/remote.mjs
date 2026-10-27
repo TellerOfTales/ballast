@@ -236,6 +236,12 @@ export function openConnector(game, agentIds = null) {
   if (!game) throw Object.assign(new Error('Unknown game'), { status: 400 });
   const agents = db.agents.filter((a) => a.gameId === game.id && (agentIds ? agentIds.includes(a.id) : !a.cloudLink));
   if (!agents.length) throw Object.assign(new Error('Every agent on this game already has a cloud session.'), { status: 400 });
+  // Every finished connector terminal creates a cloud session per agent, so a second one for the
+  // same agents would leave unused sessions behind. Point back at the open terminal instead.
+  const waiting = agents.filter((a) => [...pendingLinks.values()].includes(a.id));
+  if (waiting.length === agents.length && Date.now() < linkDeadline) {
+    throw Object.assign(new Error(`A connect terminal is already open for ${waiting.map((a) => a.name).join(', ')}. Finish it there (paste each link it prints); Ballast connects them as you go.`), { status: 409 });
+  }
   const steps = agents.map((agent) => {
     const acct = orch.getAccount(agent.accountId);
     const outFile = path.join(paths.tmp, `cloudlink-${agent.id}.txt`);
