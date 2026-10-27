@@ -99,7 +99,7 @@ export async function triage(game, note) {
   if (coordinator) {
     const t = orch.addTask(game.id, {
       title: `[docs] Record note #${note.num} in ${game.coordinatorFile}`,
-      detail: `Add the director's feedback from note #${note.num} and its task breakdown (${nums.map((n) => `#${n}`).join(', ')}, one line each, grouped by department) to ${game.coordinatorFile}. Merge it right away so every agent sees it.\n\nNote:\n${note.text.slice(0, 6000)}`,
+      detail: `Add the director's feedback from note #${note.num} and its task breakdown to ${game.coordinatorFile}, grouped by department. Merge it right away so every agent sees it.\n\nTasks (everything you need for the breakdown is here):\n${nums.map((n) => db.tasks.find((t) => t.gameId === game.id && t.num === n)).filter(Boolean).map((t) => `- #${t.num} ${t.title}${t.assignee ? ` (for ${orch.getAgent(t.assignee)?.name || 'one agent'})` : ''}: ${(t.detail || '').replace(/\s+/g, ' ').slice(0, 300)}`).join('\n')}\n\nNote:\n${note.text.slice(0, 6000)}`,
       noteNum: note.num,
       createdBy: 'Ballast triage',
       assignee: coordinator.id,
@@ -146,11 +146,13 @@ export async function dispatch(agent, item) {
   changed();
   try {
     if (!agent.cloudLink) throw new Error('Connect a cloud session to this agent first (Agents tab).');
-    await git.syncClone(game.repoPath, game.baseBranch);
+    // The session works on GitHub, not in Ballast's clone, so no checkout here. Only the
+    // remote's branch heads are needed, to spot the branches it pushes later.
     const baseline = await git.remoteHeads(game.repoPath);
     const { sessionId, url } = agent.cloudLink;
     await claude.sendCloudMessage({ account: acct, cwd: game.repoPath, sessionId, text: prompt });
     agent.cloud = { sessionId, url, items, kind: item.kind, since: Date.now(), baseline };
+    orch.setAgentError(agent.id, null); // a retry that worked shouldn't keep showing the old failure
     agent.turns = (agent.turns || 0) + 1;
     agent.lastActive = Date.now();
     const what = tasks.length ? tasks.map((t) => `#${t.num} ${t.title}`).join(', ') : items[0].key === 'survey' ? 'the project survey' : 'your message';

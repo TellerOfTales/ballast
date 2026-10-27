@@ -3,13 +3,46 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 
-export function git(cwd, args) {
+function run(cwd, args, opts = {}) {
   return new Promise((resolve, reject) => {
-    execFile('git', args, { cwd, windowsHide: true, maxBuffer: 32 * 1024 * 1024 }, (err, stdout, stderr) => {
-      if (err) reject(new Error((stderr || err.message).trim()));
-      else resolve(stdout.trim());
+    execFile('git', args, { cwd, windowsHide: true, maxBuffer: 128 * 1024 * 1024, ...opts }, (err, stdout, stderr) => {
+      if (err) reject(Object.assign(new Error(String(stderr || err.message).trim()), { stderr: String(stderr || '') }));
+      else resolve(opts.encoding === 'buffer' ? stdout : stdout.trim());
     });
   });
+}
+
+// Several agents can be handed work at the same moment, and two git commands in one folder
+// collide on .git/index.lock. So Ballast runs its git commands one at a time per folder.
+const queues = new Map(); // folder -> tail of its promise chain
+function serial(cwd, fn) {
+  const key = path.resolve(cwd).toLowerCase();
+  const next = (queues.get(key) || Promise.resolve()).catch(() => {}).then(fn);
+  queues.set(key, next);
+  next.finally(() => { if (queues.get(key) === next) queues.delete(key); }).catch(() => {});
+  return next;
+}
+
+const LOCK_RE = /index\.lock'?: File exists|Unable to create .*\.lock/i;
+
+// Another program (an IDE, a terminal) can still hold the lock briefly: wait and retry. A lock
+// left behind by a killed git in one of Ballast's own clones is removed once it's clearly stale.
+async function withLockRetry(cwd, fn) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (!LOCK_RE.test(err.message) || attempt >= 5) throw err;
+      const lock = err.message.match(/'([^']+\.lock)'/)?.[1];
+      const age = lock && fs.existsSync(lock) ? Date.now() - fs.statSync(lock).mtimeMs : 0;
+      if (lock && age > 120e3 && /[\\/]\.ballast[\\/]clones[\\/]/i.test(path.resolve(lock))) fs.rmSync(lock, { force: true });
+      await new Promise((r) => setTimeout(r, 750 * (attempt + 1)));
+    }
+  }
+}
+
+export function git(cwd, args, opts) {
+  return serial(cwd, () => withLockRetry(cwd, () => run(cwd, args, opts)));
 }
 
 export const isRepo = (dir) => git(dir, ['rev-parse', '--is-inside-work-tree']).then((o) => o === 'true', () => false);
@@ -101,11 +134,7 @@ export async function fetchBranches(dir, branches) {
 export const listRemoteFiles = (dir, branch, prefix) =>
   git(dir, ['ls-tree', '-r', '--name-only', `refs/ballast/remote/${branch}`, '--', prefix]).then((o) => o.split('\n').filter(Boolean));
 
-export function readRemoteBlob(dir, branch, file) {
-  return new Promise((resolve, reject) => {
-    execFile('git', ['show', `refs/ballast/remote/${branch}:${file}`], { cwd: dir, encoding: 'buffer', maxBuffer: 128 * 1024 * 1024, windowsHide: true }, (err, stdout) => (err ? reject(err) : resolve(stdout)));
-  });
-}
+export const readRemoteBlob = (dir, branch, file) => git(dir, ['show', `refs/ballast/remote/${branch}:${file}`], { encoding: 'buffer' });
 
 export const showRemoteFile =(dir, branch, file) => git(dir, ['show', `refs/ballast/remote/${branch}:${file}`]).catch(() => null);
 
