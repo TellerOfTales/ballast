@@ -17,6 +17,7 @@ import * as cloud from './cloud.mjs';
 import * as remote from './remote.mjs';
 import * as review from './review.mjs';
 import * as inbox from './inbox.mjs';
+import * as deptnotes from './deptnotes.mjs';
 
 export const runtime = { baseUrl: '' }; // filled in by the server once it is listening
 const MCP_SERVER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'mcp-server.mjs');
@@ -53,6 +54,7 @@ export function utilization(acct) {
 const overGuard = (acct) => utilization(acct) * 100 >= (db.settings.limitGuardPct || 95);
 const agentName = (id) => getAgent(id)?.name || 'someone';
 const director = () => db.settings.directorName || 'Director';
+export const directorName = director;
 
 function must(value, message) {
   if (!value) throw Object.assign(new Error(message), { status: 400 });
@@ -82,6 +84,7 @@ export function publicState() {
     cloudArtifacts: db.cloudArtifacts,
     cloudIndex: db.cloudIndex,
     inbox: db.inbox,
+    deptNotes: db.deptNotes,
     disciplines: review.DISCIPLINES.map(({ id, label }) => ({ id, label })),
     games: db.games,
     agents: db.agents.map((a) => {
@@ -1132,8 +1135,11 @@ export async function agentApi(agentId, tool, args = {}) {
       Object.assign(t, { status: 'claimed', claimedBy: agent.id, claimedAt: Date.now(), updatedAt: Date.now(), nudges: 0 });
       save();
       changed();
-      const policy = review.policyFor(game, t.discipline || review.disciplineOf(t.title));
-      return `Claimed #${t.num}: ${t.title}${t.detail ? `\n${t.detail}` : ''}\n\n${P.reviewRuleLocal({ task: t, game, policy })}\n${P.deliveryLine(nextDelivery(game))}`;
+      const discipline = t.discipline || review.disciplineOf(t.title);
+      const policy = review.policyFor(game, discipline);
+      // Working in a department means picking up that department's waiting notes too.
+      const note = deptnotes.pickFor(agent, game, discipline);
+      return `Claimed #${t.num}: ${t.title}${t.detail ? `\n${t.detail}` : ''}\n\n${P.reviewRuleLocal({ task: t, game, policy })}\n${P.deliveryLine(nextDelivery(game))}${note ? `\n\n${P.deptNoteLocal({ note, label: deptnotes.label(discipline), ref: deptnotes.ref(note), taskNum: t.num })}` : ''}`;
     }
     case 'board_done': {
       const t = byNum(args.task_id);
@@ -1146,6 +1152,11 @@ export async function agentApi(agentId, tool, args = {}) {
       changed();
       const open = openTasks(game.id).length;
       return `${parked ? `#${t.num} is waiting for the director's approval; don't land it. Ballast tells you when it's approved.` : `Marked #${t.num} done.`}${open ? ` ${open} open task(s) remain on the board: take the next one.` : ' Nothing else is open.'}`;
+    }
+    case 'task_dept_note': {
+      const created = deptnotes.taskNote(deptnotes.find(game, args.note_id), args.tasks, agent.name);
+      setTimeout(() => wakeIdle(game.id), 500);
+      return `Note is TASKED: ${created.map((t) => `#${t.num} ${t.title}`).join('; ')}. They're on the board for the whole team; carry on with your own task.`;
     }
     case 'ask_director': {
       // A capture makes a look-and-feel question answerable at a glance.

@@ -90,6 +90,17 @@ Backend defaults to *Not my field*. *Approve first* needs per-agent worktrees or
 
 **Captures.** Local agents publish captures with `publish_artifact`. Cloud agents commit them to `.ballast/media/t<task>/` on their branch, and Ballast pulls them in when the task reports.
 
+## Department notes
+
+Each department tab has a **Leave a note** box for feedback aimed at the whole department, like "everything looks too clean" in Art. A note goes through four stages:
+
+1. **NEW:** the note waits for an agent in that department.
+2. **Picked up:** the next agent that claims a task in that department gets the note. A local agent breaks it into board tasks with `task_dept_note` before starting its own work. A cloud agent lists the tasks in its report, and Ballast adds them to the board.
+3. **TASKED:** the note links to each task it produced, showing each task's live status.
+4. **ARCHIVED:** once every one of those tasks is done, the note moves to the department's archive.
+
+Notes never stall. If nobody picks a note up within 15 minutes (*Settings*), or whoever picked it up doesn't break it down, Ballast breaks it down itself. **Break down now** does that immediately.
+
 ## Director Review (voice)
 
 Press **Director Review** in a game's Feed, play, and talk:

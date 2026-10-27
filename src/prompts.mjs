@@ -240,6 +240,22 @@ function reviewRuleCloud(policy, base) {
     : `- Merge your pull request into \`${base}\` yourself once it builds (resolve conflicts if needed). The director reviews ${policy === 'skip' ? 'nothing in this area' : 'after the fact'}; never wait on review.`;
 }
 
+// A department note handed to an agent that's working in that department.
+export function deptNoteLocal({ note, label, ref, taskNum }) {
+  return `${label.toUpperCase()} NOTE ${ref} from the director (you're working in ${label}, so you've picked it up):
+${note.text}
+
+Before you start on #${taskNum}, break this note into board tasks: call task_dept_note with note_id "${ref}" and one task per concrete change (title plus a done-condition in the detail, keeping the director's wording where it matters; skip anything already on the board). That marks the note TASKED. Then go back to #${taskNum}; the new tasks are for whoever claims them next.`;
+}
+
+export function deptNoteCloud({ note, label, ref }) {
+  return `## ${label} note ${ref} from the director
+You're working in ${label}, so you've picked up this note:
+${note.text}
+
+Break it into board tasks for the team (don't do them yourself unless they are your tasks above). In your first task's report, add a section \`## Note ${ref} tasks\` with one \`- [tag] title: done-condition\` line per concrete change, keeping the director's wording where it matters. Ballast puts them on the board and marks the note TASKED.`;
+}
+
 // Appended to every task hand-off so agents plan around the daily build times.
 export function deliveryLine(next) {
   if (!next) return '';

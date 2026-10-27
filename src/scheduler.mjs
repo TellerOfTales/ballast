@@ -11,6 +11,7 @@ import { killTree } from './claude.mjs';
 import { syncAccount, isSyncing } from './cloud.mjs';
 import { poll as pollCloudSessions } from './remote.mjs';
 import { autoApproveTick } from './review.mjs';
+import { tick as deptNotesTick } from './deptnotes.mjs';
 
 const running = new Map(); // gameId -> child process
 const SLOT_WINDOW_MS = 90 * 60e3; // a missed check-in still fires if Ballast starts within 90 min
@@ -183,6 +184,7 @@ function tick() {
   keepFresh();
   if (ticks++ % 3 === 0) pollCloudSessions().catch(() => {}); // every 90s
   if (ticks % 10 === 0) autoApproveTick().catch(() => {}); // every 5 min
+  deptNotesTick().catch(() => {});
   const now = Date.now();
   for (const game of db.games) {
     if (game.status === 'paused') continue;

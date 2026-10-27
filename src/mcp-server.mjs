@@ -88,6 +88,21 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
   },
   {
+    name: 'task_dept_note',
+    description: "Break a department note from the director (e.g. \"D3\") into board tasks. Creates the tasks for the whole team, links them to the note and marks the note TASKED; it's archived automatically once they're all done.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        note_id: { type: 'string', description: 'The note reference, e.g. "D3".' },
+        tasks: {
+          type: 'array',
+          items: { type: 'object', properties: { title: { type: 'string' }, detail: { type: 'string', description: 'What done looks like.' } }, required: ['title'] },
+        },
+      },
+      required: ['note_id', 'tasks'],
+    },
+  },
+  {
     name: 'ask_director',
     description: "Put a question in the Director's Inbox. It never blocks: say what you're assuming, carry on with that assumption, and move to the next task when this one is done. The answer arrives later as a message.\n\nThe director judges look and feel, not code. They don't know file names, systems or task numbers, and they read the Inbox cold, between play sessions. Every field must stand on its own in player-facing words: where in the game, what the player sees, hears or feels, and what changes with each option. Never mention files, functions, variables or code. Attach a screenshot or short clip whenever the question is about something visible or audible.",
     inputSchema: {

@@ -15,6 +15,7 @@ import * as cloud from './cloud.mjs';
 import * as remote from './remote.mjs';
 import * as review from './review.mjs';
 import * as inbox from './inbox.mjs';
+import * as deptnotes from './deptnotes.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PUBLIC = path.join(ROOT, 'public');
@@ -96,7 +97,7 @@ route('PATCH', '/api/settings', (_, body) => {
   if (body.cloudTaskTimeoutMin !== undefined) db.settings.cloudTaskTimeoutMin = Math.max(10, Number(body.cloudTaskTimeoutMin) || 240);
   if (body.desktopArtifacts !== undefined) db.settings.desktopArtifacts = !!body.desktopArtifacts;
   if (body.review) review.setStudioPolicy(body.review);
-  for (const key of ['reviewAutoApproveHours', 'deliveryHeadsUpMin']) if (body[key] !== undefined) db.settings[key] = Math.max(0, Number(body[key]) || 0);
+  for (const key of ['reviewAutoApproveHours', 'deliveryHeadsUpMin', 'deptNoteFallbackMin']) if (body[key] !== undefined) db.settings[key] = Math.max(0, Number(body[key]) || 0);
   for (const key of ['maxConcurrentPerAccount', 'autopilotDailyTurns']) if (body[key] !== undefined) db.settings[key] = Math.max(1, Number(body[key]) || 1);
   for (const key of ['limitRefreshMin', 'cloudSyncMin', 'contentRefreshMin']) if (body[key] !== undefined) db.settings[key] = Math.max(0, Number(body[key]) || 0);
   if (body.limitGuardPct !== undefined) db.settings.limitGuardPct = Math.min(100, Math.max(1, Number(body.limitGuardPct) || 95));
@@ -165,6 +166,9 @@ route('POST', '/api/tasks/:id/approve', (p) => review.approve(p.id));
 route('POST', '/api/tasks/:id/changes', (p, body) => review.requestChanges(p.id, body.feedback));
 route('POST', '/api/games/:id/approve-all', (p, body) => review.approveAll(p.id, body.discipline));
 route('POST', '/api/games/:id/queue-earlier', (p) => review.queueEarlierWork(p.id));
+route('POST', '/api/games/:id/dept-notes', (p, body) => deptnotes.add(p.id, body));
+route('POST', '/api/dept-notes/:id/breakdown', (p) => deptnotes.breakDownNow(p.id));
+route('DELETE', '/api/dept-notes/:id', (p) => deptnotes.remove(p.id));
 route('POST', '/api/inbox/:id/answer', (p, body) => inbox.answer(p.id, body.answer));
 route('POST', '/api/inbox/:id/dismiss', (p) => inbox.dismiss(p.id));
 route('DELETE', '/api/artifacts/:id', (p) => orch.removeArtifact(p.id));

@@ -283,7 +283,8 @@ function renderTabs() {
   const open = tasksOf(g.id).filter((t) => t.status === 'open' || t.status === 'claimed').length;
   const arts = S.st.artifacts.filter((a) => a.gameId === g.id).length + S.st.cloudArtifacts.filter((a) => a.gameId === g.id).length;
   const pendingIn = (d) => tasksOf(g.id).filter((t) => t.discipline === d && t.review?.state === 'pending').length
-    + openQuestions(g.id).filter((q) => q.discipline === d).length;
+    + openQuestions(g.id).filter((q) => q.discipline === d).length
+    + (S.st.deptNotes || []).filter((n) => n.gameId === g.id && n.discipline === d && n.status === 'new').length;
   const tabs = [
     ['feed', 'Feed', ''],
     ...S.st.disciplines.map((d) => [d.id, d.label, policyOf(g, d.id) === 'skip' ? '' : pendingIn(d.id) || '']),
@@ -318,7 +319,27 @@ function buildShell() {
     return;
   }
   if (isDept(S.tab)) {
-    v.innerHTML = '<div class="scroll pad dept" style="flex:1" id="dept"></div>';
+    // The note box sits outside the live-rendered parts so typing survives state updates.
+    const label = S.st.disciplines.find((d) => d.id === S.tab)?.label || S.tab;
+    v.innerHTML = `<div class="scroll pad dept" style="flex:1">
+      <div id="dept-top"></div>
+      <form class="card dept-note-form" id="dept-note-form">
+        <b>Leave a ${esc(label)} note</b>
+        <textarea name="text" rows="3" placeholder="Feedback for the whole ${esc(label.toLowerCase())} department: what looks or feels off, what to aim for…"></textarea>
+        <div class="row"><span class="hint grow" style="margin:0">The next agent working in ${esc(label)} picks it up and breaks it into tasks. It's archived once they're all done.</span><button class="primary small">Leave note</button></div>
+      </form>
+      <div id="dept"></div>
+    </div>`;
+    $('#dept-note-form').onsubmit = async (e) => {
+      e.preventDefault();
+      const ta = e.target.text;
+      if (!ta.value.trim()) return;
+      try {
+        await api('POST', `/api/games/${S.gameId}/dept-notes`, { discipline: S.tab, text: ta.value });
+        ta.value = '';
+        toast(`${label} note left`);
+      } catch (err) { fail(err); }
+    };
     return;
   }
   switch (S.tab) {
@@ -1303,7 +1324,11 @@ function renderDept(d) {
   const refs = S.st.cloudArtifacts.filter((c) => c.gameId === g.id && (c.discipline === d || c.role === 'gdd'));
   const line = (t) => `<div class="tline"><span class="num">#${t.num}</span> ${esc(t.title.replace(/^\s*\[[^\]]+\]\s*/, ''))} <span class="hint" style="display:inline">${t.claimedBy ? `· ${esc(agentOf(t.claimedBy)?.name || '')}` : t.assignee ? `· for ${esc(agentOf(t.assignee)?.name || '')}` : ''}</span></div>`;
 
-  el.innerHTML = `
+  const notes = (S.st.deptNotes || []).filter((n) => n.gameId === g.id && n.discipline === d);
+  const liveNotes = notes.filter((n) => n.status !== 'archived').sort((a, b) => b.createdAt - a.createdAt);
+  const archived = notes.filter((n) => n.status === 'archived').sort((a, b) => (b.archivedAt || 0) - (a.archivedAt || 0));
+  const top = $('#dept-top');
+  const headHtml = `
     <div class="dept-head">
       <h2>${esc(label)}</h2>
       <div class="seg">${['gate', 'after', 'skip'].map((m) => `<button class="${m === mode ? 'on' : ''}" data-act="dept-mode" data-d="${d}" data-mode="${m}">${MODE_INFO[m].label}</button>`).join('')}</div>
@@ -1311,7 +1336,12 @@ function renderDept(d) {
     </div>
     <p class="hint" style="margin-top:4px">${esc(MODE_INFO[mode].text(g))}</p>
     ${unfiled ? `<div class="card suggestion" style="margin-top:10px"><b>Earlier work</b><span class="hint" style="margin:0">${unfiled} task${unfiled > 1 ? 's' : ''} on this game finished before review was set up.</span>
-      <div style="margin-top:8px"><button class="btn small" data-act="queue-earlier">Queue them for review</button> <span class="hint" style="display:inline">Each department follows its mode; nothing is un-merged.</span></div></div>` : ''}
+      <div style="margin-top:8px"><button class="btn small" data-act="queue-earlier">Queue them for review</button> <span class="hint" style="display:inline">Each department follows its mode; nothing is un-merged.</span></div></div>` : ''}`;
+  if (top) top.innerHTML = headHtml;
+
+  el.innerHTML = `
+    ${liveNotes.length ? `<section><div class="section-head"><h3>${esc(label)} notes</h3><span class="hint">${liveNotes.filter((n) => n.status === 'new').length} waiting · ${liveNotes.filter((n) => n.status === 'tasked').length} tasked</span></div>
+      ${liveNotes.map(deptNoteCard).join('')}</section>` : ''}
 
     ${mode !== 'skip' || pending.length ? `<section><div class="section-head"><h3>Waiting for you</h3><span class="hint">${pending.length ? `${pending.length} item${pending.length > 1 ? 's' : ''}` : 'Nothing to review.'}</span>${pending.length > 1 ? `<button class="ghost small" data-act="review-all" data-d="${d}">Approve all</button>` : ''}</div>
       ${pending.map((t) => reviewCard(t, g)).join('')}</section>` : ''}
@@ -1333,7 +1363,26 @@ function renderDept(d) {
         ${c.summary ? clamp(c.summary, md(c.summary)) : ''}</div>`).join('') : `<p class="hint">Track this department's review pages and checklists (like an art review or audio checklist) to see them here and route their changes to the team.</p>`}</section>
 
     ${recent.length ? `<section><details><summary class="hint" style="display:inline;cursor:pointer">Recently finished (${recent.length})</summary>
-      ${recent.map((t) => `<div class="tline"><span class="num">#${t.num}</span> ${esc(t.title.replace(/^\s*\[[^\]]+\]\s*/, ''))} <span class="hint" style="display:inline">· ${esc(agentOf(t.doneBy)?.name || '')} · ${({ changes: 'changes requested', auto: 'auto-approved', skipped: 'not reviewed', approved: 'approved' })[t.review?.state] || 'finished'}${t.pr ? ` · <a href="${esc(t.pr)}" target="_blank" rel="noopener">PR</a>` : ''}</span></div>`).join('')}</details></section>` : ''}`;
+      ${recent.map((t) => `<div class="tline"><span class="num">#${t.num}</span> ${esc(t.title.replace(/^\s*\[[^\]]+\]\s*/, ''))} <span class="hint" style="display:inline">· ${esc(agentOf(t.doneBy)?.name || '')} · ${({ changes: 'changes requested', auto: 'auto-approved', skipped: 'not reviewed', approved: 'approved' })[t.review?.state] || 'finished'}${t.pr ? ` · <a href="${esc(t.pr)}" target="_blank" rel="noopener">PR</a>` : ''}</span></div>`).join('')}</details></section>` : ''}
+
+    ${archived.length ? `<section><details><summary class="hint" style="display:inline;cursor:pointer">Archived notes (${archived.length})</summary>${archived.map(deptNoteCard).join('')}</details></section>` : ''}`;
+}
+
+// A department note: NEW (waiting / picked up) -> TASKED (linked tasks with live status) -> ARCHIVED.
+function deptNoteCard(n) {
+  const statusLabel = { open: 'open', claimed: 'in progress', review: 'awaiting approval', blocked: 'blocked', done: 'done' };
+  const tasks = n.taskIds.map((id) => S.st.tasks.find((t) => t.id === id)).filter(Boolean);
+  const done = tasks.filter((t) => t.status === 'done').length;
+  const state = n.status === 'archived' ? ['success', 'archived']
+    : n.status === 'tasked' ? ['queued', `tasked · ${done}/${tasks.length} done`]
+    : n.pickedBy && Date.now() - n.pickedAt < 45 * 60e3 ? ['running', `picked up by ${n.pickedByName}`]
+    : ['limited', 'new · waiting for an agent'];
+  return `<div class="card deptnote${n.status === 'archived' ? ' archived' : ''}">
+    <div class="row"><span class="num">D${n.num}</span><span class="pill ${state[0]}">${esc(state[1])}</span><span class="grow hint" style="margin:0">${clock(n.createdAt)}${n.taskedBy ? ` · broken down by ${esc(n.taskedBy)}` : ''}${n.archivedAt ? ` · archived ${clock(n.archivedAt)}` : ''}</span>
+      ${n.status === 'new' ? `<button class="ghost small" data-act="dn-breakdown" data-id="${n.id}" title="Have Ballast break it into tasks right now">Break down now</button><button class="ghost small" data-act="dn-delete" data-id="${n.id}">Delete</button>` : ''}</div>
+    ${clamp(n.text, md(n.text))}
+    ${tasks.length ? `<div class="dn-tasks">${tasks.map((t) => `<button class="dn-task ${t.status}" data-act="task-edit" data-id="${t.id}" title="${esc(t.title)}"><span class="num">#${t.num}</span> ${esc(t.title.replace(/^\s*\[[^\]]+\]\s*/, '').slice(0, 60))} <span class="hint" style="display:inline">${statusLabel[t.status] || t.status}</span></button>`).join('')}</div>` : ''}
+  </div>`;
 }
 
 function renderInbox() {
@@ -1661,6 +1710,8 @@ const ACTIONS = {
   'dept-mode': (d) => api('PATCH', `/api/games/${S.gameId}`, { review: { [d.d]: d.mode } }),
   'review-approve': async (d) => { const t = await api('POST', `/api/tasks/${d.id}/approve`); toast(`Approved #${t.num}`); },
   'review-changes': (d) => changesModal(d.id),
+  'dn-breakdown': async (d) => { toast('Breaking it into tasks…'); await api('POST', `/api/dept-notes/${d.id}/breakdown`); },
+  'dn-delete': (d) => confirmModal('Delete this note?', "It hasn't been broken into tasks yet, so nothing else changes.", 'Delete', () => api('DELETE', `/api/dept-notes/${d.id}`)),
   'review-start': reviewStart,
   'review-done': reviewDone,
   'review-mark': () => { RS.segments.push({ t: rsElapsed(), text: 'marked moment', mark: true }); rsSaveDraft(); rsRender(); },

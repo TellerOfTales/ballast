@@ -322,7 +322,19 @@ button.pill { cursor: pointer; }
 .tline { padding: 4px 0; font-size: 13px; border-bottom: 1px solid var(--line); }
 .tline:last-child { border-bottom: 0; }
 .card > b { display: block; margin-bottom: 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); }
-.q-context { margin-top: 8px; font-size: 13.5px; }
+.dept-note-form { margin-top: 16px; display: grid; gap: 8px; }
+.dept-note-form textarea { min-height: 64px; }
+.deptnote { margin-bottom: 10px; }
+.deptnote .num { font-family: var(--mono); color: var(--accent); font-weight: 700; }
+.deptnote .md { margin-top: 8px; }
+.deptnote.archived { opacity: .75; }
+.dn-tasks { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.dn-task { background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 8px; padding: 4px 9px; font-size: 12.5px; text-align: left; }
+.dn-task .num { font-family: var(--mono); color: var(--accent); font-size: 11.5px; }
+.dn-task.done { border-color: #2a6e45; }
+.dn-task.claimed, .dn-task.review { border-color: #2c4a6a; }
+.dn-task.blocked { border-color: #6a2c2c; }
+.q-context {margin-top: 8px; font-size: 13.5px; }
 .q-options { margin: 8px 0 0; padding-left: 20px; font-size: 13px; color: var(--text); }
 .q-options li { margin: 2px 0; }
 .assume {margin-top: 8px; font-size: 13px; color: var(--muted); border-left: 2px solid var(--accent); padding-left: 10px; }

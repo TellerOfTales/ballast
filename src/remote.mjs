@@ -13,6 +13,7 @@ import { recordUsage } from './usage.mjs';
 import * as orch from './orchestrator.mjs';
 import * as review from './review.mjs';
 import * as inbox from './inbox.mjs';
+import * as deptnotes from './deptnotes.mjs';
 
 const dispatching = new Set(); // agentIds with a session being created
 export const isDispatching = (agentId) => dispatching.has(agentId);
@@ -140,6 +141,17 @@ export async function dispatch(agent, item) {
     prompt = tasks.length === 1
       ? P.cloudTask({ game, agent, task: tasks[0], policy: policy(tasks[0]), ...context(game, agent) }) + delivery
       : P.cloudBatch({ game, agent, tasks, policyOf: policy, ...context(game, agent) }) + delivery;
+    // Working in a department means picking up its waiting note; the breakdown comes back in
+    // the first task's report.
+    for (const t of tasks) {
+      const discipline = t.discipline || review.disciplineOf(t.title);
+      const note = deptnotes.pickFor(agent, game, discipline);
+      if (note) {
+        prompt += `\n\n${P.deptNoteCloud({ note, label: deptnotes.label(discipline), ref: deptnotes.ref(note) })}`;
+        items[0].deptNoteId = note.id;
+        break;
+      }
+    }
   }
 
   dispatching.add(agent.id);
@@ -358,6 +370,13 @@ async function complete(game, agent, item, report, branch) {
   const pr = body.match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/)?.[0];
   const task = db.tasks.find((t) => t.id === taskId);
   const media = await pullMedia(game, agent, task, branch, key);
+  if (item.deptNoteId) {
+    const note = db.deptNotes.find((n) => n.id === item.deptNoteId);
+    const section = note && body.match(new RegExp(`^##\\s*Note\\s*${deptnotes.ref(note)}\\s*tasks\\s*\\n([\\s\\S]*?)(?=\\n##\\s|(?![\\s\\S]))`, 'im'))?.[1];
+    const lines = [...(section || '').matchAll(/^\s*[-*]\s*(.+?)(?::\s+(.+))?$/gm)].map(([, title, detail]) => ({ title, detail }));
+    // No section means the agent didn't get to it; the note's fallback timer handles that.
+    if (note?.status === 'new' && lines.length) deptnotes.taskNote(note, lines, agent.name);
+  }
   for (const q of reportQuestions(body)) {
     // "Capture: dagger.gif" points at a file in this task's captures folder, pulled in above.
     const cap = q.capture && db.artifacts.filter((a) => a.gameId === game.id && a.taskId === (task?.id || null)).find((a) => a.entry === q.capture.replace(/[^\w.\-]+/g, '_') || a.entry.endsWith(q.capture.split('/').pop()));

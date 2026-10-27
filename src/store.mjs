@@ -42,6 +42,7 @@ const DEFAULTS = {
     review: { gameplay: 'after', art: 'after', audio: 'after', backend: 'skip', other: 'after' },
     reviewAutoApproveHours: 24, // gated work nobody looked at is approved after this (0 = never)
     deliveryHeadsUpMin: 45, // tell the team this long before each check-in build
+    deptNoteFallbackMin: 15, // a department note nobody picks up is broken down by Ballast after this (0 = never)
   },
   secrets: {
     uiToken: crypto.randomBytes(24).toString('hex'),
@@ -58,6 +59,7 @@ const DEFAULTS = {
   cloudArtifacts: [], // claude.ai artifacts tracked per game
   cloudIndex: {}, // accountId -> last artifact listing, for discovery
   inbox: [], // Director's Inbox: questions agents asked without stopping
+  deptNotes: [], // notes left for a whole department, tracked until their tasks are done
 };
 
 function load() {
