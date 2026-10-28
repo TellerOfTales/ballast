@@ -16,6 +16,18 @@ node src/server.mjs
 
 Or double-click `start-ballast.cmd`. It opens <http://127.0.0.1:4477>. Use a different port with `node src/server.mjs 4500`, or skip opening the browser with `--no-open`.
 
+### Windows installer
+
+Download `BallastSetup.exe` and run it. It installs Ballast for your Windows account only (no admin needed) into `%LOCALAPPDATA%\Programs\Ballast` and adds **Ballast** to the Start menu and desktop.
+
+- It checks for Node.js 20+, Claude Code and git, and offers to install any that are missing (Node and git with `winget`, Claude Code with its official installer). Each one asks first.
+- **Ballast** starts it in the background (no console window) and opens your browser. If it's already running, it just opens the browser. **Stop Ballast** closes it.
+- Running a newer `BallastSetup.exe` updates Ballast in place. Your data in `~/.ballast` is never touched.
+- **Uninstall Ballast** (Start menu, or Settings > Apps) removes the app and shortcuts and keeps your data unless you choose to delete it too.
+- The installer isn't code-signed, so Windows SmartScreen shows "Windows protected your PC". Click **More info**, then **Run anyway**.
+
+Build it yourself with `powershell -ExecutionPolicy Bypass -File installer\build.ps1`. It uses Windows' built-in IExpress and writes `installer\dist\BallastSetup.exe`. `installer\test-install.ps1 -TestPort 4491` checks it end to end against temp folders and a throwaway registry key.
+
 ## Setup in four steps
 
 A fresh install opens on the **setup guide**, which walks through all of this: it checks this PC (Node, Claude Code, git, the GitHub CLI, Whisper) and shows the command for anything missing, then asks your name and working hours, your Claude accounts and what each plan costs, how you want to review each kind of work, whether new games start with the usage starter rules, phone access, and your first game. Open it again any time from Settings.
@@ -316,6 +328,7 @@ builds/<game>/<id>/   build.log + output/
 | `src/discord.mjs` | Discord playtest channels to game notes |
 | `src/phone.mjs` | phone access: home network / Tailscale listener and pairing |
 | `src/setup.mjs` | setup guide checks |
+| `installer/` | Windows installer (IExpress): build, install, launch, uninstall, tests |
 | `src/cloud.mjs` | claude.ai artifact sync and review routing |
 | `src/remote.mjs` | cloud games: triage, cloud sessions, GitHub report polling |
 | `src/review.mjs` | departments, review modes, approve / request changes, auto-approve |
