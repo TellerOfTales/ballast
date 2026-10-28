@@ -18,6 +18,8 @@ Or double-click `start-ballast.cmd`. It opens <http://127.0.0.1:4477>. Use a dif
 
 ## Setup in four steps
 
+A fresh install opens on the **setup guide**, which walks through all of this: it checks this PC (Node, Claude Code, git, the GitHub CLI, Whisper) and shows the command for anything missing, then asks your name and working hours, your Claude accounts and what each plan costs, how you want to review each kind of work, whether new games start with the usage starter rules, phone access, and your first game. Open it again any time from Settings.
+
 1. **Add accounts** (sidebar, `+`). Tick *Use the Claude login already on this computer* for your normal login. Every other account gets its own Claude profile in `~/.ballast/accounts/<name>`. Ballast opens a terminal running `claude auth login` for it and notices on its own when you're done.
 2. **Create a game** and choose where its agents run:
    - **This PC:** give it a folder. An existing git repo works, and so does a new or empty folder (Ballast runs `git init` for you).
@@ -88,6 +90,25 @@ The **Studio** page (top of the sidebar) is the author developer's home: every g
 - **Limit-aware routing.** Work goes to the agents whose accounts have the most headroom. Autopilot stops handing work to an account above 95% of either limit (configurable). Your own messages still go through.
 - **Game cards.** Every game's agents, board counts, last build and next check-in. You can **Pause** a game, which frees its accounts for other games, and set its **priority**, which decides who gets account time first when accounts are busy.
 - **Note to several games.** One note, triaged separately onto each ticked game's board.
+
+### Daily digest and weekly report
+
+- **Daily digest**, at the start of your working day (or **Digest now**): per game, what finished since the last one, what's blocked and why, what's waiting for you (reviews, Inbox questions), builds, and each account's session and weekly usage. No Claude run; it's just your numbers.
+- **Weekly report**, every Friday at 16:00 by default (Settings) or **Write this week's report**: for each game with finished work, Claude writes a devlog for players, 3-5 social posts for named channels, clips worth capturing, and what's coming next. Posts are aimed at the audiences and channels from the game's Bartle Audit. Copy one post or the whole report.
+- Both appear on the Studio page and go to the report webhook if you set one. A Discord channel webhook is the easy way to get them as phone notifications.
+
+### Playtesters on Discord
+
+Players' feedback in your Discord becomes notes for the game's team. Settings → **Discord**: create a bot in the Discord Developer Portal, turn on its *Message Content Intent*, paste its token (stored on this PC only), and add it to your server with the link Ballast gives you. Then in each game's Settings → **Playtesters**, pick its channels. Ballast reads them every minute and reacts ✅ to each message it picks up. It gathers new messages for 15 minutes (or 25 messages) and sends them as one note labelled as playtester feedback, so agents weigh issues several players raise over one-off opinions. It starts from the newest message, so old chatter isn't fed in. Nothing is hosted: Ballast polls Discord from this PC.
+
+### Ballast on your phone
+
+Settings → **Phone** (or the setup guide). Ballast keeps running on this PC and your phone opens it, with no server and no cloud bill:
+
+- **On my home Wi-Fi**: Ballast also listens on this PC's home-network address (port 4479).
+- **Anywhere, through Tailscale**: install [Tailscale](https://tailscale.com/download) (free) on the PC and phone. Ballast listens on its private address, encrypted end to end.
+- Open the address it shows on your phone and type the 6-digit **pairing code** (good for one phone, 15 minutes, 5 tries). Each paired phone gets its own key you can remove. Agent endpoints never leave this PC. Windows may ask once whether Node.js can use private networks; allow it.
+- The layout fits a phone (the sidebar becomes a ☰ drawer), and *Add to Home Screen* installs it like an app.
 
 ### Per-game usage cap and rules
 
@@ -189,7 +210,7 @@ Ballast mirrors the artifacts your accounts have on claude.ai: design docs, revi
 A cloud game's agents run as **Claude Code cloud sessions** (claude.ai/code) on its GitHub repo, so your PC doesn't do the work.
 
 - **Notes.** Cloud sessions can't reach Ballast, so Ballast splits each note into tasks itself, with a quick local run.
-- **Connect once per agent.** Claude Code only creates a cloud session from an interactive terminal, so each cloud agent gets one session that it keeps. Agent → **Connect cloud session** opens a terminal running `claude --cloud` under that agent's account; paste the link it prints (`https://claude.ai/code/session_…`) back into Ballast. A session you start yourself on claude.ai/code for the repo works too.
+- **Connect once per agent.** Claude Code only creates a cloud session from an interactive terminal, so each cloud agent gets one session that it keeps. Agent → **Connect cloud session** opens a terminal running `claude --cloud` under each agent's account, one after another. On Windows the terminal reads each session link (`https://claude.ai/code/session_…`) off its own screen and hands it to Ballast, so there's nothing to paste; it only asks you to paste if it can't find one. On macOS and Linux you paste each link into the terminal. A session you start yourself on claude.ai/code for the repo works too.
 - **Dispatch.** Ballast sends each task to the agent's session as a message (`claude -p --cloud <session>`, which works headless). The message carries the brief, recent notes, what others are working on, and the tracked artifact summaries. One task at a time per agent.
 - **Folder links.** A link like `github.com/owner/name/tree/main/game` keeps agents inside `game/`, and their reports go in `game/.ballast/reports/`.
 - **Delivery.** The agent works on its own branch, opens a pull request into the base branch, and commits `.ballast/reports/t<task>.md`. Its first line is `STATUS: DONE` or `STATUS: BLOCKED`.
@@ -218,6 +239,31 @@ In a game's Settings:
 - **Written check-in report**: optionally the lead agent writes a short "what's playable, what changed, what's next" report after each check-in.
 
 **Build now** on the Builds tab runs one immediately.
+
+### Playing a build
+
+Every build offers what its output supports, and the game header has **▶ Play latest**:
+
+- **Web builds** (an `index.html` anywhere in the output) open from a local play server at `http://localhost:4480`. It's a separate origin from Ballast, sends the cross-origin isolation headers threaded Godot and Unity web exports need, serves Unity's pre-compressed `.gz`/`.br` files, and counts as secure, so WebXR works in a desktop browser.
+- **Windows builds** (`.exe`) start with **▶ Run**.
+- **Android builds** (`.apk`) go to a Quest plugged in by USB with **Install on Quest**. Needs `adb`, which comes with Meta Quest Developer Hub (or set its path as `adbPath`). Ballast tells you if no headset is found or USB debugging hasn't been accepted in the headset.
+- **Upload to itch.io** pushes the build with [butler](https://itch.io/docs/butler/) to the itch.io page set in the game's Settings (`yourname/your-game`): web builds to the `html5` channel, `.exe` to `windows`, `.apk` to `android`. Install butler and run `butler login` once.
+
+## Roadmap: GDD features, L0-L3 quality levels, milestones
+
+The **Roadmap** tab turns the GDD into a plan. **Break down the GDD** has Claude read the design docs in the repo (and a claude.ai GDD you track) plus the board, and split the game into features. Each feature gets four quality levels, with what "done" means at each and the tasks to get there:
+
+| Level | Means |
+|---|---|
+| **L0 Greybox** | Placeholder art and logic that proves the idea is fun. |
+| **L1 Functional** | Works end to end with real rules; rough edges and placeholder content are fine. |
+| **L2 Polished** | Feels good: tuned, juicy, target-quality art and audio. |
+| **L3 Ship** | Performance, edge cases, accessibility and final content: ready for players. |
+
+- **Milestones** are features at a level: *First playable* (core features at L1, the rest at L0), *Vertical slice* (core L2, rest L1), *Content complete* (all L2) and *Launch* (all L3). Change the levels per milestone, mark which features are core, or add your own milestones (a festival demo, say).
+- **Automatic backlog.** For the current milestone, Ballast puts the next level's tasks for each feature on the board, one level at a time. When all of a feature's tasks for a level are done, it reaches that level and the next level's tasks go up. When every feature reaches the milestone's targets, the milestone closes and the next one starts.
+- **Forecast.** Each milestone shows progress, features already there, tasks left (open ones plus planned ones for levels not on the board yet) and a date at the game's own pace over the last 14 days (30 if it's been quiet).
+- Re-running the breakdown keeps your core flags and reached levels. If it misjudged how far a feature is, set its level in the feature's details.
 
 ## Artifacts
 
@@ -264,6 +310,12 @@ builds/<game>/<id>/   build.log + output/
 | `src/policy.mjs` | per-game usage cap and rules, and their presets |
 | `src/audits.mjs` | Bartle Audit: audience ranking and marketing plan per game |
 | `src/whisper.mjs` | local Whisper server for Director Review |
+| `src/roadmap.mjs` | GDD breakdown, L0-L3 levels, milestones, backlog, forecasts |
+| `src/play.mjs` | play server for web builds, run/Quest install/itch.io upload |
+| `src/digest.mjs` | daily digest and weekly devlog report |
+| `src/discord.mjs` | Discord playtest channels to game notes |
+| `src/phone.mjs` | phone access: home network / Tailscale listener and pairing |
+| `src/setup.mjs` | setup guide checks |
 | `src/cloud.mjs` | claude.ai artifact sync and review routing |
 | `src/remote.mjs` | cloud games: triage, cloud sessions, GitHub report polling |
 | `src/review.mjs` | departments, review modes, approve / request changes, auto-approve |

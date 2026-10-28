@@ -900,7 +900,7 @@ function renderRoadmap() {
       ${legend}
       ${r?.status === 'error' ? `<p class="hint" style="color:var(--red)">${esc(r.error)}</p>` : ''}
       <div class="row" style="gap:8px;margin-top:12px"><button class="primary" data-act="roadmap-run" data-model="opus">Break down the GDD</button><button class="ghost" data-act="roadmap-run" data-model="sonnet">Faster (Sonnet)</button>
-      <span class="hint" style="margin:0">Reads the repo's GDD${S.st.cloudArtifacts.some((c) => c.gameId === g.id && c.role === 'gdd') ? ' and your claude.ai GDD' : ''}. Takes a few minutes.</span></div></div>`;
+      <span class="hint" style="margin:0">Reads the repo's GDD${S.st.cloudArtifacts.some((c) => c.gameId === g.id && c.mirrored && (c.role === 'gdd' || /gdd|design doc/i.test(c.title))) ? ' and your claude.ai GDD' : ''}. Takes a few minutes.</span></div></div>`;
     return;
   }
   if (r.status === 'running' && !r.features?.length) {
