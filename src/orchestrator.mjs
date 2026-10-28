@@ -23,6 +23,7 @@ import * as subagents from './subagents.mjs';
 import * as delegates from './delegates.mjs';
 import * as policy from './policy.mjs';
 import * as play from './play.mjs';
+import * as roadmap from './roadmap.mjs';
 
 export const runtime = { baseUrl: '' }; // filled in by the server once it is listening
 const MCP_SERVER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'mcp-server.mjs');
@@ -110,6 +111,8 @@ export function publicState() {
     audits: db.audits,
     digests: db.digests.slice(-7),
     weeklyReports: db.weeklyReports.slice(-4),
+    roadmaps: Object.fromEntries(db.games.filter((g) => g.roadmap).map((g) => [g.id, roadmap.publicRoadmap(g)])),
+    levels: roadmap.LEVELS,
     games: db.games,
     agents: db.agents.map((a) => {
       const r = R(a.id);
@@ -1219,7 +1222,7 @@ export function checkLimits() {
 // ---------------------------------------------------------------------------
 // Board
 
-function createTask(game, { title, detail = '', createdBy, noteNum = null, assignee = null }) {
+function createTask(game, { title, detail = '', createdBy, noteNum = null, assignee = null, featureId = null, level = null }) {
   const t = {
     id: uid('t'),
     gameId: game.id,
@@ -1232,6 +1235,8 @@ function createTask(game, { title, detail = '', createdBy, noteNum = null, assig
     noteNum,
     assignee: assignee && getAgent(assignee)?.gameId === game.id ? assignee : null,
     discipline: review.disciplineOf(title),
+    // Roadmap: the GDD feature and quality level (0-3) this task moves forward.
+    ...(featureId ? { featureId, level } : {}),
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
@@ -1241,9 +1246,9 @@ function createTask(game, { title, detail = '', createdBy, noteNum = null, assig
   return t;
 }
 
-export function addTask(gameId, { title, detail, noteNum = null, createdBy = director(), assignee = null }) {
+export function addTask(gameId, { title, detail, noteNum = null, createdBy = director(), assignee = null, featureId = null, level = null }) {
   const game = must(getGame(gameId), 'Unknown game');
-  const t = createTask(game, { title, detail, createdBy, noteNum, assignee });
+  const t = createTask(game, { title, detail, createdBy, noteNum, assignee, featureId, level });
   setTimeout(() => wakeIdle(gameId), 300);
   return t;
 }

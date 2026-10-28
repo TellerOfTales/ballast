@@ -314,6 +314,7 @@ function renderTabs() {
     ['feed', 'Feed', ''],
     ...S.st.disciplines.map((d) => [d.id, d.label, policyOf(g, d.id) === 'skip' ? '' : pendingIn(d.id) || '']),
     ['agents', 'Agents', agents.length ? `${running}/${agents.length}` : ''],
+    ['roadmap', 'Roadmap', ''],
     ['board', 'Board', open || ''],
     ['builds', 'Builds', ''],
     ['artifacts', 'Artifacts', arts || ''],
@@ -383,6 +384,9 @@ function buildShell() {
       v.innerHTML = '<div class="split"><div class="agent-list" id="agent-list"></div><div class="agent-pane" id="agent-pane"></div></div>';
       buildAgentPane();
       break;
+    case 'roadmap':
+      v.innerHTML = '<div class="scroll pad roadmap" style="flex:1" id="roadmap"></div>';
+      break;
     case 'board':
       v.innerHTML = `<div class="board-wrap">
         <form class="task-form" id="task-form">
@@ -449,6 +453,7 @@ function renderLive() {
       break;
     }
     case 'board': renderBoard(); break;
+    case 'roadmap': renderRoadmap(); break;
     case 'builds': renderBuilds(); break;
     case 'artifacts': renderArtifacts(); renderCloudArtifacts(); break;
   }
@@ -874,6 +879,82 @@ function renderBuilds() {
       ${running ? '<button class="danger" data-act="build-cancel">Cancel build</button>' : '<button class="primary" data-act="build-now">Build now</button>'}
     </div>
     ${builds.length ? builds.map(buildCard).join('') : '<p class="hint">No builds yet.</p>'}`;
+}
+
+// ---------------------------------------------------------------------------
+// Roadmap: GDD features × L0-L3 quality levels, milestones and forecasts
+
+const LV = (n) => S.st.levels?.[n] || { n, name: `L${n}` };
+const etaText = (m) => (m.reachedAt ? `reached ${new Date(m.reachedAt).toLocaleDateString()}` : m.remaining === 0 ? 'ready to close' : m.eta ? `≈ ${new Date(m.eta).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}` : 'no pace yet');
+
+function renderRoadmap() {
+  const el = $('#roadmap');
+  if (!el) return;
+  if (el.contains(document.activeElement) && document.activeElement.tagName === 'SELECT') return; // don't close a dropdown you have open
+  const g = game();
+  const r = S.st.roadmaps?.[g.id];
+  const legend = `<div class="lv-legend">${[0, 1, 2, 3].map((n) => `<span><i class="pip on lv${n}"></i><b>L${n} ${esc(LV(n).name)}</b> ${esc(LV(n).text || '')}</span>`).join('')}</div>`;
+  if (!r || (!r.features?.length && r.status !== 'running')) {
+    el.innerHTML = `<div class="card rm-empty"><h2 style="margin-top:0">Roadmap</h2>
+      <p>Ballast reads your GDD and breaks the game into features, each with four quality levels. Milestones are "these features at this level", like a first playable with the core loop at L1. Ballast keeps the board stocked one level at a time and forecasts each milestone from your real pace.</p>
+      ${legend}
+      ${r?.status === 'error' ? `<p class="hint" style="color:var(--red)">${esc(r.error)}</p>` : ''}
+      <div class="row" style="gap:8px;margin-top:12px"><button class="primary" data-act="roadmap-run" data-model="opus">Break down the GDD</button><button class="ghost" data-act="roadmap-run" data-model="sonnet">Faster (Sonnet)</button>
+      <span class="hint" style="margin:0">Reads the repo's GDD${S.st.cloudArtifacts.some((c) => c.gameId === g.id && c.role === 'gdd') ? ' and your claude.ai GDD' : ''}. Takes a few minutes.</span></div></div>`;
+    return;
+  }
+  if (r.status === 'running' && !r.features?.length) {
+    el.innerHTML = `<div class="card"><b>Breaking down the GDD…</b><p class="hint">Reading the design docs and the repo (${esc(r.model || '')}). The roadmap appears here when it's done.</p></div>`;
+    return;
+  }
+  const ms = r.milestones.map((m) => {
+    const isActive = m.id === r.active;
+    return `<div class="card ms${isActive ? ' active' : ''}${m.reachedAt ? ' reached' : ''}">
+      <div class="row"><b class="grow">${esc(m.name)}</b>${isActive ? '<span class="pill queued">current</span>' : m.reachedAt ? '<span class="pill success">reached</span>' : ''}</div>
+      <div class="hint" style="margin:2px 0 8px">Core at <select class="mini" data-ms="${m.id}" data-k="core">${[0, 1, 2, 3].map((n) => `<option value="${n}"${m.core === n ? ' selected' : ''}>L${n} ${esc(LV(n).name)}</option>`).join('')}</select> · rest at <select class="mini" data-ms="${m.id}" data-k="other">${[0, 1, 2, 3].map((n) => `<option value="${n}"${m.other === n ? ' selected' : ''}>L${n} ${esc(LV(n).name)}</option>`).join('')}</select></div>
+      <div class="ms-bar"><i style="width:${Math.round(m.progress * 100)}%"></i></div>
+      <div class="row hint" style="margin:6px 0 0"><span class="grow">${Math.round(m.progress * 100)}% · ${m.featuresMet}/${m.features} features there · ${m.remaining} tasks left</span><b style="color:var(--text)">${etaText(m)}</b></div>
+      ${!m.reachedAt && m.remaining && m.perDay ? `<div class="hint" style="margin:2px 0 0">at ${m.perDay} tasks/day</div>` : ''}
+      ${m.reachedAt ? `<a href="#" class="hint" data-act="ms-reopen" data-id="${m.id}">Reopen</a>` : ''}
+    </div>`;
+  }).join('');
+  const activeMs = r.milestones.find((m) => m.id === r.active);
+  const target = (f) => (activeMs ? activeMs.overrides?.[f.id] ?? (f.core ? activeMs.core : activeMs.other) : null);
+  const rows = [...r.features].sort((a, b) => b.core - a.core || a.area.localeCompare(b.area) || a.name.localeCompare(b.name)).map((f) => {
+    const t = target(f);
+    const pips = [0, 1, 2, 3].map((n) => `<i class="pip lv${n}${f.level >= n ? ' on' : f.open[n] ? ' wip' : ''}${t === n ? ' target' : ''}" title="L${n} ${esc(LV(n).name)}: ${esc(f.levels[n]?.done || '')}${f.open[n] ? ` · ${f.open[n]} open task${f.open[n] > 1 ? 's' : ''}` : ''}${f.doneCount[n] ? ` · ${f.doneCount[n]} done` : ''}"></i>`).join('');
+    return `<tr><td><span class="link" data-act="feature-open" data-id="${f.id}"><b>${esc(f.name)}</b></span><div class="hint" style="margin:0">${esc(f.summary.slice(0, 110))}${f.summary.length > 110 ? '…' : ''}</div></td>
+      <td><span class="pill">${esc(f.area)}</span></td>
+      <td><label class="check" style="margin:0"><input type="checkbox" data-core="${f.id}" ${f.core ? 'checked' : ''}><span>core</span></label></td>
+      <td class="pips">${pips}<span class="hint" style="display:inline;margin-left:6px">${f.level >= 0 ? `L${f.level}` : 'not started'}${t != null && f.level < t ? ` → L${t}` : ''}</span></td></tr>`;
+  }).join('');
+  el.innerHTML = `<div class="row" style="margin-bottom:12px;gap:8px"><h3 class="grow" style="margin:0">Milestones</h3>
+      ${r.status === 'running' ? '<span class="pill queued">re-reading the GDD…</span>' : `<button class="ghost small" data-act="roadmap-run" data-model="${esc(r.model || 'opus')}" title="Keeps your core flags and reached levels">Re-run breakdown</button>`}
+      <button class="ghost small" data-act="ms-add">+ Milestone</button></div>
+    ${r.status === 'error' ? `<p class="hint" style="color:var(--red)">${esc(r.error)}</p>` : ''}
+    <div class="ms-grid">${ms}</div>
+    <div class="row" style="margin:22px 0 8px"><h3 class="grow" style="margin:0">Features <span class="hint" style="display:inline">${r.features.length} from the GDD · filled = reached · striped = in progress · ring = ${activeMs ? esc(activeMs.name) : 'target'}</span></h3></div>
+    <div class="card" style="overflow-x:auto"><table class="tbl" style="margin-top:0"><tbody>${rows}</tbody></table></div>
+    ${legend}`;
+  for (const s of $$('select[data-ms]', el)) s.onchange = () => api('PATCH', `/api/games/${g.id}/roadmap`, { milestone: { id: s.dataset.ms, [s.dataset.k]: Number(s.value) } }).catch(fail);
+  for (const c of $$('input[data-core]', el)) c.onchange = () => api('PATCH', `/api/games/${g.id}/roadmap`, { feature: { id: c.dataset.core, core: c.checked } }).catch(fail);
+}
+
+function featureModal(id) {
+  const g = game();
+  const r = S.st.roadmaps[g.id];
+  const f = r.features.find((x) => x.id === id);
+  const tasks = tasksOf(g.id).filter((t) => t.featureId === f.id);
+  modal({
+    title: f.name,
+    wide: true,
+    body: `<p class="hint" style="margin-top:0">${esc(f.summary)}${f.gdd ? ` · GDD: ${esc(f.gdd)}` : ''}</p>
+      ${[0, 1, 2, 3].map((n) => `<div class="lv-block${f.level >= n ? ' on' : ''}"><div class="row"><i class="pip lv${n}${f.level >= n ? ' on' : ''}"></i><b>L${n} ${esc(LV(n).name)}</b>${f.level >= n ? '<span class="pill success">reached</span>' : ''}</div>
+        <p>${esc(f.levels[n]?.done || '')}</p>
+        ${tasks.filter((t) => t.level === n).map((t) => `<div class="hint" style="margin:2px 0">#${t.num} ${esc(t.title)} <span class="pill ${esc(t.status)}">${esc(t.status)}</span></div>`).join('') || (f.levels[n]?.tasks?.length && f.level < n ? `<div class="hint">Planned: ${f.levels[n].tasks.map((t) => esc(t.title)).join(' · ')}</div>` : '')}</div>`).join('')}
+      <label class="field" style="margin-top:12px"><span>Already reached (if the breakdown misjudged it)</span><select name="base">${[-1, 0, 1, 2, 3].map((n) => `<option value="${n}"${(f.base ?? -1) === n ? ' selected' : ''}>${n < 0 ? 'Not started' : `L${n} ${esc(LV(n).name)}`}</option>`).join('')}</select></label>`,
+    actions: [{ label: 'Close' }, { label: 'Save', kind: 'primary', onClick: (root) => api('PATCH', `/api/games/${g.id}/roadmap`, { feature: { id: f.id, base: Number($('select[name="base"]', root).value) } }) }],
+  });
 }
 
 // ▶ Play (web), Run (Windows), Install on Quest (APK), Upload to itch.io, with their status.
@@ -2891,6 +2972,10 @@ const ACTIONS = {
   'weekly-copy': (d) => copyText(weeklyMarkdown(S.st.weeklyReports.find((r) => r.id === d.id), d.game), 'Weekly report'),
   'weekly-post-copy': (d) => copyText(S.st.weeklyReports.find((r) => r.id === d.id).games.find((e) => e.gameId === d.game).out.posts[Number(d.i)].text, 'Post'),
   'playtest-pick': (d) => playtestModal(d.id),
+  'roadmap-run': async (d) => { await api('POST', `/api/games/${S.gameId}/roadmap`, { model: d.model }); toast('Breaking down the GDD… (a few minutes)'); },
+  'feature-open': (d) => featureModal(d.id),
+  'ms-add': () => modal({ title: 'New milestone', body: '<label class="field"><span>Name</span><input name="name" placeholder="e.g. Steam Next Fest demo"></label>', actions: [{ label: 'Cancel' }, { label: 'Add', kind: 'primary', onClick: (root) => api('PATCH', `/api/games/${S.gameId}/roadmap`, { addMilestone: { name: $('input', root).value || 'Milestone' } }) }] }),
+  'ms-reopen': (d) => api('PATCH', `/api/games/${S.gameId}/roadmap`, { milestone: { id: d.id, reopen: true } }),
   'build-run': async (d) => { const r = await api('POST', `/api/builds/${d.id}/run`); toast(`Started ${r.exe}`); },
   'build-quest': async (d) => { await api('POST', `/api/builds/${d.id}/quest`); toast('Installing on your Quest…'); },
   'build-itch': async (d) => { const r = await api('POST', `/api/builds/${d.id}/itch`); toast(`Uploading to itch.io (${r.channel})…`); },

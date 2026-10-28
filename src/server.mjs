@@ -26,6 +26,7 @@ import * as phone from './phone.mjs';
 import * as digest from './digest.mjs';
 import * as discord from './discord.mjs';
 import * as play from './play.mjs';
+import * as roadmap from './roadmap.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PUBLIC = path.join(ROOT, 'public');
@@ -206,6 +207,9 @@ route('POST', '/api/games/:id/targets/share', (p) => targets.share(p.id));
 route('PATCH', '/api/targets/:id', (p, body) => targets.update(p.id, body));
 route('DELETE', '/api/targets/:id', (p) => targets.remove(p.id));
 route('POST', '/api/games/:id/tidy-transcript', (p, body) => orch.tidyTranscript(p.id, body));
+route('GET', '/api/games/:id/roadmap', (p) => roadmap.publicRoadmap(orch.getGame(p.id)));
+route('POST', '/api/games/:id/roadmap', (p, body) => roadmap.start(p.id, body));
+route('PATCH', '/api/games/:id/roadmap', (p, body) => roadmap.update(p.id, body));
 route('POST', '/api/builds/:id/run', (p) => play.run(p.id));
 route('POST', '/api/builds/:id/quest', (p) => play.questInstall(p.id));
 route('POST', '/api/builds/:id/itch', (p, body) => play.itchPush(p.id, body));
@@ -379,6 +383,7 @@ server.listen(PORT, HOST, async () => {
   digest.init();
   discord.init();
   play.init(PORT);
+  roadmap.init();
   startScheduler();
   console.log(`\n  BALLAST  ${ORIGIN}\n  data     ${paths.state}\n`);
   if (!argv.includes('--no-open')) openBrowser(ORIGIN);
