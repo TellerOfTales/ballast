@@ -21,6 +21,8 @@ import * as assets from './assets.mjs';
 import * as reports from './reports.mjs';
 import * as whisper from './whisper.mjs';
 import * as audits from './audits.mjs';
+import * as setup from './setup.mjs';
+import * as phone from './phone.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PUBLIC = path.join(ROOT, 'public');
@@ -38,6 +40,7 @@ const MIME = {
   '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.bmp': 'image/bmp',
   '.ico': 'image/x-icon', '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime', '.mp3': 'audio/mpeg',
   '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.wasm': 'application/wasm', '.glb': 'model/gltf-binary',
+  '.webmanifest': 'application/manifest+json',
 };
 
 // ---------------------------------------------------------------------------
@@ -64,6 +67,16 @@ function readBody(req, limit = 80 * 1024 * 1024) {
       if (!size) return resolve({});
       try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch { reject(Object.assign(new Error('Bad JSON'), { status: 400 })); }
     });
+    req.on('error', reject);
+  });
+}
+
+// The phone pairing form posts application/x-www-form-urlencoded.
+function readForm(req) {
+  return new Promise((resolve, reject) => {
+    let s = '';
+    req.on('data', (c) => { s += c; if (s.length > 4096) { req.destroy(); reject(Object.assign(new Error('Too large'), { status: 413 })); } });
+    req.on('end', () => resolve(Object.fromEntries(new URLSearchParams(s))));
     req.on('error', reject);
   });
 }
@@ -185,6 +198,12 @@ route('POST', '/api/games/:id/targets/share', (p) => targets.share(p.id));
 route('PATCH', '/api/targets/:id', (p, body) => targets.update(p.id, body));
 route('DELETE', '/api/targets/:id', (p) => targets.remove(p.id));
 route('POST', '/api/games/:id/tidy-transcript', (p, body) => orch.tidyTranscript(p.id, body));
+route('GET', '/api/phone', () => phone.info());
+route('PATCH', '/api/phone', (_, body) => phone.update(body));
+route('POST', '/api/phone/code', () => { phone.newCode(); return phone.info(); });
+route('DELETE', '/api/phone/devices/:id', (p) => phone.revoke(p.id));
+route('GET', '/api/setup', () => setup.check());
+route('POST', '/api/setup', (_, body) => setup.finish(body));
 route('POST', '/api/audits', (_, body) => audits.start(body));
 route('DELETE', '/api/audits/:id', (p) => audits.remove(p.id));
 route('GET', '/api/whisper', () => whisper.info());
@@ -226,12 +245,31 @@ bus.on('event', (ev) => {
   for (const res of sseClients) res.write(data);
 });
 
-const server = http.createServer(async (req, res) => {
+// `remote` is the phone listener (home network / Tailscale). It serves the same UI and API to
+// paired devices only; agents and the PC's own sign-in stay on 127.0.0.1.
+async function handle(req, res, remote = false) {
   try {
-    // DNS-rebinding guard: only answer to our own host name.
-    if (!ALLOWED_HOSTS.has(req.headers.host)) return send(res, 403, 'Forbidden host');
+    // DNS-rebinding guard: only answer to our own host name. Phones reach us by IP, and pair.
+    if (!remote && !ALLOWED_HOSTS.has(req.headers.host)) return send(res, 403, 'Forbidden host');
     const url = new URL(req.url, ORIGIN);
     let pathname = decodeURIComponent(url.pathname);
+
+    if (remote) {
+      if (/^\/(manifest\.webmanifest|favicon\.svg|logo\.svg|icon\.svg)$/.test(pathname)) return serveFile(res, PUBLIC, pathname.slice(1));
+      if (pathname === '/pair') return phone.pairPage(req, res, req.method === 'POST' ? await readForm(req) : null);
+      const keyed = keyedFile(req, pathname); // sandboxed artifact frames send no cookie
+      if (keyed) return await routeRequest(req, res, url, keyed, true);
+      const device = phone.deviceFor(cookie(req, 'ballast_device'));
+      if (!device) {
+        if (req.method === 'GET' && !pathname.startsWith('/api/') && pathname !== '/events') { res.writeHead(302, { location: '/pair' }); return res.end(); }
+        return send(res, 401, { error: 'Pair this device from Ballast on your PC first.' });
+      }
+      if (req.method !== 'GET' && req.headers.origin && req.headers.origin !== `http://${req.headers.host}`) return send(res, 403, { error: 'Cross-origin request refused' });
+      if (pathname.startsWith('/agent-api/')) return send(res, 403, { error: 'Forbidden' });
+      if (pathname === '/' || pathname === '/index.html') return serveFile(res, PUBLIC, 'index.html');
+      if (/^\/(app\.js|style\.css)$/.test(pathname)) return serveFile(res, PUBLIC, pathname.slice(1));
+      return await routeRequest(req, res, url, pathname);
+    }
 
     // Agents talk to us with their own key.
     if (pathname.startsWith('/agent-api/')) {
@@ -250,18 +288,31 @@ const server = http.createServer(async (req, res) => {
         'set-cookie': `ballast=${db.secrets.uiToken}; HttpOnly; SameSite=Strict; Path=/`,
       });
     }
-    if (/^\/(app\.js|style\.css|favicon\.svg|logo\.svg)$/.test(pathname)) return serveFile(res, PUBLIC, pathname.slice(1));
+    if (/^\/(app\.js|style\.css|favicon\.svg|logo\.svg|manifest\.webmanifest)$/.test(pathname)) return serveFile(res, PUBLIC, pathname.slice(1));
 
     // Sandboxed artifact frames get no cookie, so file URLs can carry a read-only key in
     // the path instead (/f/<key>/...). In the path, relative links inside HTML artifacts keep it.
-    const keyed = pathname.match(/^\/f\/([^/]+)(\/.*)$/);
-    const fileRead = req.method === 'GET' && keyed && safeEqual(keyed[1], db.secrets.fileKey);
-    if (fileRead) pathname = `/files${keyed[2]}`;
-    else if (!safeEqual(cookie(req, 'ballast'), db.secrets.uiToken)) return send(res, 401, { error: 'Open Ballast from its own address to sign in.' });
+    const keyed = keyedFile(req, pathname);
+    if (keyed) return await routeRequest(req, res, url, keyed, true);
+    if (!safeEqual(cookie(req, 'ballast'), db.secrets.uiToken)) return send(res, 401, { error: 'Open Ballast from its own address to sign in.' });
     if (req.method !== 'GET' && req.headers.origin && req.headers.origin !== ORIGIN && req.headers.origin !== `http://localhost:${PORT}`) {
       return send(res, 403, { error: 'Cross-origin request refused' });
     }
+    return await routeRequest(req, res, url, pathname);
+  } catch (err) {
+    if (!err.status) console.error('[ballast]', err);
+    if (!res.headersSent) send(res, err.status || 500, { error: err.message });
+  }
+}
 
+const keyedFile = (req, pathname) => {
+  const keyed = pathname.match(/^\/f\/([^/]+)(\/.*)$/);
+  return req.method === 'GET' && keyed && safeEqual(keyed[1], db.secrets.fileKey) ? `/files${keyed[2]}` : null;
+};
+
+// Everything past sign-in: live events, files and the JSON API.
+async function routeRequest(req, res, url, pathname, fileRead = false) {
+  {
     if (pathname === '/events') {
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' });
       res.write('retry: 2000\n\n');
@@ -291,11 +342,10 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, out ?? { ok: true });
     }
     send(res, 404, { error: 'Not found' });
-  } catch (err) {
-    if (!err.status) console.error('[ballast]', err);
-    if (!res.headersSent) send(res, err.status || 500, { error: err.message });
   }
-});
+}
+
+const server = http.createServer((req, res) => handle(req, res));
 
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') console.error(`[ballast] Port ${PORT} is busy. Is Ballast already running? Try: node src/server.mjs ${PORT + 1}`);
@@ -307,6 +357,7 @@ server.listen(PORT, HOST, async () => {
   orch.runtime.baseUrl = ORIGIN;
   await orch.init();
   audits.init();
+  phone.init(handle, PORT);
   startScheduler();
   console.log(`\n  BALLAST  ${ORIGIN}\n  data     ${paths.state}\n`);
   if (!argv.includes('--no-open')) openBrowser(ORIGIN);

@@ -240,6 +240,10 @@ const openQuestions = (gid) => (S.st.inbox || []).filter((q) => q.status === 'op
 const isDept = (tab) => S.st?.disciplines?.some((d) => d.id === tab);
 
 function renderHead() {
+  if (S.view === 'setup') {
+    $('#ghead').innerHTML = `<div><h1>Setup guide</h1><span class="hint" style="margin:0">Step ${(S.setupStep || 0) + 1} of ${SETUP_STEPS.length} · you can come back to this from Settings any time</span></div>`;
+    return;
+  }
   if (S.view === 'inbox') {
     const n = openQuestions().length;
     $('#ghead').innerHTML = `<div><h1>Director's Inbox</h1><span class="hint" style="margin:0">Questions from every agent on every game. Agents never wait on these: each one is working on the assumption shown, and your answer goes straight back to it.</span></div>
@@ -316,6 +320,10 @@ function buildShell() {
   const g = game();
   const v = $('#view');
   S.shellKey = shellKey();
+  if (S.view === 'setup') {
+    v.innerHTML = setupShell();
+    return;
+  }
   if (!S.st.accounts.length || (!g && S.view === 'game') || (S.view === 'studio' && !S.st.games.length)) {
     v.innerHTML = onboarding();
     return;
@@ -405,7 +413,7 @@ function buildShell() {
 }
 
 // The onboarding checklist also depends on login state, so it rebuilds when that changes.
-const shellKey = () => S.view === 'studio'
+const shellKey = () => S.view === 'setup' ? `setup|${S.setupStep || 0}` : S.view === 'studio'
   ? `studio|${S.st.games.map((g) => g.id + g.name + statusOf(g)).join()}|${S.st.accounts.length > 0}|${S.st.accounts.some((a) => a.loggedIn)}`
   : S.view === 'inbox' ? `inbox|${S.st.accounts.length > 0}`
     : `${S.gameId}|${S.tab}|${S.tab === 'settings' ? statusOf(game()) : ''}|${S.st.accounts.length > 0}|${!!game()}|${!game() && S.st.accounts.some((a) => a.loggedIn)}`;
@@ -415,6 +423,7 @@ function renderLive() {
   renderSide();
   renderHead();
   renderTabs();
+  if (S.view === 'setup') return renderSetup();
   if (S.view === 'studio') return renderStudio();
   if (S.view === 'inbox') return renderInbox();
   if (!game()) return;
@@ -2539,7 +2548,7 @@ function globalSettingsModal() {
         <label class="field"><span>Triage model</span><input name="triageModel" value="${esc(s.triageModel)}" list="models"><small>Splits notes into tasks for cloud-run games.</small></label>
         <label class="field"><span>Mark a session blocked after (min)</span><input name="cloudTaskTimeoutMin" type="number" min="10" value="${s.cloudTaskTimeoutMin}"><small>If it hasn't pushed its report by then.</small></label>
       </div>
-      <p class="hint">Data folder: <a href="#" data-act="open-folder" data-path="${esc(S.st.home)}">${esc(S.st.home)}</a></p>`,
+      <p class="hint">Data folder: <a href="#" data-act="open-folder" data-path="${esc(S.st.home)}">${esc(S.st.home)}</a> · <a href="#" data-act="setup-open">Open the setup guide</a> · <a href="#" data-act="phone-open">Phone</a></p>`,
     actions: [{ label: 'Cancel' }, {
       label: 'Save', kind: 'primary', onClick: (root) => {
         const f = formData(root);
@@ -2551,6 +2560,161 @@ function globalSettingsModal() {
       },
     }],
   });
+}
+
+// ---------------------------------------------------------------------------
+// Phone: Ballast on the home network / Tailscale, paired with a code
+
+function phoneSetupHtml() {
+  setTimeout(() => loadPhone($('#su-phone')), 0);
+  return '<p class="hint">Loading…</p>';
+}
+
+async function loadPhone(box) {
+  if (!box) return;
+  let p;
+  try { p = await api('GET', '/api/phone'); } catch (err) { box.innerHTML = `<p class="hint">${esc(err.message)}</p>`; return; }
+  const on = p.lan || p.tailscale;
+  const addrs = p.addresses.filter((a) => p[a.kind]);
+  const ts = p.addresses.some((a) => a.kind === 'tailscale');
+  box.innerHTML = `
+    <label class="check"><input type="checkbox" data-phone="lan" ${p.lan ? 'checked' : ''}><span><b>On my home Wi-Fi</b><br><span class="hint" style="margin:0">Your phone opens Ballast while it's on the same network as this PC.</span></span></label>
+    <label class="check"><input type="checkbox" data-phone="tailscale" ${p.tailscale ? 'checked' : ''}><span><b>Anywhere, through Tailscale</b><br><span class="hint" style="margin:0">${ts ? 'Tailscale is running on this PC.' : 'Install <a href="https://tailscale.com/download" target="_blank" rel="noopener">Tailscale</a> (free) on this PC and your phone and sign both in to the same account. Its traffic is encrypted end to end.'}</span></span></label>
+    ${on ? `<div class="phone-box">
+      ${addrs.length ? `<div><span class="field-label">On your phone, open</span>${addrs.map((a) => `<div class="phone-url"><code>${esc(a.url)}</code><span class="hint" style="margin:0">${a.kind === 'tailscale' ? 'Tailscale' : 'home Wi-Fi'}${a.error ? ` · <span style="color:var(--red)">${esc(a.error)}</span>` : a.listening ? '' : ' · starting…'}</span></div>`).join('')}</div>
+        <div><span class="field-label">Pairing code</span><div class="pair-code">${esc(p.code)}</div><span class="hint" style="margin:0">Type it on your phone. Good for one phone, for ${Math.max(1, Math.round((p.codeExpires - Date.now()) / 60000))} min. <a href="#" data-act="phone-code">New code</a></span></div>`
+        : `<p class="hint">${p.tailscale && !ts ? 'Waiting for Tailscale to come up on this PC.' : 'No matching network found on this PC.'}</p>`}
+      <p class="hint" style="margin:0">Windows may ask whether Node.js can use private networks the first time: allow it. Then add the page to your home screen to use Ballast like an app.</p>
+    </div>` : ''}
+    ${p.devices.length ? `<span class="field-label" style="margin-top:12px">Paired devices</span>${p.devices.map((d) => `<div class="su-acct"><b>${esc(d.name)}</b><span class="hint grow" style="margin:0">paired ${ago(d.createdAt)} · last used ${ago(d.lastSeen)}</span><button class="ghost small" data-act="phone-revoke" data-id="${d.id}">Remove</button></div>`).join('')}` : ''}`;
+  for (const cb of $$('[data-phone]', box)) cb.onchange = async () => { try { await api('PATCH', '/api/phone', { [cb.dataset.phone]: cb.checked }); setTimeout(() => loadPhone(box), 600); } catch (err) { fail(err); } };
+}
+
+function phoneModal() {
+  modal({ title: 'Ballast on your phone', body: '<p class="hint" style="margin-top:0">Ballast keeps running on this PC; your phone opens it over your own network. No server, no cloud bill.</p><div id="phone-panel"><p class="hint">Loading…</p></div>', actions: [{ label: 'Done' }], onMount: (root) => loadPhone($('#phone-panel', root)) });
+}
+
+// ---------------------------------------------------------------------------
+// Setup guide: first run for an author developer (also from Settings)
+
+const SETUP_STEPS = [
+  ['pc', 'This PC'],
+  ['you', 'You'],
+  ['accounts', 'Claude accounts'],
+  ['work', 'How you work'],
+  ['phone', 'Your phone'],
+  ['game', 'First game'],
+];
+
+function setupShell() {
+  const step = SETUP_STEPS[S.setupStep || 0][0];
+  const s = S.st.settings;
+  const nav = SETUP_STEPS.map(([id, label], i) => `<button class="${i === (S.setupStep || 0) ? 'active' : ''}${i < (S.setupStep || 0) ? ' done' : ''}" data-act="setup-go" data-i="${i}"><span>${i < (S.setupStep || 0) ? '✓' : i + 1}</span>${label}</button>`).join('');
+  const body = {
+    pc: `<h2>Let's get this PC ready</h2>
+      <p class="hint">Ballast drives the Claude Code CLI on this computer. Everything below runs locally; nothing needs a server.</p>
+      <div id="su-checks" class="su-checks"><p class="hint">Checking…</p></div>
+      <button type="button" class="ghost small" data-act="setup-recheck">Check again</button>`,
+    you: `<h2>About you</h2>
+      <p class="hint">Ballast is built for author developers: one person making games with a team of AI agents. You're the director: agents ask you questions, you review their work, and you set the direction.</p>
+      <form id="su-you" class="settings">
+        <label class="field"><span>Your name</span><input name="directorName" value="${esc(s.directorName === 'Director' ? '' : s.directorName)}" placeholder="Shown on your notes to agents"></label>
+        <div class="field"><span class="field-label">When do you work?</span><div class="row"><input name="wh.start" type="time" value="${esc(s.workHours?.start || '09:00')}" style="width:auto"><span class="hint" style="margin:0">to</span><input name="wh.end" type="time" value="${esc(s.workHours?.end || '18:00')}" style="width:auto"></div>
+          <div class="row" style="margin-top:8px">${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((n, i) => `<label class="check" style="margin:0 10px 0 0"><input type="checkbox" name="wh.day${i}" ${(s.workHours?.days || []).includes(i) ? 'checked' : ''}><span>${n}</span></label>`).join('')}</div>
+          <small class="hint">Usage reports and limit checks run in these hours. Agents keep working around the clock either way.</small></div>
+      </form>`,
+    accounts: `<h2>Your Claude accounts</h2>
+      <p class="hint">Each Claude account is a pool of usage. More accounts = more agents working at once. Add every account you want working (Pro, Max or Team), log each in, and set what each plan costs you so the Studio can show your cost per finished task.</p>
+      <div id="su-accounts"></div>
+      <button type="button" class="primary small" data-act="new-account">+ Add an account</button>`,
+    work: `<h2>How you work</h2>
+      <p class="hint">Agents never wait on you. For each kind of work, choose whether you want to see it after it lands, approve it first, or not see it at all ("not my field").</p>
+      <form id="su-work" class="settings">
+        <div class="two">${[...S.st.disciplines, { id: 'other', label: 'Untagged work' }].map((d) => `<label class="field"><span>${esc(d.label)}</span><select name="review.${d.id}">
+          ${['after', 'gate', 'skip'].map((m) => `<option value="${m}"${(s.review?.[d.id] || 'after') === m ? ' selected' : ''}>${MODE_INFO[m].label}</option>`).join('')}</select></label>`).join('')}</div>
+        <label class="check"><input type="checkbox" name="defaultRules" ${s.defaultUsagePolicy !== null ? 'checked' : ''}><span><b>Start new games with the usage starter rules</b><br><span class="hint" style="margin:0">One task at a time over 60% of a session, Sonnet over 70% weekly, keep tasks small over 75%, no fan-out over 80% session, no new claims over 85% weekly, and tell you over 90%. Change them per game any time.</span></span></label>
+        <label class="field"><span>Autopilot leaves an account alone above (%)</span><input name="limitGuardPct" type="number" min="1" max="100" value="${s.limitGuardPct}" style="width:100px"><small>Of its session or weekly limit, across all games.</small></label>
+      </form>`,
+    phone: `<h2>Ballast on your phone</h2>
+      <p class="hint">Check on your games, answer agents and read your digest from your phone. Ballast keeps running on this PC; your phone just opens it. No server, no cloud bill.</p>
+      <div id="su-phone"></div>`,
+    game: `<h2>Your first game</h2>
+      <p class="hint">Point Ballast at a game: an empty folder to start fresh, a project you already have, or a GitHub repo to run agents as Claude cloud sessions. Existing projects get surveyed first: an agent reads the repo, suggests a brief and fills the board.</p>
+      <div class="row" style="gap:8px"><button type="button" class="primary" data-act="new-game">Create a game</button>${S.st.games.length ? `<span class="hint" style="margin:0">You have ${S.st.games.length} game${S.st.games.length > 1 ? 's' : ''} already.</span>` : ''}</div>
+      <h3 class="sub-h">Then</h3>
+      <ul class="su-next"><li>Send a note to the team from the game's Feed. Agents split it into tasks and get going.</li><li>Press <b>Director Review</b> while you play and talk; it becomes tasks too.</li><li>Your <b>Studio</b> page tracks output, cost and audiences across every game.</li></ul>`,
+  }[step];
+  const last = (S.setupStep || 0) === SETUP_STEPS.length - 1;
+  return `<div class="scroll pad setup" style="flex:1"><div class="setup-wrap">
+    <nav class="su-nav">${nav}</nav>
+    <div class="su-body card">${body}
+      <div class="row su-foot">${S.setupStep ? '<button type="button" class="ghost" data-act="setup-back">Back</button>' : ''}<span class="spacer"></span>
+        <button type="button" class="ghost" data-act="setup-skip">${S.st.settings.setupDone ? 'Close' : 'Skip setup'}</button>
+        <button type="button" class="primary" data-act="setup-next">${last ? 'Finish' : 'Next'}</button></div>
+    </div></div></div>`;
+}
+
+async function renderSetup() {
+  const step = SETUP_STEPS[S.setupStep || 0][0];
+  if (step === 'accounts' && $('#su-accounts')) {
+    $('#su-accounts').innerHTML = S.st.accounts.length
+      ? S.st.accounts.map((a) => `<div class="su-acct"><span class="dot ${a.loggedIn ? 'idle' : 'error'}"></span><b>${esc(a.name)}</b><span class="hint grow" style="margin:0">${a.loggedIn ? esc([a.email, a.plan].filter(Boolean).join(' · ')) : 'not logged in'}${a.loggedIn ? ` · ${money(planPrice(a))}/month${planGuessed(a) ? ' (guessed)' : ''}` : ''}</span>
+          ${a.loggedIn ? `<button class="ghost small" data-act="acct-edit" data-id="${a.id}">Set price</button>` : `<button class="primary small" data-act="acct-login" data-id="${a.id}">Log in</button>`}</div>`).join('')
+      : '<p class="hint">No accounts yet. The first one can be the Claude login already on this PC.</p>';
+  }
+  if (step === 'phone' && $('#su-phone') && !$('#su-phone').dataset.done) {
+    $('#su-phone').dataset.done = '1';
+    $('#su-phone').innerHTML = phoneSetupHtml();
+  }
+  if (step === 'pc' && $('#su-checks') && !S.setupChecks) {
+    S.setupChecks = 'loading';
+    try { S.setupChecks = await api('GET', '/api/setup'); } catch (err) { S.setupChecks = null; return fail(err); }
+    renderChecks();
+  }
+}
+
+function renderChecks() {
+  const c = S.setupChecks;
+  if (!c || c === 'loading' || !$('#su-checks')) return;
+  $('#su-checks').innerHTML = c.items.map((i) => `<div class="su-check ${i.ok ? 'ok' : i.required ? 'bad' : 'opt'}">
+      <span class="su-mark">${i.ok ? '✓' : i.required ? '✕' : '–'}</span>
+      <div class="grow"><b>${esc(i.label)}</b>${i.required ? '' : ' <span class="hint" style="display:inline">optional</span>'} <span class="hint" style="display:inline">${esc(i.detail)}</span>
+        ${i.ok ? '' : `<div class="hint" style="margin:2px 0 0">${esc(i.fix)}</div>${i.cmd ? `<div class="cmd" style="margin-top:6px">${esc(i.cmd)}</div>` : ''}`}</div></div>`).join('')
+    + (c.ready ? '<p class="hint" style="color:var(--green)">This PC is ready.</p>' : '<p class="hint">Install what\'s missing (run the commands in a terminal), then press Check again.</p>');
+}
+
+function setupSave() {
+  const step = SETUP_STEPS[S.setupStep || 0][0];
+  if (step === 'you') {
+    const f = formData($('#su-you'));
+    return api('PATCH', '/api/settings', { directorName: f.directorName || 'Director', workHours: { start: f['wh.start'], end: f['wh.end'], days: [0, 1, 2, 3, 4, 5, 6].filter((i) => f[`wh.day${i}`]) } });
+  }
+  if (step === 'work') {
+    const f = formData($('#su-work'));
+    const review = {};
+    for (const k of Object.keys(f)) if (k.startsWith('review.')) review[k.slice(7)] = f[k];
+    return Promise.all([api('PATCH', '/api/settings', { review, limitGuardPct: Number(f.limitGuardPct) }), api('POST', '/api/setup', { defaultRules: !!f.defaultRules })]);
+  }
+  return null;
+}
+
+function openSetup(step = 0) {
+  S.view = 'setup';
+  S.setupStep = step;
+  S.setupChecks = null;
+  renderLive();
+}
+
+async function setupMove(delta) {
+  try { await setupSave(); } catch (err) { return fail(err); }
+  const next = (S.setupStep || 0) + delta;
+  if (next >= SETUP_STEPS.length) {
+    await api('POST', '/api/setup', { done: true });
+    toast('All set. Welcome to Ballast.');
+    return selectStudio();
+  }
+  S.setupStep = Math.max(0, next);
+  renderLive();
 }
 
 // ---------------------------------------------------------------------------
@@ -2580,6 +2744,15 @@ function openTab(tab) {
 
 const ACTIONS = {
   'studio': selectStudio,
+  'setup-open': () => { $('.modal-back')?.remove(); openSetup(0); },
+  'phone-open': () => { $('.modal-back')?.remove(); phoneModal(); },
+  'phone-code': async (_, el) => { await api('POST', '/api/phone/code'); loadPhone(el.closest('#su-phone, #phone-panel')); },
+  'phone-revoke': async (d, el) => { await api('DELETE', `/api/phone/devices/${d.id}`); loadPhone(el.closest('#su-phone, #phone-panel')); },
+  'setup-go': (d) => { setupSave()?.catch(fail); S.setupStep = Number(d.i); renderLive(); },
+  'setup-next': () => setupMove(1),
+  'setup-back': () => setupMove(-1),
+  'setup-skip': async () => { await api('POST', '/api/setup', { done: true }); selectStudio(); },
+  'setup-recheck': async () => { S.setupChecks = null; $('#su-checks').innerHTML = '<p class="hint">Checking…</p>'; renderSetup(); },
   'inbox': () => { S.view = 'inbox'; store('view', 'inbox'); renderLive(); },
   'dept-mode': (d) => api('PATCH', `/api/games/${S.gameId}`, { review: { [d.d]: d.mode } }),
   'review-approve': async (d) => { const t = await api('POST', `/api/tasks/${d.id}/approve`); toast(`Approved #${t.num}`); },
@@ -2770,6 +2943,10 @@ document.addEventListener('change', async (e) => {
 $('#new-game').onclick = () => ACTIONS['new-game']();
 $('#new-account').onclick = newAccountModal;
 $('#open-settings').onclick = globalSettingsModal;
+// Phone layout: the sidebar is a drawer; picking anything in it closes it.
+$('#menu-btn').onclick = () => document.body.classList.toggle('side-open');
+$('#side-scrim').onclick = () => document.body.classList.remove('side-open');
+$('#side').addEventListener('click', (e) => { if (e.target.closest('[data-act="game"], [data-act="studio"], [data-act="inbox"], #open-settings, #new-game')) document.body.classList.remove('side-open'); });
 
 setInterval(() => {
   for (const el of $$('[data-since]')) el.textContent = el.dataset.since && el.dataset.since !== 'null' ? dur(Date.now() - Number(el.dataset.since)) : '';
@@ -2801,6 +2978,9 @@ async function refresh() {
   refreshing = (async () => {
     try {
       S.st = await api('GET', '/api/state');
+      // A brand-new install opens on the setup guide.
+      if (!S.booted && !S.st.settings.setupDone && !S.st.accounts.length) { S.view = 'setup'; S.setupStep = 0; }
+      S.booted = true;
       if (!game()) {
         S.gameId = S.st.games[0]?.id || null;
         if (S.gameId) store('gameId', S.gameId);

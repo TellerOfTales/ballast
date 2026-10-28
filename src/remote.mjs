@@ -264,7 +264,7 @@ export function openConnector(game, agentIds = null) {
   // same agents would leave unused sessions behind. Point back at the open terminal instead.
   const waiting = agents.filter((a) => [...pendingLinks.values()].includes(a.id));
   if (waiting.length === agents.length && Date.now() < linkDeadline) {
-    throw Object.assign(new Error(`A connect terminal is already open for ${waiting.map((a) => a.name).join(', ')}. Finish it there (paste each link it prints); Ballast connects them as you go.`), { status: 409 });
+    throw Object.assign(new Error(`A connect terminal is already open for ${waiting.map((a) => a.name).join(', ')}. Finish it there; Ballast connects each agent as its session is created.`), { status: 409 });
   }
   const steps = agents.map((agent) => {
     const acct = orch.getAccount(agent.accountId);

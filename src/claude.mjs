@@ -142,33 +142,54 @@ export function parseCloudSession(input) {
 
 // Creating a cloud session needs an interactive terminal (`claude --cloud` refuses to run
 // headless), and the CLI keeps no local record of the session it made. So one terminal
-// walks through the agents: create a session under each account, ask the director to paste
-// the link it printed, and write that link to `outFile` for Ballast to pick up.
+// walks through the agents: create a session under each account, take the link it printed
+// (read off the screen on Windows, pasted elsewhere) and write it to `outFile` for Ballast.
 // steps: [{ account, label, intro, outFile }]
 export function openCloudConnector({ cwd, steps, title }) {
   const bin = resolveClaude();
+  // Windows: a PowerShell console reads the session link straight off its own screen after
+  // `claude --cloud` prints it, so nothing needs pasting. (Creating a session needs a real
+  // terminal; piping its output makes the CLI ignore --cloud.) Paste stays as a fallback.
   if (IS_WIN) {
-    const script = path.join(paths.tmp, `${uid('connect')}.cmd`);
-    const lines = ['@echo off', 'setlocal EnableDelayedExpansion', `title ${title.replace(/[&|<>^%!]/g, '')}`, `cd /d "${cwd}"`, 'set "ANTHROPIC_API_KEY="'];
+    const id = uid('connect');
+    const script = path.join(paths.tmp, `${id}.ps1`);
+    const q = (s) => `'${String(s).replace(/'/g, "''")}'`;
+    const lines = [
+      '$ErrorActionPreference = "Continue"',
+      `$Host.UI.RawUI.WindowTitle = ${q(title)}`,
+      `Set-Location -LiteralPath ${q(cwd)}`,
+      'Remove-Item Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue',
+      'function Get-Links {',
+      '  try {',
+      '    $raw = $Host.UI.RawUI; $w = $raw.BufferSize.Width; $bottom = $raw.CursorPosition.Y',
+      '    $rect = New-Object System.Management.Automation.Host.Rectangle 0, ([Math]::Max(0, $bottom - 400)), ($w - 1), $bottom',
+      '    $cells = $raw.GetBufferContents($rect); $sb = New-Object System.Text.StringBuilder',
+      '    for ($y = 0; $y -le $cells.GetUpperBound(0); $y++) { for ($x = 0; $x -le $cells.GetUpperBound(1); $x++) { [void]$sb.Append($cells.GetValue($y, $x).Character) } }',
+      "    return @([regex]::Matches($sb.ToString(), 'https://claude\\.ai/code/session_[A-Za-z0-9]+') | ForEach-Object { $_.Value })",
+      '  } catch { return @() }',
+      '}',
+    ];
     steps.forEach((s, i) => {
+      // PowerShell 5.1 mangles double quotes inside native arguments.
+      const intro = s.intro.replace(/"/g, "'");
       lines.push(
-        'echo.',
-        `echo ===== ${i + 1} of ${steps.length}: ${s.label.replace(/[&|<>^%!]/g, '')} =====`,
-        s.account.isDefault ? 'set "CLAUDE_CONFIG_DIR="' : `set "CLAUDE_CONFIG_DIR=${s.account.configDir}"`,
-        `"${bin}" --cloud ${quoteWin(s.intro)}`,
-        'echo.',
-        'set "LINK="',
-        'set /p LINK=Paste the View link printed above, then press Enter (Enter alone skips): ',
-        // Delayed expansion keeps the "&" in claude.ai links from being run as a command.
-        `if defined LINK (>"${s.outFile}" echo !LINK!)`,
+        'Write-Host ""',
+        `Write-Host ${q(`===== ${i + 1} of ${steps.length}: ${s.label} =====`)} -ForegroundColor Yellow`,
+        s.account.isDefault ? 'Remove-Item Env:CLAUDE_CONFIG_DIR -ErrorAction SilentlyContinue' : `$env:CLAUDE_CONFIG_DIR = ${q(s.account.configDir)}`,
+        '$before = Get-Links',
+        `& ${q(bin)} --cloud ${q(intro)}`,
+        '$new = @(Get-Links | Where-Object { $before -notcontains $_ })',
+        'if ($new.Count) { $link = $new[-1]; Write-Host "[Ballast] Connected: $link" -ForegroundColor Green }',
+        'else { $link = Read-Host "Paste the View link printed above, then press Enter (Enter alone skips)" }',
+        `if ($link) { Set-Content -LiteralPath ${q(s.outFile)} -Value $link }`,
       );
     });
-    lines.push('echo.', 'echo [Ballast] Done. You can close this window.', 'pause >nul');
-    fs.writeFileSync(script, lines.join('\r\n'));
-    spawn('cmd.exe', ['/d', '/c', `start "" "${script}"`], { windowsVerbatimArguments: true, detached: true, stdio: 'ignore' }).unref();
+    lines.push('Write-Host ""', 'Write-Host "[Ballast] All done. This window closes in 10 seconds." -ForegroundColor Green', 'Start-Sleep -Seconds 10');
+    fs.writeFileSync(script, `﻿${lines.join('\r\n')}`); // BOM: PowerShell 5.1 reads BOM-less scripts as ANSI
+    spawn('cmd.exe', ['/d', '/c', `start "" powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${script}"`], { windowsVerbatimArguments: true, detached: true, stdio: 'ignore' }).unref();
     return { opened: true };
   }
-  const sh = (v) => `'${String(v).replace(/'/g, `'\\''`)}'`;
+  const sh =(v) => `'${String(v).replace(/'/g, `'\\''`)}'`;
   const script = path.join(paths.tmp, `${uid('connect')}.sh`);
   const lines = ['#!/bin/bash', `cd ${sh(cwd)}`, 'unset ANTHROPIC_API_KEY'];
   steps.forEach((s, i) => {

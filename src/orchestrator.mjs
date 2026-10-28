@@ -269,6 +269,8 @@ export async function createGame({ name, repoPath, isolation = 'worktree', brief
     taskSeq: 0,
     autoTurns: { day: '', count: 0 },
     build: { command: '', outputPath: '', checkins: [], timeoutMin: 120, shareDir: '', webhookUrl: '', agentReport: false, fired: {} },
+    // New games start with the studio's default usage rules (set in the setup guide).
+    ...(db.settings.defaultUsagePolicy ? { usagePolicy: policy.normalize(db.settings.defaultUsagePolicy) } : {}),
     createdAt: Date.now(),
   };
   if (cloudRun) await remote.prepareClone(game, github);
