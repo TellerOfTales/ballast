@@ -25,6 +25,7 @@ import * as setup from './setup.mjs';
 import * as phone from './phone.mjs';
 import * as digest from './digest.mjs';
 import * as discord from './discord.mjs';
+import * as play from './play.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PUBLIC = path.join(ROOT, 'public');
@@ -113,7 +114,7 @@ const route = (method, pattern, handler) => routes.push({ method, re: new RegExp
 
 route('GET', '/api/state', () => orch.publicState());
 route('PATCH', '/api/settings', (_, body) => {
-  for (const key of ['claudePath', 'directorName', 'syncModel', 'triageModel', 'reviewers']) if (body[key] !== undefined) db.settings[key] = String(body[key]).trim();
+  for (const key of ['claudePath', 'directorName', 'syncModel', 'triageModel', 'reviewers', 'adbPath']) if (body[key] !== undefined) db.settings[key] = String(body[key]).trim();
   if (body.cloudTaskTimeoutMin !== undefined) db.settings.cloudTaskTimeoutMin = Math.max(10, Number(body.cloudTaskTimeoutMin) || 240);
   if (body.desktopArtifacts !== undefined) db.settings.desktopArtifacts = !!body.desktopArtifacts;
   if (body.review) review.setStudioPolicy(body.review);
@@ -205,6 +206,9 @@ route('POST', '/api/games/:id/targets/share', (p) => targets.share(p.id));
 route('PATCH', '/api/targets/:id', (p, body) => targets.update(p.id, body));
 route('DELETE', '/api/targets/:id', (p) => targets.remove(p.id));
 route('POST', '/api/games/:id/tidy-transcript', (p, body) => orch.tidyTranscript(p.id, body));
+route('POST', '/api/builds/:id/run', (p) => play.run(p.id));
+route('POST', '/api/builds/:id/quest', (p) => play.questInstall(p.id));
+route('POST', '/api/builds/:id/itch', (p, body) => play.itchPush(p.id, body));
 route('POST', '/api/digest', () => digest.digestNow());
 route('POST', '/api/weekly', () => { digest.weeklyNow().catch((err) => console.error('[ballast] weekly', err)); return { started: true }; });
 route('GET', '/api/discord', () => discord.info());
@@ -374,6 +378,7 @@ server.listen(PORT, HOST, async () => {
   phone.init(handle, PORT);
   digest.init();
   discord.init();
+  play.init(PORT);
   startScheduler();
   console.log(`\n  BALLAST  ${ORIGIN}\n  data     ${paths.state}\n`);
   if (!argv.includes('--no-open')) openBrowser(ORIGIN);

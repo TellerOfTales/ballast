@@ -285,6 +285,16 @@ function renderHead() {
     ${RS.active && RS.gameId === g.id ? '<button class="pill error" data-act="tab" data-tab="feed" title="Back to the review">● recording review</button>' : ''}
     ${(g.priority ?? 2) !== 2 ? `<span class="pill">${PRIORITY[g.priority]} priority</span>` : ''}
     <span class="spacer"></span>
+    ${(() => {
+      // The newest build there's something to play in, one click from anywhere in the game.
+      const b = [...S.st.builds].reverse().find((x) => x.gameId === g.id && x.playable);
+      if (!b) return '';
+      const p = b.playable;
+      const when = `Build from ${clock(b.startedAt)}${b.commit ? ` @ ${b.commit}` : ''}`;
+      return p.web ? `<a class="btn small primary" href="${esc(p.url)}" target="_blank" rel="noopener" title="${esc(when)}">▶ Play latest</a>`
+        : p.exe ? `<button class="primary small" data-act="build-run" data-id="${b.id}" title="${esc(when)}">▶ Play latest</button>`
+          : `<button class="primary small" data-act="build-quest" data-id="${b.id}" title="${esc(when)}: install on your Quest">▶ Install latest on Quest</button>`;
+    })()}
     <span class="dots" title="${agents.map((a) => `${a.name}: ${a.status}`).join('\n')}">${agents.map((a) => `<span class="dot ${a.status}"></span>`).join('')}</span>
     <label class="switch" title="When on, idle agents keep claiming open board tasks on their own"><input type="checkbox" id="autopilot" ${g.autopilot ? 'checked' : ''}><i></i>Autopilot</label>
     <button class="ghost small" data-act="wake" title="Hand open board tasks to idle agents now">Wake idle</button>`;
@@ -866,6 +876,22 @@ function renderBuilds() {
     ${builds.length ? builds.map(buildCard).join('') : '<p class="hint">No builds yet.</p>'}`;
 }
 
+// ▶ Play (web), Run (Windows), Install on Quest (APK), Upload to itch.io, with their status.
+function playButtons(b) {
+  const p = b.playable;
+  if (!p) return '';
+  const g = S.st.games.find((x) => x.id === b.gameId);
+  const busy = (s) => s?.status === 'installing' || s?.status === 'uploading';
+  const state = (s, label) => (!s ? '' : `<span class="hint" style="margin:0;${s.status === 'failed' ? 'color:var(--red)' : ''}">${label}: ${esc(s.status)}${s.error ? ` (${esc(s.error)})` : ''}${s.url ? ` · <a href="${esc(s.url)}" target="_blank" rel="noopener">page</a>` : ''}</span>`);
+  return `<div class="row play-row">
+    ${p.web ? `<a class="btn small primary" href="${esc(p.url)}" target="_blank" rel="noopener">▶ Play</a>` : ''}
+    ${p.exe ? `<button class="${p.web ? 'ghost' : 'primary'} small" data-act="build-run" data-id="${b.id}" title="${esc(p.exe)}">▶ Run</button>` : ''}
+    ${p.apk ? `<button class="ghost small" data-act="build-quest" data-id="${b.id}" ${busy(b.quest) ? 'disabled' : ''} title="${esc(p.apk)}">${busy(b.quest) ? 'Installing…' : 'Install on Quest'}</button>` : ''}
+    <button class="ghost small" data-act="build-itch" data-id="${b.id}" ${busy(b.itch) ? 'disabled' : ''} title="${g?.itch?.target ? `Push to itch.io/${esc(g.itch.target)}` : 'Set your itch.io page in Settings first'}">${busy(b.itch) ? 'Uploading…' : 'Upload to itch.io'}</button>
+    ${state(b.quest, 'Quest')}${state(b.itch, `itch.io ${b.itch?.channel || ''}`)}
+  </div>`;
+}
+
 function buildCard(b) {
   const title = b.slot ? `${b.slot} check-in` : b.reason === 'manual' ? 'Manual build' : 'Check-in';
   const files = (b.files || []).map((f) => `<a href="${fileUrl('builds', b.gameId, b.id, 'output', f)}?download">${esc(f)}</a>`).join('');
@@ -877,6 +903,7 @@ function buildCard(b) {
       ${b.outDir ? `<button class="ghost small" data-act="open-folder" data-path="${esc(b.outDir)}">Folder</button>` : ''}
       <button class="ghost small" data-act="build-log" data-id="${b.id}">Log</button>
     </div>
+    ${playButtons(b)}
     ${b.error ? `<div class="blocked" style="color:var(--red);margin-top:6px">${esc(b.error)}</div>` : ''}
     ${b.warning ? `<div class="hint">${esc(b.warning)}</div>` : ''}
     ${files ? `<div class="files">${files}</div>` : ''}
@@ -2379,6 +2406,10 @@ function settingsForm(g) {
       <label class="field"><span>Webhook (Slack or Discord)</span><input name="webhookUrl" value="${esc(g.build.webhookUrl)}" placeholder="https://hooks.slack.com/…"><small>Gets the check-in summary.</small></label>
     </div>
     <div class="two">
+      <label class="field"><span>itch.io page</span><input name="itchTarget" value="${esc(g.itch?.target || '')}" placeholder="yourname/your-game (or its itch.io URL)"><small>For Upload to itch.io on each build: web builds go to the html5 channel, .exe to windows, .apk to android. Needs <a href="https://itch.io/docs/butler/" target="_blank" rel="noopener">butler</a> installed and logged in once.</small></label>
+      <div class="field"><span class="field-label">Playing builds</span><small class="hint">Web builds (an index.html in the output) open in your browser; Windows builds run; Android builds install on a Quest plugged in by USB (needs adb from Meta Quest Developer Hub). Set the output folder above so builds collect what to play.</small></div>
+    </div>
+    <div class="two">
       <label class="field"><span>Build timeout (minutes)</span><input name="timeoutMin" type="number" min="1" value="${g.build.timeoutMin}"></label>
       <label class="check" style="margin-top:22px"><input type="checkbox" name="agentReport" ${g.build.agentReport ? 'checked' : ''}><span>Ask the lead agent for a written check-in report</span></label>
     </div>
@@ -2456,6 +2487,7 @@ function bindSettings(g) {
     try {
       await api('PATCH', `/api/games/${g.id}`, {
         usagePolicy: { cap: f.usageCap, rules: readRules() },
+        itch: { target: f.itchTarget },
         name: f.name, leadAgentId: f.leadAgentId || null, brief: f.brief, autopilot: f.autopilot, priority: Number(f.priority),
         coordinatorFile: f.coordinatorFile, claimBatch: Number(f.claimBatch), delegateLimit: f.delegateLimit, subagentLimit: f.subagentLimit,
         permissionMode: f.permissionMode, model: f.model, effort: f.effort,
@@ -2859,6 +2891,9 @@ const ACTIONS = {
   'weekly-copy': (d) => copyText(weeklyMarkdown(S.st.weeklyReports.find((r) => r.id === d.id), d.game), 'Weekly report'),
   'weekly-post-copy': (d) => copyText(S.st.weeklyReports.find((r) => r.id === d.id).games.find((e) => e.gameId === d.game).out.posts[Number(d.i)].text, 'Post'),
   'playtest-pick': (d) => playtestModal(d.id),
+  'build-run': async (d) => { const r = await api('POST', `/api/builds/${d.id}/run`); toast(`Started ${r.exe}`); },
+  'build-quest': async (d) => { await api('POST', `/api/builds/${d.id}/quest`); toast('Installing on your Quest…'); },
+  'build-itch': async (d) => { const r = await api('POST', `/api/builds/${d.id}/itch`); toast(`Uploading to itch.io (${r.channel})…`); },
   'playtest-flush': async (d) => { await api('POST', `/api/games/${d.id}/playtest/flush`); toast('Sent to the team'); },
   'phone-code': async (_, el) => { await api('POST', '/api/phone/code'); loadPhone(el.closest('#su-phone, #phone-panel')); },
   'phone-revoke': async (d, el) => { await api('DELETE', `/api/phone/devices/${d.id}`); loadPhone(el.closest('#su-phone, #phone-panel')); },

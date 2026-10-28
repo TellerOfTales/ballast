@@ -22,6 +22,7 @@ import * as targets from './targets.mjs';
 import * as subagents from './subagents.mjs';
 import * as delegates from './delegates.mjs';
 import * as policy from './policy.mjs';
+import * as play from './play.mjs';
 
 export const runtime = { baseUrl: '' }; // filled in by the server once it is listening
 const MCP_SERVER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'mcp-server.mjs');
@@ -116,7 +117,7 @@ export function publicState() {
     }),
     // Older records predate disciplines; derive one so department tabs can file them.
     tasks: db.tasks.map((t) => (t.discipline ? t : { ...t, discipline: review.disciplineOf(t.title) })),
-    builds: db.builds.slice(-300),
+    builds: db.builds.slice(-300).map((b) => ({ ...b, playable: play.playable(b) })),
     artifacts: db.artifacts.map((a) => (a.discipline ? a : { ...a, discipline: review.disciplineOf(a.title) })),
   };
 }
@@ -332,6 +333,7 @@ export function updateGame(id, patch) {
     game.briefRev = (game.briefRev || 1) + 1;
     feedPost(game.id, { kind: 'system', text: 'Game brief updated. Agents get the new brief with their next message.' });
   }
+  if (patch.itch) game.itch = { target: String(patch.itch.target || '').trim().replace(/^https?:\/\/([^.]+)\.itch\.io\/([^/?#]+).*$/, '$1/$2') };
   if (patch.build) {
     const b = patch.build;
     for (const key of ['command', 'outputPath', 'shareDir', 'webhookUrl']) if (b[key] !== undefined) game.build[key] = String(b[key]).trim();

@@ -462,6 +462,12 @@ button.pill { cursor: pointer; }
 ::-webkit-scrollbar-thumb { background: #2a3039; border-radius: 10px; border: 2px solid var(--bg); }
 ::-webkit-scrollbar-track { background: transparent; }
 
+.play-row { margin-top: 8px; gap: 6px; flex-wrap: wrap; }
+a.btn { display: inline-flex; align-items: center; text-decoration: none; color: var(--text); }
+a.btn.small { padding: 4px 10px; font-size: 12px; }
+a.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+a.btn.primary:hover { filter: brightness(1.08); }
+
 /* Daily digest + weekly report */
 .dg-game { padding: 10px 0; border-top: 1px solid var(--line); margin-top: 10px; }
 .dg-game .row { gap: 10px; flex-wrap: wrap; }
