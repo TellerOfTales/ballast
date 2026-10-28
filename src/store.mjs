@@ -72,6 +72,8 @@ const DEFAULTS = {
   usageReports: [], // periodic session/weekly limit reports, newest last
   audits: [], // Bartle audits: the audiences each game serves and how to market it to them
   devices: [], // phones paired to Ballast (hashed keys; revocable)
+  digests: [], // daily digests, newest last
+  weeklyReports: [], // weekly devlog + social posts per game
 };
 
 function load() {

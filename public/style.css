@@ -462,6 +462,19 @@ button.pill { cursor: pointer; }
 ::-webkit-scrollbar-thumb { background: #2a3039; border-radius: 10px; border: 2px solid var(--bg); }
 ::-webkit-scrollbar-track { background: transparent; }
 
+/* Daily digest + weekly report */
+.dg-game { padding: 10px 0; border-top: 1px solid var(--line); margin-top: 10px; }
+.dg-game .row { gap: 10px; flex-wrap: wrap; }
+.dg-list { margin: 6px 0 0; padding-left: 4px; list-style: none; font-size: 13px; color: var(--muted); }
+.dg-list.blocked { color: var(--red); }
+.dg-needs { margin-top: 6px; font-size: 13px; color: var(--accent); }
+.weekly + .weekly { margin-top: 10px; }
+.weekly details { margin-top: 8px; }
+.weekly summary { cursor: pointer; color: var(--muted); font-weight: 600; }
+.devlog { margin: 10px 0; padding: 10px 14px; background: var(--panel-2); border-radius: 8px; }
+.wpost { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; margin-bottom: 8px; font-size: 13px; }
+.wpost p { margin: 4px 0 0; white-space: pre-wrap; }
+
 /* Setup guide */
 .setup-wrap { display: grid; grid-template-columns: 200px 1fr; gap: 18px; max-width: 980px; margin: 0 auto; }
 .su-nav { display: flex; flex-direction: column; gap: 4px; }

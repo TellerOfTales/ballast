@@ -596,7 +596,7 @@ function feedEntry(e) {
   let label = '';
   if (e.kind === 'note') {
     av = e.source === 'review' ? '<span class="avatar" style="background:var(--violet)">R</span>' : '<span class="avatar" style="background:var(--accent)">★</span>';
-    const src = e.source === 'review-session' ? 'director review · ' : e.source === 'review' ? 'review · ' : e.source === 'studio' ? 'studio · ' : '';
+    const src = e.source === 'review-session' ? 'director review · ' : e.source === 'review' ? 'review · ' : e.source === 'studio' ? 'studio · ' : e.source === 'playtest' ? 'playtesters · ' : '';
     label = e.to ? `<span class="pill">to ${esc(e.to)} only</span>` : `<span class="pill limited">${src}note #${e.num} · all agents</span>`;
   } else if (e.kind === 'question') {
     label = '<span class="pill limited">question · not blocking</span>';
@@ -966,6 +966,8 @@ function studioShell() {
   const games = S.st.games.filter((g) => statusOf(g) !== 'archived');
   return `<div class="scroll pad studio" style="flex:1">
     <section><div class="section-head"><h3>Your output</h3><span class="hint">Finished work across every game, and what it costs you</span></div><div id="st-overview"></div></section>
+    <section><div class="section-head"><h3>Daily digest</h3><span class="hint">At the start of your working day${S.st.settings.reportWebhook ? ', also sent to your webhook' : ''}</span><button class="ghost small" data-act="digest-now">Digest now</button></div><div id="st-digest"></div></section>
+    <section><div class="section-head"><h3>Weekly report</h3><span class="hint" id="st-weekly-hint"></span><button class="ghost small" data-act="weekly-now">Write this week's report</button></div><div id="st-weekly"></div></section>
     <section><div class="section-head"><h3>Games</h3><span class="hint">In development, shipped and archived</span><button class="ghost small" data-act="new-game">+ New game</button></div><div class="game-grid" id="st-games"></div><div id="st-portfolio"></div></section>
     <section><div class="section-head"><h3>Audiences</h3><span class="hint">Bartle Audit: which of Bartle's eight player types each game serves best, and how to reach them</span><button class="ghost small" data-act="audit-run">Run Bartle Audit</button></div><div id="st-audiences"></div></section>
     <section><div class="section-head"><h3>Accounts &amp; limits</h3><span class="hint">Session = 5-hour limit · Weekly = 7-day limit · autopilot pauses an account above ${S.st.settings.limitGuardPct}% · games can set their own cap and rules (game Settings)</span></div><div class="acct-grid" id="st-accounts"></div></section>
@@ -994,7 +996,105 @@ function renderStudio() {
   $('#st-overview').innerHTML = overviewPanel();
   $('#st-portfolio').innerHTML = portfolioTable();
   $('#st-audiences').innerHTML = audiencesPanel();
+  $('#st-digest').innerHTML = digestPanel();
+  $('#st-weekly').innerHTML = weeklyPanel();
+  const wk = S.st.settings.weeklyReport || { day: 5, time: '16:00' };
+  $('#st-weekly-hint').textContent = wk.day == null ? 'Automatic weekly reports are off (Settings)' : `A devlog and social posts per game, written every ${['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][wk.day]} at ${wk.time}`;
   $('#st-cloud').innerHTML = cloudInbox();
+}
+
+// ---------------------------------------------------------------------------
+// Daily digest + weekly report
+
+function digestPanel() {
+  const d = S.st.digests?.at(-1);
+  if (!d) return '<p class="hint" style="margin:0">No digest yet. The first one arrives at the start of your next working day, or press Digest now.</p>';
+  const games = d.games.filter((g) => g.done.length || g.blocked.length || g.reviews || g.questions || g.builds.length);
+  return `<div class="card digest"><div class="row"><b class="grow">${esc(d.headline)}</b><span class="hint" style="margin:0">${clock(d.at)} · since ${clock(d.since)}${d.shareError ? ` · webhook failed: ${esc(d.shareError)}` : ''}</span></div>
+    ${games.length ? games.map((g) => `<div class="dg-game"><div class="row"><span class="link" data-act="game" data-id="${g.id}"><b>${esc(g.name)}</b></span><span class="hint" style="margin:0">${g.done.length} done · ${g.open} open${g.builds.length ? ` · builds: ${g.builds.map(esc).join(', ')}` : ''}</span></div>
+      ${g.done.length ? `<ul class="dg-list">${g.done.slice(0, 6).map((t) => `<li>✓ ${esc(t.title)}</li>`).join('')}${g.done.length > 6 ? `<li class="hint">… and ${g.done.length - 6} more</li>` : ''}</ul>` : ''}
+      ${g.blocked.length ? `<ul class="dg-list blocked">${g.blocked.slice(0, 4).map((t) => `<li>⛔ #${t.num} ${esc(t.title)}${t.why ? ` <span class="hint" style="display:inline">${esc(t.why.slice(0, 100))}</span>` : ''}</li>`).join('')}</ul>` : ''}
+      ${g.reviews || g.questions ? `<div class="dg-needs">⏳ ${[g.reviews && `${g.reviews} to review`, g.questions && `<span class="link" data-act="inbox">${g.questions} question${g.questions > 1 ? 's' : ''} in your Inbox</span>`].filter(Boolean).join(' · ')}</div>` : ''}</div>`).join('') : '<p class="hint">Quiet day: nothing finished or waiting.</p>'}
+  </div>`;
+}
+
+function weeklyPanel() {
+  const r = S.st.weeklyReports?.at(-1);
+  if (!r) return '<p class="hint" style="margin:0">No weekly report yet. Each one has Claude write a devlog, social posts and clip ideas per game from what got finished, aimed at the audiences from its Bartle Audit.</p>';
+  return `<div class="hint" style="margin:0 0 8px">${r.status === 'running' ? 'Writing… (a minute or two per game)' : `Week to ${new Date(r.at).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}`}${r.shareError ? ` · webhook failed: ${esc(r.shareError)}` : ''}</div>
+    ${r.games.map((e) => `<div class="card weekly"><div class="row"><b class="grow">${esc(e.name)}</b><span class="hint" style="margin:0">${e.done} done${e.releases ? ` · ${e.releases} release${e.releases > 1 ? 's' : ''}` : ''}</span>
+      ${e.out ? `<button class="ghost small" data-act="weekly-copy" data-id="${r.id}" data-game="${e.gameId}">Copy all</button>` : ''}</div>
+      ${e.out ? `<p class="positioning">${esc(e.out.headline)}</p>
+        <details data-audit="${r.id}-${e.gameId}" ${S.openAudits?.has(`${r.id}-${e.gameId}`) ? 'open' : ''}><summary>Devlog, ${e.out.posts.length} posts, ${e.out.clips.length} clip ideas</summary>
+          <div class="md devlog">${md(e.out.devlog)}</div>
+          <h4 class="sub-h">Posts</h4>${e.out.posts.map((p, i) => `<div class="wpost"><div class="row"><b class="grow">${esc(p.channel)}</b><button class="icon-btn" data-act="weekly-post-copy" data-id="${r.id}" data-game="${e.gameId}" data-i="${i}" title="Copy">⧉</button></div><p>${esc(p.text)}</p></div>`).join('')}
+          <div class="two-col"><div><b>Clip these</b><ul>${e.out.clips.map((c) => `<li>${esc(c)}</li>`).join('')}</ul></div><div><b>Coming next</b><ul>${e.out.nextWeek.map((c) => `<li>${esc(c)}</li>`).join('')}</ul></div></div>
+        </details>` : `<p class="hint" style="margin:6px 0 0">${esc(e.skipped || e.error || (r.status === 'running' ? 'Writing…' : ''))}</p>`}
+    </div>`).join('')}`;
+}
+
+function weeklyMarkdown(r, gameId) {
+  const e = r.games.find((x) => x.gameId === gameId);
+  const o = e.out;
+  return `# ${e.name}: ${o.headline}\n\n${o.devlog}\n\n## Posts\n${o.posts.map((p) => `### ${p.channel}\n${p.text}`).join('\n\n')}\n\n## Clip these\n${o.clips.map((c) => `- ${c}`).join('\n')}\n\n## Coming next\n${o.nextWeek.map((c) => `- ${c}`).join('\n')}\n`;
+}
+
+async function copyText(text, label) {
+  try { await navigator.clipboard.writeText(text); toast(`${label} copied`); } catch { modal({ title: label, wide: true, body: `<textarea style="width:100%;height:60vh">${esc(text)}</textarea>`, actions: [{ label: 'Done' }] }); }
+}
+
+// ---------------------------------------------------------------------------
+// Discord: bot connection (Settings) and playtest channels (game Settings)
+
+async function discordModal() {
+  const d = await api('GET', '/api/discord');
+  modal({
+    title: 'Discord',
+    body: `<p class="hint" style="margin-top:0">A Discord bot reads your playtesters' channels and sends their feedback to each game's team. It runs from this PC: nothing to host.</p>
+      ${d.connected ? `<p>Connected as <b>${esc(d.bot.name)}</b>. <a href="${esc(d.invite)}" target="_blank" rel="noopener">Add it to a server</a> (it needs to see the playtest channels), then pick channels in each game's Settings → Playtesters.</p>` : `<ol class="hint" style="padding-left:18px">
+        <li>Open the <a href="https://discord.com/developers/applications" target="_blank" rel="noopener">Discord Developer Portal</a> → New Application → name it (e.g. "Ballast").</li>
+        <li>Bot → Reset Token → copy it. On the same page turn on <b>Message Content Intent</b> (so it can read messages).</li>
+        <li>Paste the token below and Connect. Ballast then gives you the link to add the bot to your server.</li></ol>`}
+      ${d.error ? `<p class="hint" style="color:var(--red)">${esc(d.error)}</p>` : ''}
+      <label class="field"><span>Bot token</span><input name="token" type="password" autocomplete="off" placeholder="${d.connected ? 'Connected (paste a new token to replace it)' : 'Paste the bot token'}"><small>Stored on this PC only, never shown again.</small></label>`,
+    actions: [
+      ...(d.connected ? [{ label: 'Disconnect', kind: 'danger', onClick: () => api('POST', '/api/discord', { token: '' }) }] : []),
+      { label: 'Close' },
+      { label: 'Connect', kind: 'primary', onClick: async (root) => { const t = $('input[name="token"]', root).value; if (!t.trim()) throw new Error('Paste the bot token first.'); const r = await api('POST', '/api/discord', { token: t }); toast(`Connected as ${r.bot.name}`); setTimeout(discordModal, 300); } },
+    ],
+  });
+}
+
+function playtestSection(g) {
+  const p = g.playtest || {};
+  const chans = p.channels || [];
+  return `<h3>Playtesters</h3>
+    <p class="hint" style="margin-top:-4px">Feedback players post in your Discord channels becomes notes for this game's team, gathered into one note every few minutes. Ballast reacts ✅ to each message it picks up.</p>
+    <div id="pt-box">${chans.length ? `<div class="hint" style="margin:0 0 8px">Reading ${chans.map((c) => `<b style="color:var(--text)">#${esc(c.name)}</b>${c.error ? ` <span style="color:var(--red)">(${esc(c.error)})</span>` : ''}`).join(', ')} · ${p.pending?.length ? `${p.pending.length} message${p.pending.length > 1 ? 's' : ''} waiting · <a href="#" data-act="playtest-flush" data-id="${g.id}">Send now</a>` : 'nothing waiting'}</div>` : '<p class="hint" style="margin:0 0 8px">No channels linked.</p>'}
+      <button type="button" class="ghost small" data-act="playtest-pick" data-id="${g.id}">${chans.length ? 'Change channels' : 'Link Discord channels'}</button></div>`;
+}
+
+async function playtestModal(gid) {
+  const g = S.st.games.find((x) => x.id === gid);
+  const d = await api('GET', '/api/discord');
+  if (!d.connected) return discordModal();
+  let list;
+  try { list = await api('GET', '/api/discord/channels'); } catch (err) { return fail(err); }
+  const chosen = new Set((g.playtest?.channels || []).map((c) => c.id));
+  const byGuild = list.reduce((m, c) => ((m[c.guild] ||= []).push(c), m), {});
+  modal({
+    title: `Playtest channels: ${g.name}`,
+    body: list.length ? `${Object.entries(byGuild).map(([guild, cs]) => `<span class="field-label">${esc(guild)}</span><div class="targets" style="margin-bottom:10px">${cs.map((c) => `<label class="check"><input type="checkbox" name="ch" value="${c.id}" ${chosen.has(c.id) ? 'checked' : ''}><span>#${esc(c.name)}</span></label>`).join('')}</div>`).join('')}
+      <label class="field"><span>Gather messages for (minutes) before sending them as one note</span><input name="batchMin" type="number" min="1" max="240" value="${g.playtest?.batchMin || 15}" style="width:100px"></label>`
+      : `<p>The bot isn't in any server yet. <a href="${esc(d.invite)}" target="_blank" rel="noopener">Add it to your server</a>, then open this again.</p>`,
+    actions: [{ label: 'Cancel' }, ...(list.length ? [{
+      label: 'Save', kind: 'primary', onClick: async (root) => {
+        const ids = new Set($$('input[name="ch"]:checked', root).map((i) => i.value));
+        await api('PATCH', `/api/games/${gid}/playtest`, { channels: list.filter((c) => ids.has(c.id)), batchMin: Number($('input[name="batchMin"]', root).value) });
+        toast('Playtest channels saved');
+      },
+    }] : [])],
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -2265,6 +2365,8 @@ function settingsForm(g) {
       <button type="button" class="ghost small" data-act="rule-starter" title="Six rules that stretch an account across the week">Add the starter set</button>
     </div>
 
+    ${playtestSection(g)}
+
     <h3>Builds &amp; check-ins</h3>
     <label class="field"><span>Build command</span><textarea name="command" rows="3" placeholder='e.g. "C:\\Program Files\\Unity\\Hub\\Editor\\6000.0.40f1\\Editor\\Unity.exe" -batchmode -quit -projectPath . -executeMethod Builds.Quest -logFile -'>${esc(g.build.command)}</textarea>
       <small>Runs in ${g.runner === 'cloud' ? `Ballast's clone, at the latest ${esc(g.baseBranch)} from GitHub (merged pull requests)` : g.isolation === 'worktree' ? `a build worktree checked out at ${esc(g.integrationBranch)}` : 'the repo'}. Env: BALLAST_OUTPUT_DIR, BALLAST_BUILD_ID, BALLAST_COMMIT.</small></label>
@@ -2527,7 +2629,11 @@ function globalSettingsModal() {
       </div>
       <div class="field"><span class="field-label">Working days</span><div class="row">${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((n, i) => `<label class="check" style="margin:0 10px 0 0"><input type="checkbox" name="wh.day${i}" ${(s.workHours?.days || []).includes(i) ? 'checked' : ''}><span>${n}</span></label>`).join('')}</div>
         <small class="hint">Background limit checks also only run in these hours.</small></div>
-      <label class="field"><span>Send reports to (Slack or Discord webhook, optional)</span><input name="reportWebhook" value="${esc(s.reportWebhook || '')}" placeholder="https://hooks.slack.com/…"></label>
+      <label class="field"><span>Send reports to (Slack or Discord webhook, optional)</span><input name="reportWebhook" value="${esc(s.reportWebhook || '')}" placeholder="https://hooks.slack.com/…"><small>Usage reports, the daily digest and the weekly report. A Discord channel webhook pushes them to your phone.</small></label>
+      <div class="two">
+        <label class="check" style="margin-top:22px"><input type="checkbox" name="digestDaily" ${s.digestDaily !== false ? 'checked' : ''}><span>Daily digest at the start of your working day</span></label>
+        <label class="field"><span>Weekly report</span><div class="row"><select name="wk.day" style="width:auto"><option value="">Off</option>${['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map((n, i) => `<option value="${i}"${(s.weeklyReport?.day ?? 5) === i ? ' selected' : ''}>${n}</option>`).join('')}</select><input name="wk.time" type="time" value="${esc(s.weeklyReport?.time || '16:00')}" style="width:auto"></div></label>
+      </div>
       <h4 class="sub-h">Limits</h4>
       <div class="two">
         <label class="field"><span>Re-check idle accounts every (min)</span><input name="limitRefreshMin" type="number" min="0" value="${s.limitRefreshMin}"><small>A one-word run on a small model; 0 turns it off. Busy accounts update with every turn.</small></label>
@@ -2548,15 +2654,16 @@ function globalSettingsModal() {
         <label class="field"><span>Triage model</span><input name="triageModel" value="${esc(s.triageModel)}" list="models"><small>Splits notes into tasks for cloud-run games.</small></label>
         <label class="field"><span>Mark a session blocked after (min)</span><input name="cloudTaskTimeoutMin" type="number" min="10" value="${s.cloudTaskTimeoutMin}"><small>If it hasn't pushed its report by then.</small></label>
       </div>
-      <p class="hint">Data folder: <a href="#" data-act="open-folder" data-path="${esc(S.st.home)}">${esc(S.st.home)}</a> · <a href="#" data-act="setup-open">Open the setup guide</a> · <a href="#" data-act="phone-open">Phone</a></p>`,
+      <p class="hint">Data folder: <a href="#" data-act="open-folder" data-path="${esc(S.st.home)}">${esc(S.st.home)}</a> · <a href="#" data-act="setup-open">Open the setup guide</a> · <a href="#" data-act="phone-open">Phone</a> · <a href="#" data-act="discord-open">Discord</a></p>`,
     actions: [{ label: 'Cancel' }, {
       label: 'Save', kind: 'primary', onClick: (root) => {
         const f = formData(root);
         const reviewModes = {};
         for (const k of Object.keys(f)) if (k.startsWith('review.')) { reviewModes[k.slice(7)] = f[k]; delete f[k]; }
         const workHours = { start: f['wh.start'], end: f['wh.end'], days: [0, 1, 2, 3, 4, 5, 6].filter((i) => f[`wh.day${i}`]) };
-        for (const k of Object.keys(f)) if (k.startsWith('wh.')) delete f[k];
-        return api('PATCH', '/api/settings', { ...f, review: reviewModes, workHours });
+        const weeklyReport = { day: f['wk.day'], time: f['wk.time'] };
+        for (const k of Object.keys(f)) if (k.startsWith('wh.') || k.startsWith('wk.')) delete f[k];
+        return api('PATCH', '/api/settings', { ...f, digestDaily: !!f.digestDaily, review: reviewModes, workHours, weeklyReport });
       },
     }],
   });
@@ -2746,6 +2853,13 @@ const ACTIONS = {
   'studio': selectStudio,
   'setup-open': () => { $('.modal-back')?.remove(); openSetup(0); },
   'phone-open': () => { $('.modal-back')?.remove(); phoneModal(); },
+  'discord-open': () => { $('.modal-back')?.remove(); discordModal().catch(fail); },
+  'digest-now': async () => { await api('POST', '/api/digest'); toast('Digest updated'); },
+  'weekly-now': async () => { await api('POST', '/api/weekly'); toast('Writing this week’s report…'); },
+  'weekly-copy': (d) => copyText(weeklyMarkdown(S.st.weeklyReports.find((r) => r.id === d.id), d.game), 'Weekly report'),
+  'weekly-post-copy': (d) => copyText(S.st.weeklyReports.find((r) => r.id === d.id).games.find((e) => e.gameId === d.game).out.posts[Number(d.i)].text, 'Post'),
+  'playtest-pick': (d) => playtestModal(d.id),
+  'playtest-flush': async (d) => { await api('POST', `/api/games/${d.id}/playtest/flush`); toast('Sent to the team'); },
   'phone-code': async (_, el) => { await api('POST', '/api/phone/code'); loadPhone(el.closest('#su-phone, #phone-panel')); },
   'phone-revoke': async (d, el) => { await api('DELETE', `/api/phone/devices/${d.id}`); loadPhone(el.closest('#su-phone, #phone-panel')); },
   'setup-go': (d) => { setupSave()?.catch(fail); S.setupStep = Number(d.i); renderLive(); },

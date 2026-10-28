@@ -107,6 +107,8 @@ export function publicState() {
     disciplines: review.DISCIPLINES.map(({ id, label }) => ({ id, label })),
     policy: { actions: policy.ACTIONS, metrics: policy.METRICS, presets: policy.PRESETS },
     audits: db.audits,
+    digests: db.digests.slice(-7),
+    weeklyReports: db.weeklyReports.slice(-4),
     games: db.games,
     agents: db.agents.map((a) => {
       const r = R(a.id);

@@ -23,6 +23,8 @@ import * as whisper from './whisper.mjs';
 import * as audits from './audits.mjs';
 import * as setup from './setup.mjs';
 import * as phone from './phone.mjs';
+import * as digest from './digest.mjs';
+import * as discord from './discord.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PUBLIC = path.join(ROOT, 'public');
@@ -125,6 +127,11 @@ route('PATCH', '/api/settings', (_, body) => {
   for (const key of ['maxConcurrentPerAccount', 'autopilotDailyTurns']) if (body[key] !== undefined) db.settings[key] = Math.max(1, Number(body[key]) || 1);
   for (const key of ['limitRefreshMin', 'cloudSyncMin', 'contentRefreshMin']) if (body[key] !== undefined) db.settings[key] = Math.max(0, Number(body[key]) || 0);
   if (body.limitGuardPct !== undefined) db.settings.limitGuardPct = Math.min(100, Math.max(1, Number(body.limitGuardPct) || 95));
+  if (body.digestDaily !== undefined) db.settings.digestDaily = !!body.digestDaily;
+  if (body.weeklyReport) {
+    const day = body.weeklyReport.day === '' || body.weeklyReport.day == null ? null : Math.min(6, Math.max(0, Number(body.weeklyReport.day)));
+    db.settings.weeklyReport = { day, time: /^([01]?\d|2[0-3]):[0-5]\d$/.test(body.weeklyReport.time || '') ? body.weeklyReport.time.padStart(5, '0') : '16:00' };
+  }
   save();
   changed();
   orch.pump();
@@ -198,6 +205,13 @@ route('POST', '/api/games/:id/targets/share', (p) => targets.share(p.id));
 route('PATCH', '/api/targets/:id', (p, body) => targets.update(p.id, body));
 route('DELETE', '/api/targets/:id', (p) => targets.remove(p.id));
 route('POST', '/api/games/:id/tidy-transcript', (p, body) => orch.tidyTranscript(p.id, body));
+route('POST', '/api/digest', () => digest.digestNow());
+route('POST', '/api/weekly', () => { digest.weeklyNow().catch((err) => console.error('[ballast] weekly', err)); return { started: true }; });
+route('GET', '/api/discord', () => discord.info());
+route('POST', '/api/discord', (_, body) => discord.connect(body));
+route('GET', '/api/discord/channels', () => discord.channels());
+route('PATCH', '/api/games/:id/playtest', (p, body) => discord.setChannels(p.id, body));
+route('POST', '/api/games/:id/playtest/flush', (p) => discord.flushNow(p.id));
 route('GET', '/api/phone', () => phone.info());
 route('PATCH', '/api/phone', (_, body) => phone.update(body));
 route('POST', '/api/phone/code', () => { phone.newCode(); return phone.info(); });
@@ -358,6 +372,8 @@ server.listen(PORT, HOST, async () => {
   await orch.init();
   audits.init();
   phone.init(handle, PORT);
+  digest.init();
+  discord.init();
   startScheduler();
   console.log(`\n  BALLAST  ${ORIGIN}\n  data     ${paths.state}\n`);
   if (!argv.includes('--no-open')) openBrowser(ORIGIN);
