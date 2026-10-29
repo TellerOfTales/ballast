@@ -443,7 +443,7 @@ function renderLive() {
   if (!game()) return;
   if (isDept(S.tab)) return renderDept(S.tab);
   switch (S.tab) {
-    case 'feed': updateTargetSelect(); break;
+    case 'feed': updateTargetSelect(); renderAskLine(); break;
     case 'agents': {
       renderAgentList();
       const selected = agentOf(S.agentId);
@@ -480,10 +480,12 @@ function onboarding() {
 function composer(kind, placeholder) {
   return `<form class="composer" id="composer-${kind}" autocomplete="off">
     <div class="inner">
+      ${kind === 'feed' ? '<div class="ask-line" id="ask-line"></div>' : ''}
       <div class="chips" id="chips-${kind}"></div>
-      <textarea rows="2" placeholder="${esc(placeholder)}"></textarea>
+      <textarea rows="2" placeholder="${esc(placeholder)}" data-placeholder="${esc(placeholder)}"></textarea>
       <div class="bar">
-        ${kind === 'feed' ? `<select id="target" title="Who gets this message"></select>
+        ${kind === 'feed' ? `<button type="button" class="ghost small ask-toggle" data-act="ask-toggle" title="Conversation mode: ask Claude a question instead of sending a note to the agents">💬 Ask Claude</button>
+          <select id="target" title="Who gets this message"></select>
           <button type="button" class="ghost small mic-btn" data-act="review-start" title="Talk while you play: Ballast transcribes and sends your notes to every agent when you're done">${ICON_MIC} Director Review</button>` : ''}
         <button type="button" class="icon-btn" data-attach title="Attach images or files">${ICON_CLIP}</button>
         <input type="file" multiple hidden>
@@ -534,7 +536,10 @@ function bindComposer(kind) {
   const ta = $('textarea', form);
   const fileInput = $('input[type=file]', form);
   S.pending[kind] = [];
-  const grow = () => { ta.style.height = 'auto'; ta.style.height = `${Math.min(260, ta.scrollHeight)}px`; };
+  const grow = () => {
+    ta.style.height = 'auto';
+    if (ta.value) ta.style.height = `${Math.min(260, ta.scrollHeight)}px`; // empty: back to its two rows
+  };
   ta.addEventListener('input', grow);
   ta.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); }
@@ -566,6 +571,10 @@ function bindComposer(kind) {
         if (!gameIds.length) throw new Error('Tick at least one game.');
         const r = await api('POST', '/api/studio/notes', { gameIds, text, attachments: files });
         toast(`Sent to ${r.sent} game${r.sent > 1 ? 's' : ''}`);
+      } else if (kind === 'feed' && S.askMode) {
+        const r = await api('POST', `/api/games/${S.gameId}/ask`, { text, attachments: files });
+        S.asking[S.gameId] = r.askId;
+        renderAskLine();
       } else {
         const target = kind === 'feed' ? $('#target').value : S.agentId;
         await api('POST', `/api/games/${S.gameId}/notes`, { text, target, attachments: files });
@@ -604,9 +613,75 @@ function attachmentsHtml(list = []) {
     : `<a class="file" href="${esc(a.url)}?download">${esc(a.name)}</a>`).join('')}</div>`;
 }
 
+// ---------------------------------------------------------------------------
+// Conversation mode: questions answered by the account with the most weekly room
+
+S.askMode = load('askMode') === '1';
+S.asking = {}; // gameId -> askId still being answered
+
+// Mirrors the server's pick: most weekly room, then most session room.
+function roomiestAccount() {
+  const pct = (a, re) => Math.max(0, ...windowsOf(a).filter((w) => re.test(w.label)).map((w) => (w.utilization || 0) * 100));
+  return S.st.accounts.filter((a) => a.loggedIn && !a.limited).map((a) => ({ a, weekly: pct(a, /Weekly/), session: pct(a, /Session/) }))
+    .sort((x, y) => x.weekly - y.weekly || x.session - y.session)[0] || null;
+}
+
+function renderAskLine() {
+  const form = $('#composer-feed');
+  const line = $('#ask-line');
+  if (!form || !line) return;
+  form.classList.toggle('ask-on', !!S.askMode);
+  $('.ask-toggle', form)?.classList.toggle('on', !!S.askMode);
+  const ta = $('textarea', form);
+  ta.placeholder = S.askMode ? 'Ask Claude anything about this game: the design, the code, why something works the way it does…' : ta.dataset.placeholder;
+  $('button[type=submit]', form).textContent = S.askMode ? 'Ask' : 'Send';
+  if (!S.askMode) { line.innerHTML = ''; return; }
+  const r = roomiestAccount();
+  const busy = S.asking[S.gameId];
+  line.innerHTML = `<span class="grow">💬 <b>Conversation mode</b> · ${busy ? 'answering…' : r ? `answered by <b>${esc(r.a.name)}</b>, ${Math.round(100 - r.weekly)}% of its week left` : 'no account has usage free'} · agents don't see this</span>
+    <a href="#" data-act="ask-reset" title="Earlier questions stop being carried into new ones">New conversation</a>`;
+}
+
+function liveAnswer(askId, account, text) {
+  const el = $('#feed-list');
+  if (!el) return;
+  let box = $(`#live-${askId}`);
+  const stick = nearBottom(el);
+  if (!box) {
+    el.insertAdjacentHTML('beforeend', `<div class="entry answer live" id="live-${askId}"><div class="head"><span class="avatar" style="background:var(--blue)">C</span><span class="who">${esc(account)}</span><span class="pill queued">answering…</span></div><div class="body"><div class="md"></div></div></div>`);
+    box = $(`#live-${askId}`);
+  }
+  $('.md', box).innerHTML = text ? md(text) : '<span class="hint">Thinking…</span>';
+  if (stick) el.scrollTop = el.scrollHeight;
+}
+
+function sendAnswerToTeam(askId) {
+  const feed = S.feeds[S.gameId] || [];
+  const q = feed.find((e) => e.kind === 'ask' && e.askId === askId);
+  const a = feed.find((e) => e.kind === 'answer' && e.askId === askId);
+  modal({
+    title: 'Send to the team',
+    wide: true,
+    body: `<p class="hint" style="margin-top:0">Edit it down to what the agents should do. It goes out as a note to every agent, like any note from the Feed.</p>
+      <textarea name="text" style="width:100%;height:46vh">${esc(`From my conversation with Claude:\n\nQ: ${q?.text || ''}\n\nA: ${a?.text || ''}`)}</textarea>`,
+    actions: [{ label: 'Cancel' }, { label: 'Send to all agents', kind: 'primary', onClick: async (root) => {
+      await api('POST', `/api/games/${S.gameId}/notes`, { text: $('textarea', root).value, target: 'all', attachments: q?.attachments || [] });
+      toast('Sent to every agent');
+    } }],
+  });
+}
+
 function feedEntry(e) {
   const when = `<span class="when">${clock(e.ts)}</span>`;
   if (e.kind === 'system') return `<div class="entry system"><div class="body">${esc(e.text)} · ${clock(e.ts)}</div></div>`;
+  if (e.kind === 'ask') {
+    return `<div class="entry ask"><div class="head"><span class="avatar" style="background:var(--accent)">★</span><span class="who">${esc(e.from)}</span><span class="pill">asked ${esc(e.to || 'Claude')}</span>${when}</div>
+      <div class="body"><div class="md">${md(e.text)}</div>${attachmentsHtml(e.attachments)}</div></div>`;
+  }
+  if (e.kind === 'answer') {
+    return `<div class="entry answer${e.error ? ' failed' : ''}"><div class="head"><span class="avatar" style="background:var(--blue)">C</span><span class="who">${esc(e.from)}</span><span class="pill">${e.error ? 'no answer' : 'answer'}</span>${when}</div>
+      <div class="body"><div class="md">${md(e.text)}</div>${e.error ? '' : `<div class="answer-actions"><button class="ghost small" data-act="ask-to-team" data-id="${e.askId}" title="Turn this into a note for the agents">Send to team</button><button class="ghost small" data-act="ask-copy" data-id="${e.askId}">Copy</button>${e.cost ? `<span class="hint" style="margin:0">${money(e.cost)}</span>` : ''}</div>`}</div></div>`;
+  }
   let av = e.agentId ? avatar(e.from, e.agentId) : '';
   let label = '';
   if (e.kind === 'note') {
@@ -2972,6 +3047,10 @@ const ACTIONS = {
   'weekly-copy': (d) => copyText(weeklyMarkdown(S.st.weeklyReports.find((r) => r.id === d.id), d.game), 'Weekly report'),
   'weekly-post-copy': (d) => copyText(S.st.weeklyReports.find((r) => r.id === d.id).games.find((e) => e.gameId === d.game).out.posts[Number(d.i)].text, 'Post'),
   'playtest-pick': (d) => playtestModal(d.id),
+  'ask-toggle': () => { S.askMode = !S.askMode; store('askMode', S.askMode ? '1' : '0'); renderAskLine(); $('#composer-feed textarea')?.focus(); },
+  'ask-reset': async () => { await api('POST', `/api/games/${S.gameId}/ask/reset`); toast('New conversation: earlier questions won’t be carried into the next one'); },
+  'ask-to-team': (d) => sendAnswerToTeam(d.id),
+  'ask-copy': (d) => copyText((S.feeds[S.gameId] || []).find((e) => e.kind === 'answer' && e.askId === d.id)?.text || '', 'Answer'),
   'roadmap-run': async (d) => { await api('POST', `/api/games/${S.gameId}/roadmap`, { model: d.model }); toast('Breaking down the GDD… (a few minutes)'); },
   'feature-open': (d) => featureModal(d.id),
   'ms-add': () => modal({ title: 'New milestone', body: '<label class="field"><span>Name</span><input name="name" placeholder="e.g. Steam Next Fest demo"></label>', actions: [{ label: 'Cancel' }, { label: 'Add', kind: 'primary', onClick: (root) => api('PATCH', `/api/games/${S.gameId}/roadmap`, { addMilestone: { name: $('input', root).value || 'Milestone' } }) }] }),
@@ -3229,8 +3308,21 @@ async function refresh() {
 
 function handleEvent(ev) {
   if (ev.type === 'state') return refresh();
+  if (ev.type === 'ask') {
+    if (ev.gameId === S.gameId && S.tab === 'feed' && !(S.feeds[ev.gameId] || []).some((e) => e.kind === 'answer' && e.askId === ev.askId)) liveAnswer(ev.askId, ev.account, ev.text);
+    return;
+  }
   if (ev.type === 'feed') {
     S.feeds[ev.gameId]?.push(ev.entry);
+    if (ev.entry.kind === 'answer') {
+      $(`#live-${ev.entry.askId}`)?.remove();
+      if (S.asking[ev.gameId] === ev.entry.askId) { delete S.asking[ev.gameId]; renderAskLine(); }
+    }
+    // The question often lands before the request that asked it returns, so don't wait on that.
+    if (ev.entry.kind === 'ask') {
+      S.asking[ev.gameId] = ev.entry.askId;
+      if (ev.gameId === S.gameId) setTimeout(() => { if (!$(`#live-${ev.entry.askId}`) && !(S.feeds[ev.gameId] || []).some((e) => e.kind === 'answer' && e.askId === ev.entry.askId)) liveAnswer(ev.entry.askId, ev.entry.to || 'Claude', ''); }, 0);
+    }
     if (ev.gameId === S.gameId) appendFeed(ev.entry);
     else if (!['system', 'task'].includes(ev.entry.kind)) {
       S.unread[ev.gameId] = (S.unread[ev.gameId] || 0) + 1;

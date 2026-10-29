@@ -27,6 +27,7 @@ import * as digest from './digest.mjs';
 import * as discord from './discord.mjs';
 import * as play from './play.mjs';
 import * as roadmap from './roadmap.mjs';
+import * as askMode from './ask.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PUBLIC = path.join(ROOT, 'public');
@@ -207,6 +208,8 @@ route('POST', '/api/games/:id/targets/share', (p) => targets.share(p.id));
 route('PATCH', '/api/targets/:id', (p, body) => targets.update(p.id, body));
 route('DELETE', '/api/targets/:id', (p) => targets.remove(p.id));
 route('POST', '/api/games/:id/tidy-transcript', (p, body) => orch.tidyTranscript(p.id, body));
+route('POST', '/api/games/:id/ask', (p, body) => askMode.ask(p.id, body));
+route('POST', '/api/games/:id/ask/reset', (p) => askMode.reset(p.id));
 route('GET', '/api/games/:id/roadmap', (p) => roadmap.publicRoadmap(orch.getGame(p.id)));
 route('POST', '/api/games/:id/roadmap', (p, body) => roadmap.start(p.id, body));
 route('PATCH', '/api/games/:id/roadmap', (p, body) => roadmap.update(p.id, body));

@@ -177,6 +177,16 @@ Each department tab has a **Leave a note** box for feedback aimed at the whole d
 
 Notes never stall. If nobody picks a note up within 15 minutes (*Settings*), or whoever picked it up doesn't break it down, Ballast breaks it down itself. **Break down now** does that immediately.
 
+## Asking Claude (conversation mode)
+
+Sometimes you just need an answer. Press **💬 Ask Claude** in a game's Feed composer to switch it to conversation mode: what you type goes to Claude as a question instead of to the agents as a note.
+
+- Each question goes to the logged-in account with the most **weekly** room right now (the session limit breaks ties). The composer shows which one, and how much of its week is left.
+- It reads the game's files and can search the web, but changes nothing. It also knows the game's brief, board, roadmap progress and your latest notes, so you can ask "why does the mob trigger here?" or "what's left for the first playable?".
+- Follow-ups work: your recent questions and answers go along with each new one, whichever account answers. **New conversation** starts fresh.
+- Answers stream into the feed. Agents never see them. **Send to team** turns one into a note for every agent, which you can edit first. Screenshots you paste go along with the question.
+- Toggle it off to go back to sending notes. Ballast remembers the mode.
+
 ## Director Review (voice)
 
 Press **Director Review** in a game's Feed, play, and talk:
@@ -328,6 +338,7 @@ builds/<game>/<id>/   build.log + output/
 | `src/discord.mjs` | Discord playtest channels to game notes |
 | `src/phone.mjs` | phone access: home network / Tailscale listener and pairing |
 | `src/setup.mjs` | setup guide checks |
+| `src/ask.mjs` | conversation mode: questions answered by the account with the most weekly room |
 | `installer/` | Windows installer (IExpress): build, install, launch, uninstall, tests |
 | `src/cloud.mjs` | claude.ai artifact sync and review routing |
 | `src/remote.mjs` | cloud games: triage, cloud sessions, GitHub report polling |

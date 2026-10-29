@@ -462,6 +462,19 @@ button.pill { cursor: pointer; }
 ::-webkit-scrollbar-thumb { background: #2a3039; border-radius: 10px; border: 2px solid var(--bg); }
 ::-webkit-scrollbar-track { background: transparent; }
 
+/* Conversation mode */
+.ask-line { display: flex; gap: 10px; align-items: baseline; font-size: 12px; color: var(--muted); padding: 2px 6px 6px; }
+.ask-line:empty { display: none; }
+.ask-line .grow { flex: 1; }
+.composer.ask-on .inner { border-color: var(--blue); box-shadow: 0 0 0 1px #2c4a6a; }
+.composer.ask-on #target, .composer.ask-on .mic-btn { display: none; }
+.ask-toggle.on { color: var(--blue); border-color: #2c4a6a; background: #16273a; }
+.entry.ask .body { border-color: #7a5714; background: #1d1a12; }
+.entry.answer .body { border-color: #2c4a6a; background: #121a24; }
+.entry.answer.failed .body { border-color: #6a2c2c; background: #1f1414; }
+.entry.answer.live .md::after { content: ' ▍'; color: var(--blue); animation: pulse 1s infinite; }
+.answer-actions { display: flex; gap: 6px; align-items: center; margin-top: 10px; }
+
 /* Roadmap */
 .ms-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
 .ms.active { border-color: var(--accent); }
