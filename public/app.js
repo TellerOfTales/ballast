@@ -895,6 +895,8 @@ function appendTx(entry) {
 // ---------------------------------------------------------------------------
 // Board
 
+const PRIO_LABEL = ['Low', 'Normal', 'High', 'Urgent'];
+
 function renderBoard() {
   const el = $('#board');
   if (!el) return;
@@ -903,7 +905,7 @@ function renderBoard() {
   const cols = [['open', 'Open'], ['claimed', 'In progress'], ['review', 'Awaiting approval'], ['blocked', 'Blocked'], ['done', 'Done']];
   el.innerHTML = cols.map(([status, label]) => {
     let list = tasks.filter((t) => t.status === status);
-    list = status === 'done' ? list.sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0)).slice(0, 40) : list.sort((a, b) => a.num - b.num);
+    list = status === 'done' ? list.sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0)).slice(0, 40) : list.sort((a, b) => (b.priority ?? 1) - (a.priority ?? 1) || a.num - b.num);
     return `<div class="col"><h5>${label} <span>${tasks.filter((t) => t.status === status).length}</span></h5>${list.map((t) => {
       const meta = status === 'claimed' ? `${esc(name(t.claimedBy))} · ${ago(t.claimedAt)}`
         : status === 'done' ? `${esc(name(t.doneBy))} · ${ago(t.doneAt)}`
@@ -915,8 +917,12 @@ function renderBoard() {
         `<button class="ghost small" data-act="task-edit" data-id="${t.id}">Edit</button>`,
         `<button class="ghost small" data-act="task-delete" data-id="${t.id}">Delete</button>`,
       ].filter(Boolean).join('');
-      return `<div class="task">
-        <div><span class="num">#${t.num}</span><span class="title">${esc(t.title)}</span></div>
+      const p = t.priority ?? 1;
+      const moves = status === 'done' ? '' : `<span class="prio-moves">
+          <button class="icon-btn" data-act="task-prio" data-id="${t.id}" data-dir="up" ${p >= 3 ? 'disabled' : ''} title="Promote${p < 3 ? ` to ${PRIO_LABEL[p + 1]}` : ''}">▲</button>
+          <button class="icon-btn" data-act="task-prio" data-id="${t.id}" data-dir="down" ${p <= 0 ? 'disabled' : ''} title="Demote${p > 0 ? ` to ${PRIO_LABEL[p - 1]}` : ''}">▼</button></span>`;
+      return `<div class="task prio-${p}">
+        <div class="task-top"><div class="grow"><span class="num">#${t.num}</span>${p !== 1 && status !== 'done' ? `<span class="prio-badge p${p}">${PRIO_LABEL[p]}</span>` : ''}<span class="title">${esc(t.title)}</span></div>${moves}</div>
         <div class="meta">${meta}${t.note && status === 'open' ? ` · ${esc(t.note)}` : ''}</div>
         ${t.detail && status !== 'done' ? `<div class="detail">${esc(t.detail)}</div>` : ''}
         ${t.summary ? `<div class="summary">${esc(t.summary)}</div>` : ''}
@@ -2782,8 +2788,9 @@ function editTaskModal(id) {
   modal({
     title: `Task #${t.num}`,
     body: `<label class="field"><span>Title</span><input name="title" value="${esc(t.title)}"></label>
-      <label class="field"><span>Detail</span><textarea name="detail" rows="6">${esc(t.detail)}</textarea></label>`,
-    actions: [{ label: 'Cancel' }, { label: 'Save', kind: 'primary', onClick: (root) => api('PATCH', `/api/tasks/${id}`, formData(root)) }],
+      <label class="field"><span>Detail</span><textarea name="detail" rows="6">${esc(t.detail)}</textarea></label>
+      <label class="field"><span>Priority</span><select name="priority">${PRIO_LABEL.map((l, i) => `<option value="${i}"${(t.priority ?? 1) === i ? ' selected' : ''}>${l}</option>`).join('')}</select><small>Agents take Urgent first, then High; Low only when nothing else fits.</small></label>`,
+    actions: [{ label: 'Cancel' }, { label: 'Save', kind: 'primary', onClick: (root) => { const f = formData(root); return api('PATCH', `/api/tasks/${id}`, { ...f, priority: Number(f.priority) }); } }],
   });
 }
 
@@ -3047,6 +3054,7 @@ const ACTIONS = {
   'weekly-copy': (d) => copyText(weeklyMarkdown(S.st.weeklyReports.find((r) => r.id === d.id), d.game), 'Weekly report'),
   'weekly-post-copy': (d) => copyText(S.st.weeklyReports.find((r) => r.id === d.id).games.find((e) => e.gameId === d.game).out.posts[Number(d.i)].text, 'Post'),
   'playtest-pick': (d) => playtestModal(d.id),
+  'task-prio': (d) => api('PATCH', `/api/tasks/${d.id}`, { priority: d.dir }),
   'ask-toggle': () => { S.askMode = !S.askMode; store('askMode', S.askMode ? '1' : '0'); renderAskLine(); $('#composer-feed textarea')?.focus(); },
   'ask-reset': async () => { await api('POST', `/api/games/${S.gameId}/ask/reset`); toast('New conversation: earlier questions won’t be carried into the next one'); },
   'ask-to-team': (d) => sendAnswerToTeam(d.id),

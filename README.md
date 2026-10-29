@@ -177,6 +177,12 @@ Each department tab has a **Leave a note** box for feedback aimed at the whole d
 
 Notes never stall. If nobody picks a note up within 15 minutes (*Settings*), or whoever picked it up doesn't break it down, Ballast breaks it down itself. **Break down now** does that immediately.
 
+## Task priority
+
+Every task is **Urgent**, **High**, **Normal** (the default) or **Low**. On the Board, **▲ / ▼** on a card promotes or demotes it one step (or set it in Edit), and each column lists the highest priority first.
+
+Priority decides what gets picked up next. Cloud agents are handed tasks by Ballast, highest priority first, ahead of role fit; tasks assigned to an agent still come first for that agent. Agents on this PC see the board sorted by priority with URGENT, high and low tags, and are told to take urgent work first and low only when nothing else fits. Promoting a task to Urgent wakes idle agents straight away.
+
 ## Asking Claude (conversation mode)
 
 Sometimes you just need an answer. Press **💬 Ask Claude** in a game's Feed composer to switch it to conversation mode: what you type goes to Claude as a question instead of to the agents as a note.

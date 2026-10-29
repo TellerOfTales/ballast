@@ -114,7 +114,7 @@ ${text}${attachmentBlock(attachments)}`;
 
 export function nextTask({ openCount, batch = 1 }) {
   const take = Math.min(batch, openCount);
-  return `AUTOPILOT: the board has ${openCount} open task${openCount === 1 ? '' : 's'}. Run board_list, claim ${take > 1 ? `the ${take} that best fit your role (tasks marked for you first)` : 'the one that best fits your role'}, complete ${take > 1 ? 'them one at a time, calling board_done on each' : 'it, then board_done'}.`;
+  return `AUTOPILOT: the board has ${openCount} open task${openCount === 1 ? '' : 's'}. Run board_list, claim ${take > 1 ? `the ${take} that best fit your role (tasks marked for you first)` : 'the one that best fits your role'}, complete ${take > 1 ? 'them one at a time, calling board_done on each' : 'it, then board_done'}. The director sets priorities: take URGENT tasks before anything else, then high, then the rest; low priority only when nothing else fits. board_list shows the highest priority first.`;
 }
 
 export function nudge({ task }) {

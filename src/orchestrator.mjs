@@ -46,7 +46,11 @@ export const getAgent = (id) => db.agents.find((a) => a.id === id);
 export const getAccount = (id) => db.accounts.find((a) => a.id === id);
 const gameAgents = (gameId) => db.agents.filter((a) => a.gameId === gameId);
 const gameTasks = (gameId) => db.tasks.filter((t) => t.gameId === gameId).sort((a, b) => a.num - b.num);
-const openTasks = (gameId) => gameTasks(gameId).filter((t) => t.status === 'open');
+// Priority: 3 urgent, 2 high, 1 normal (the default), 0 low. Higher goes first, then oldest.
+export const PRIORITIES = ['low', 'normal', 'high', 'urgent'];
+const prio = (t) => t.priority ?? 1;
+const byPriority = (a, b) => prio(b) - prio(a) || a.num - b.num;
+const openTasks = (gameId) => gameTasks(gameId).filter((t) => t.status === 'open').sort(byPriority);
 const heldTask = (agentId) => db.tasks.find((t) => t.claimedBy === agentId && t.status === 'claimed');
 const heldTasks = (agentId) => db.tasks.filter((t) => t.claimedBy === agentId && t.status === 'claimed');
 const isLimited = (acct) => !!(acct?.limitedUntil && acct.limitedUntil > Date.now());
@@ -804,11 +808,13 @@ async function cloudFollowUp(agent, item) {
 
 // Cloud agents are handed a task by Ballast instead of claiming one themselves.
 export function claimForAgent(agent) {
-  // Tasks assigned to this agent come first; tasks assigned to someone else are off limits.
-  const open = openTasks(agent.gameId).filter((t) => !t.assignee || t.assignee === agent.id)
-    .sort((a, b) => (b.assignee === agent.id) - (a.assignee === agent.id));
+  // Tasks assigned to this agent come first, then the highest priority; role fit only breaks
+  // ties within a priority. Tasks assigned to someone else are off limits.
   const role = agent.role?.toLowerCase().split(/[^a-z]+/).filter(Boolean) || [];
-  const fit = open.find((t) => t.assignee === agent.id) || open.find((t) => role.some((w) => t.title.toLowerCase().includes(w))) || open[0];
+  const fits = (t) => role.some((w) => t.title.toLowerCase().includes(w));
+  const open = openTasks(agent.gameId).filter((t) => !t.assignee || t.assignee === agent.id)
+    .sort((a, b) => (b.assignee === agent.id) - (a.assignee === agent.id) || prio(b) - prio(a) || fits(b) - fits(a) || a.num - b.num);
+  const fit = open[0];
   if (!fit) return null;
   Object.assign(fit, { status: 'claimed', claimedBy: agent.id, claimedAt: Date.now(), updatedAt: Date.now() });
   save();
@@ -1259,6 +1265,13 @@ export function updateTask(id, patch) {
   if (patch.detail !== undefined) t.detail = patch.detail;
   if (patch.summary !== undefined) t.summary = patch.summary;
   if (patch.blockReason !== undefined) t.blockReason = patch.blockReason;
+  if (patch.priority !== undefined) {
+    const was = prio(t);
+    const next = patch.priority === 'up' ? was + 1 : patch.priority === 'down' ? was - 1 : PRIORITIES.includes(patch.priority) ? PRIORITIES.indexOf(patch.priority) : Number(patch.priority);
+    t.priority = Math.max(0, Math.min(3, Number.isFinite(next) ? next : was));
+    // Urgent work shouldn't wait for an agent to finish what it's doing and look again.
+    if (t.priority === 3 && was < 3 && t.status === 'open') setTimeout(() => wakeIdle(t.gameId), 300);
+  }
   if (patch.status && patch.status !== t.status) {
     t.status = patch.status;
     if (patch.status === 'open') Object.assign(t, { claimedBy: null, nudges: 0, blockReason: null });
@@ -1289,12 +1302,13 @@ export async function agentApi(agentId, tool, args = {}) {
     const num = Number(String(n ?? '').replace('#', ''));
     return must(gameTasks(game.id).find((t) => t.num === num), `No task #${n} on this board.`);
   };
-  const line = (t) => `#${t.num} [${t.status}${t.claimedBy ? ` by ${agentName(t.claimedBy)}` : ''}${t.assignee && !t.claimedBy ? ` for ${agentName(t.assignee)}` : ''}] ${t.title}`;
+  const tag = (t) => (prio(t) === 3 ? 'URGENT ' : prio(t) === 2 ? 'high ' : prio(t) === 0 ? 'low ' : '');
+  const line = (t) => `#${t.num} [${tag(t)}${t.status}${t.claimedBy ? ` by ${agentName(t.claimedBy)}` : ''}${t.assignee && !t.claimedBy ? ` for ${agentName(t.assignee)}` : ''}] ${t.title}`;
   const indent = (s) => s.replace(/\n/g, '\n    ');
 
   switch (tool) {
     case 'board_list': {
-      const all = gameTasks(game.id);
+      const all = [...gameTasks(game.id)].sort(byPriority); // highest priority first within each status
       const status = args.status || 'active';
       const list = status === 'all' ? all
         : status === 'active' ? [...all.filter((t) => t.status !== 'done'), ...all.filter((t) => t.status === 'done').slice(-8)]

@@ -462,6 +462,20 @@ button.pill { cursor: pointer; }
 ::-webkit-scrollbar-thumb { background: #2a3039; border-radius: 10px; border: 2px solid var(--bg); }
 ::-webkit-scrollbar-track { background: transparent; }
 
+/* Task priority */
+.task-top { display: flex; gap: 6px; align-items: flex-start; }
+.task-top .grow { flex: 1; min-width: 0; }
+.prio-moves { display: flex; flex-direction: column; gap: 0; margin: -4px -6px 0 0; }
+.prio-moves .icon-btn { height: 18px; min-width: 22px; font-size: 10px; line-height: 1; }
+.prio-moves .icon-btn:disabled { opacity: .25; cursor: default; }
+.prio-badge { font-size: 10px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; padding: 1px 6px; border-radius: 10px; margin-right: 6px; vertical-align: 1px; border: 1px solid; }
+.prio-badge.p3 { color: var(--red); border-color: #6a2c2c; background: #2a1515; }
+.prio-badge.p2 { color: var(--accent); border-color: #7a5714; }
+.prio-badge.p0 { color: var(--faint); border-color: var(--line-2); }
+.task.prio-3 { border-color: #6a2c2c; box-shadow: inset 3px 0 0 var(--red); }
+.task.prio-2 { box-shadow: inset 3px 0 0 var(--accent); }
+.task.prio-0 { opacity: .75; }
+
 /* Conversation mode */
 .ask-line { display: flex; gap: 10px; align-items: baseline; font-size: 12px; color: var(--muted); padding: 2px 6px 6px; }
 .ask-line:empty { display: none; }
