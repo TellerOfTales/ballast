@@ -103,9 +103,23 @@ function windowsOf(acct) {
 }
 
 // Minimal markdown: fenced code, inline code, bold, headings, bullets, links.
+const mdInline = (s) => esc(s)
+  .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+  .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+  .replace(/(https?:\/\/[^\s<)|]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+
 function md(src) {
   return String(src ?? '').split('```').map((part, i) => {
     if (i % 2) return `<pre><code>${esc(part.replace(/^[\w+-]*\n/, ''))}</code></pre>`;
+    // Pipe tables (a header row, a |---| row, then rows) become real tables; Claude's answers use them.
+    const tables = [];
+    part = part.replace(/(^|\n)((?:[ \t]*\|.*\|[ \t]*(?:\n|$)){2,})/g, (m, pre, block) => {
+      const rows = block.trim().split('\n');
+      if (!/^\s*\|?\s*:?-{2,}/.test(rows[1])) return m;
+      const cells = (r) => r.trim().replace(/^\||\|$/g, '').split('|').map((c) => mdInline(c.trim()));
+      tables.push(`<div class="md-table"><table><thead><tr>${cells(rows[0]).map((c) => `<th>${c}</th>`).join('')}</tr></thead><tbody>${rows.slice(2).map((r) => `<tr>${cells(r).map((c) => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`);
+      return `${pre}\u0000T${tables.length - 1}\u0000\n`;
+    });
     return esc(part)
       .replace(/`([^`\n]+)`/g, '<code>$1</code>')
       .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
@@ -114,7 +128,8 @@ function md(src) {
       .replace(/(https?:\/\/[^\s<)]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>')
       .replace(/^\n+|\n+$/g, '')
       .replace(/\n/g, '<br>')
-      .replace(/(<\/(?:span|strong)>)<br>/g, '$1');
+      .replace(/(<\/(?:span|strong)>)<br>/g, '$1')
+      .replace(/(?:<br>)?\u0000T(\d+)\u0000(?:<br>)?/g, (_, n) => tables[Number(n)]);
   }).join('');
 }
 const clamp = (text, html) => (text.length > 1400 || text.split('\n').length > 18)
@@ -897,6 +912,101 @@ function appendTx(entry) {
 
 const PRIO_LABEL = ['Low', 'Normal', 'High', 'Urgent'];
 
+// ---------------------------------------------------------------------------
+// Ticket conversations: talk a ticket through with Claude, then rewrite it from what you decided
+
+function threadMsg(m) {
+  if (m.role === 'system') return `<div class="th-sys">${esc(m.text)} · ${clock(m.ts)}</div>`;
+  const me = m.role === 'user';
+  return `<div class="th-msg ${me ? 'me' : 'claude'}${m.error ? ' failed' : ''}"><div class="th-head"><b>${esc(m.from)}</b>${me && m.to ? ` <span class="hint" style="display:inline">to ${esc(m.to)}</span>` : ''} <span class="hint" style="display:inline">${clock(m.ts)}${m.cost ? ` · ${money(m.cost)}` : ''}</span></div><div class="md">${md(m.text)}</div>${attachmentsHtml(m.attachments)}</div>`;
+}
+
+async function threadModal(taskId) {
+  const t = S.st.tasks.find((x) => x.id === taskId);
+  if (!t) return;
+  let data;
+  try { data = await api('GET', `/api/tasks/${taskId}/thread`); } catch (err) { return fail(err); }
+  const r = roomiestAccount();
+  const opener = t.status === 'blocked'
+    ? `Agent blocked on this: ${t.blockReason || '(no reason given)'}. What's going on, and what are our options?`
+    : '';
+  modal({
+    title: `#${t.num} ${t.title.replace(/^\s*\[[^\]]+\]\s*/, '')}`,
+    wide: true,
+    body: `<div class="th-ticket"><span class="pill ${esc(t.status)}">${esc(t.status)}</span> <span class="pill">${PRIO_LABEL[t.priority ?? 1]}</span>
+        ${t.blockReason ? `<div class="blocked" style="margin-top:6px">${esc(t.blockReason)}</div>` : ''}
+        <details style="margin-top:6px"><summary class="hint" style="display:inline;cursor:pointer">Ticket detail</summary><div class="md" style="margin-top:6px">${md(t.detail || '(none)')}</div></details></div>
+      <div class="th-msgs" id="thread-msgs" data-task="${t.id}">${data.messages.length ? data.messages.map(threadMsg).join('') : `<p class="hint">Talk this ticket through with Claude: it reads the code and the ticket, lays out the options and recommends one. When you've decided, press <b>Update the ticket</b>.</p>`}</div>
+      <div id="thread-live"></div>
+      <div id="thread-form-wrap">
+        <form id="thread-form" class="th-form"><textarea rows="3" placeholder="What do you want to work out?">${esc(data.messages.length ? '' : opener)}</textarea>
+          <div class="row" style="gap:8px"><span class="hint grow" style="margin:0">${r ? `Answered by ${esc(r.a.name)} (most weekly room) · reads the repo, changes nothing` : 'No account has usage free'}</span>
+            <button type="button" class="ghost small" data-thread-update ${data.messages.some((m) => m.role === 'assistant' && !m.error) ? '' : 'disabled'}>Update the ticket</button>
+            <button class="primary small">Send</button></div></form></div>`,
+    actions: [],
+    onMount: (root) => {
+      const list = $('#thread-msgs', root);
+      list.scrollTop = list.scrollHeight;
+      const form = $('#thread-form', root);
+      const ta = $('textarea', form);
+      ta.focus();
+      ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); } });
+      form.onsubmit = async (e) => {
+        e.preventDefault();
+        if (!ta.value.trim()) return;
+        const btn = $('button.primary', form);
+        btn.disabled = true;
+        try { await api('POST', `/api/tasks/${taskId}/thread`, { text: ta.value }); ta.value = ''; threadLive(taskId, r?.a.name || 'Claude', ''); } catch (err) { fail(err); } finally { btn.disabled = false; }
+      };
+      $('[data-thread-update]', root).onclick = (e) => threadPropose(taskId, root, e.target);
+    },
+  });
+}
+
+function threadLive(taskId, account, text) {
+  const list = $(`#thread-msgs[data-task="${taskId}"]`);
+  const live = $('#thread-live');
+  if (!list || !live) return;
+  live.innerHTML = `<div class="th-msg claude live"><div class="th-head"><b>${esc(account)}</b> <span class="pill queued">answering…</span></div><div class="md">${text ? md(text) : '<span class="hint">Reading the ticket and the code…</span>'}</div></div>`;
+  list.scrollTop = list.scrollHeight;
+  live.scrollIntoView({ block: 'end' });
+}
+
+async function threadPropose(taskId, root, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Drafting the update…';
+  let p;
+  try { p = await api('POST', `/api/tasks/${taskId}/thread/propose`); } catch (err) { btn.disabled = false; btn.textContent = 'Update the ticket'; return fail(err); }
+  const t = S.st.tasks.find((x) => x.id === taskId);
+  const held = t.status === 'claimed' && t.claimedBy;
+  const holder = held ? agentOf(t.claimedBy)?.name || 'its agent' : '';
+  const next = held && p.next === 'open' ? 'keep' : p.next; // an agent is on it: don't pull it back mid-work by default
+  $('#thread-form-wrap', root).innerHTML = `<form id="thread-apply" class="th-apply card">
+      <b>Updated ticket</b> <span class="hint" style="display:inline">drafted from your conversation: edit anything, then apply</span>
+      <p class="th-decision">${esc(p.decision)}</p>
+      <label class="field"><span>Title</span><input name="title" value="${esc(p.title)}"></label>
+      <label class="field"><span>Detail</span><textarea name="detail" rows="9">${esc(p.detail)}</textarea></label>
+      <div class="two"><label class="field"><span>Then</span><select name="next">
+          <option value="open"${next === 'open' ? ' selected' : ''}>${t.status === 'open' ? 'Leave it open on the board' : 'Put it back on the board for an agent'}</option>
+          <option value="keep"${next === 'keep' ? ' selected' : ''}>Keep it ${esc(t.status)}</option>
+          <option value="done"${next === 'done' ? ' selected' : ''}>Close it: no longer needed</option></select></label>
+        <label class="field"><span>Priority</span><select name="priority">${['low', 'normal', 'high', 'urgent'].map((v, i) => `<option value="${v}"${p.priority === v ? ' selected' : ''}>${PRIO_LABEL[i]}</option>`).join('')}</select></label></div>
+      ${held ? `<label class="check"><input type="checkbox" name="tellAgent" checked><span>Tell ${esc(holder)} now (it's working on this and won't reread the ticket mid-task)</span></label>` : ''}
+      <div class="row" style="gap:8px;justify-content:flex-end"><button type="button" class="ghost small" data-back>Keep talking</button><button class="primary small">Apply</button></div>
+    </form>`;
+  const f = $('#thread-apply', root);
+  $('[data-back]', f).onclick = () => { $('[data-close]', root).click(); threadModal(taskId); };
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    const v = formData(f);
+    try {
+      await api('POST', `/api/tasks/${taskId}/thread/apply`, { ...v, decision: p.decision, tellAgent: !!v.tellAgent });
+      toast(`#${t.num} updated`);
+      $('[data-close]', root).click();
+    } catch (err) { fail(err); }
+  };
+}
+
 function renderBoard() {
   const el = $('#board');
   if (!el) return;
@@ -910,8 +1020,11 @@ function renderBoard() {
       const meta = status === 'claimed' ? `${esc(name(t.claimedBy))} · ${ago(t.claimedAt)}`
         : status === 'done' ? `${esc(name(t.doneBy))} · ${ago(t.doneAt)}`
         : `${t.assignee ? `for ${esc(name(t.assignee))} · ` : ''}from ${esc(t.createdBy || '?')}${t.noteNum ? ` · note #${t.noteNum}` : ''}`;
+      const talk = t.thread?.count ? `💬 ${t.thread.count}` : status === 'blocked' ? 'Work it out with Claude' : '💬 Discuss';
       const acts = [
+        status === 'blocked' && `<button class="primary small" data-act="thread-open" data-id="${t.id}">${talk}</button>`,
         status === 'review' && `<button class="primary small" data-act="review-approve" data-id="${t.id}">Approve</button>`,
+        status !== 'blocked' && `<button class="ghost small" data-act="thread-open" data-id="${t.id}" title="Talk this ticket through with Claude">${talk}</button>`,
         status !== 'open' && `<button class="ghost small" data-act="task-status" data-id="${t.id}" data-status="open">Reopen</button>`,
         status !== 'done' && `<button class="ghost small" data-act="task-status" data-id="${t.id}" data-status="done">Done</button>`,
         `<button class="ghost small" data-act="task-edit" data-id="${t.id}">Edit</button>`,
@@ -3055,6 +3168,7 @@ const ACTIONS = {
   'weekly-post-copy': (d) => copyText(S.st.weeklyReports.find((r) => r.id === d.id).games.find((e) => e.gameId === d.game).out.posts[Number(d.i)].text, 'Post'),
   'playtest-pick': (d) => playtestModal(d.id),
   'task-prio': (d) => api('PATCH', `/api/tasks/${d.id}`, { priority: d.dir }),
+  'thread-open': (d) => threadModal(d.id),
   'ask-toggle': () => { S.askMode = !S.askMode; store('askMode', S.askMode ? '1' : '0'); renderAskLine(); $('#composer-feed textarea')?.focus(); },
   'ask-reset': async () => { await api('POST', `/api/games/${S.gameId}/ask/reset`); toast('New conversation: earlier questions won’t be carried into the next one'); },
   'ask-to-team': (d) => sendAnswerToTeam(d.id),
@@ -3316,6 +3430,17 @@ async function refresh() {
 
 function handleEvent(ev) {
   if (ev.type === 'state') return refresh();
+  if (ev.type === 'thread' || ev.type === 'thread-live') {
+    const list = $(`#thread-msgs[data-task="${ev.taskId}"]`);
+    if (!list) return;
+    if (ev.type === 'thread-live') return threadLive(ev.taskId, ev.account, ev.text);
+    if (ev.entry.role === 'assistant') $('#thread-live').innerHTML = '';
+    if (!list.querySelector('.th-msg, .th-sys')) list.innerHTML = '';
+    list.insertAdjacentHTML('beforeend', threadMsg(ev.entry));
+    list.scrollTop = list.scrollHeight;
+    if (ev.entry.role === 'assistant' && !ev.entry.error) { const b = $('[data-thread-update]'); if (b) b.disabled = false; }
+    return;
+  }
   if (ev.type === 'ask') {
     if (ev.gameId === S.gameId && S.tab === 'feed' && !(S.feeds[ev.gameId] || []).some((e) => e.kind === 'answer' && e.askId === ev.askId)) liveAnswer(ev.askId, ev.account, ev.text);
     return;

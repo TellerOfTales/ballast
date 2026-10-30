@@ -462,6 +462,26 @@ button.pill { cursor: pointer; }
 ::-webkit-scrollbar-thumb { background: #2a3039; border-radius: 10px; border: 2px solid var(--bg); }
 ::-webkit-scrollbar-track { background: transparent; }
 
+.md-table { overflow-x: auto; margin: 6px 0; }
+.md-table table { border-collapse: collapse; font-size: 13px; }
+.md-table th, .md-table td { border: 1px solid var(--line-2); padding: 5px 8px; text-align: left; vertical-align: top; }
+.md-table th { background: var(--panel-2); color: var(--muted); font-weight: 600; }
+
+/* Ticket conversations */
+.th-ticket { padding-bottom: 10px; border-bottom: 1px solid var(--line); margin-bottom: 10px; }
+.th-msgs { max-height: 46vh; overflow: auto; display: flex; flex-direction: column; gap: 10px; padding-right: 4px; }
+.th-msg { border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; max-width: 92%; }
+.th-msg.me { align-self: flex-end; border-color: #7a5714; background: #1d1a12; }
+.th-msg.claude { align-self: flex-start; border-color: #2c4a6a; background: #121a24; }
+.th-msg.failed { border-color: #6a2c2c; background: #1f1414; }
+.th-msg.live .md::after { content: ' ▍'; color: var(--blue); animation: pulse 1s infinite; }
+.th-head { font-size: 12px; margin-bottom: 4px; }
+.th-sys { text-align: center; font-size: 12px; color: var(--green); }
+#thread-live:not(:empty) { margin-top: 10px; display: flex; }
+.th-form { margin-top: 12px; display: grid; gap: 8px; }
+.th-apply { margin-top: 12px; display: grid; gap: 4px; border-color: var(--accent); }
+.th-decision { margin: 4px 0 8px; color: var(--text); }
+
 /* Task priority */
 .task-top { display: flex; gap: 6px; align-items: flex-start; }
 .task-top .grow { flex: 1; min-width: 0; }

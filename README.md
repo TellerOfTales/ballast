@@ -183,6 +183,15 @@ Every task is **Urgent**, **High**, **Normal** (the default) or **Low**. On the 
 
 Priority decides what gets picked up next. Cloud agents are handed tasks by Ballast, highest priority first, ahead of role fit; tasks assigned to an agent still come first for that agent. Agents on this PC see the board sorted by priority with URGENT, high and low tags, and are told to take urgent work first and low only when nothing else fits. Promoting a task to Urgent wakes idle agents straight away.
 
+## Talking a ticket through
+
+Any ticket on the Board can carry its own conversation with Claude. Blocked tickets get a **Work it out with Claude** button (it starts you off with the agent's reason for blocking); every other ticket has **💬 Discuss**, and the button shows how many messages a ticket's conversation has.
+
+- Each message is answered by the account with the most weekly room. It sees the ticket (detail, block reason, what the agent reported), the game's brief, board and roadmap, and reads the repo before suggesting anything. It lays out the options with their tradeoffs, recommends one, and asks you only about things that are your call. It changes nothing.
+- When you've decided, press **Update the ticket**. Claude drafts the rewritten ticket from the conversation: a new title and a self-contained detail with the approach you agreed on, a priority, and what happens next: back on the board for an agent, keep it as it is, or close it as no longer needed. If you didn't reach a decision, the draft says so.
+- Edit anything and **Apply**. The ticket is updated, the decision is noted on it and in the feed, and a blocked ticket going back on the board is unblocked. If an agent is working on it right now, Ballast can tell that agent straight away, since it won't reread the ticket mid-task.
+- The conversation stays with the ticket, so you can come back to it.
+
 ## Asking Claude (conversation mode)
 
 Sometimes you just need an answer. Press **💬 Ask Claude** in a game's Feed composer to switch it to conversation mode: what you type goes to Claude as a question instead of to the agents as a note.
@@ -345,6 +354,7 @@ builds/<game>/<id>/   build.log + output/
 | `src/phone.mjs` | phone access: home network / Tailscale listener and pairing |
 | `src/setup.mjs` | setup guide checks |
 | `src/ask.mjs` | conversation mode: questions answered by the account with the most weekly room |
+| `src/threads.mjs` | ticket conversations, and rewriting a ticket from what was decided |
 | `installer/` | Windows installer (IExpress): build, install, launch, uninstall, tests |
 | `src/cloud.mjs` | claude.ai artifact sync and review routing |
 | `src/remote.mjs` | cloud games: triage, cloud sessions, GitHub report polling |

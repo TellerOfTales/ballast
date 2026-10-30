@@ -23,7 +23,7 @@ export function pickAccount() {
     .sort((a, b) => policy.pct(a, 'weekly') - policy.pct(b, 'weekly') || policy.pct(a, 'session') - policy.pct(b, 'session'))[0] || null;
 }
 
-function context(game) {
+export function context(game) {
   const tasks = db.tasks.filter((t) => t.gameId === game.id);
   const list = (status, n) => tasks.filter((t) => t.status === status).slice(-n).map((t) => `- #${t.num} ${t.title}`).join('\n') || '(none)';
   const rm = roadmap.publicRoadmap(game);

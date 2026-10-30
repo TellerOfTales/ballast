@@ -28,6 +28,7 @@ import * as discord from './discord.mjs';
 import * as play from './play.mjs';
 import * as roadmap from './roadmap.mjs';
 import * as askMode from './ask.mjs';
+import * as threads from './threads.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PUBLIC = path.join(ROOT, 'public');
@@ -197,6 +198,10 @@ route('POST', '/api/agents/:id/adopt', (p, body) => orch.adoptSession(p.id, body
 
 route('PATCH', '/api/tasks/:id', (p, body) => orch.updateTask(p.id, body));
 route('DELETE', '/api/tasks/:id', (p) => orch.removeTask(p.id));
+route('GET', '/api/tasks/:id/thread', (p) => threads.read(p.id));
+route('POST', '/api/tasks/:id/thread', (p, body) => threads.discuss(p.id, body));
+route('POST', '/api/tasks/:id/thread/propose', (p) => threads.propose(p.id));
+route('POST', '/api/tasks/:id/thread/apply', (p, body) => threads.apply(p.id, body));
 route('POST', '/api/tasks/:id/approve', (p) => review.approve(p.id));
 route('POST', '/api/tasks/:id/changes', (p, body) => review.requestChanges(p.id, body.feedback));
 route('POST', '/api/games/:id/approve-all', (p, body) => review.approveAll(p.id, body.discipline));
