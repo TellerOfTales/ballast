@@ -328,7 +328,11 @@ export async function poll() {
           // Likely branches first: the suggested name, then anything new or updated since dispatch.
           const candidates = [...moved].sort((a, b) => (b.includes(item.key) - a.includes(item.key)) || (b.startsWith('ballast/') - a.startsWith('ballast/'))).slice(0, 20);
           for (const b of candidates) {
-            const report = await git.showRemoteFile(game.repoPath, b, P.reportPath(item.key, game.subdir));
+            const file = P.reportPath(item.key, game.subdir);
+            const report = await git.showRemoteFile(game.repoPath, b, file);
+            // A session reuses its branch, so a report from an earlier attempt at this task can
+            // still be there: only a report committed after this dispatch counts.
+            if (report && (await git.remoteFileTime(game.repoPath, b, file)) < since - 5 * 60e3) continue;
             if (report) {
               await complete(game, agent, item, report, b);
               break;

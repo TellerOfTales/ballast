@@ -28,14 +28,14 @@ export const KINDS = { access: 'Access or permissions', hardware: 'Hardware or a
 
 const SCHEMA = {
   type: 'object',
-  required: ['verdict', 'reason'],
+  required: ['verdict', 'reason', 'retry', 'human', 'split'],
   properties: {
     verdict: { enum: ['retry', 'split', 'human', 'obsolete'] },
     reason: { type: 'string', description: 'Why, in two or three plain sentences.' },
-    retry: { ...ticketShape, description: 'retry and split: the ticket rewritten so an agent can do it now, another way.' },
+    retry: { ...ticketShape, type: ['object', 'null'], description: 'Required for retry and split (the ticket rewritten so an agent can do it now, another way); null otherwise.' },
     human: {
-      type: 'object',
-      description: 'human and split: what only a person can do.',
+      type: ['object', 'null'],
+      description: 'Required for human and split (what only a person can do); null otherwise.',
       required: ['existing', 'title', 'kind', 'who', 'why', 'steps', 'authorization', 'coworkBrief', 'verify', 'minutes'],
       properties: {
         existing: { type: ['string', 'null'], description: 'The id of an open intervention below that this is the same need as, else null.' },
@@ -50,7 +50,7 @@ const SCHEMA = {
         minutes: { type: 'integer', description: 'Rough time it takes a person.' },
       },
     },
-    split: { type: 'object', required: ['waiting'], properties: { waiting: ticketShape }, description: 'split: the part that has to wait for the person, as its own ticket.' },
+    split: { type: ['object', 'null'], required: ['waiting'], properties: { waiting: ticketShape }, description: 'Required for split (the part that has to wait for the person, as its own ticket); null otherwise.' },
   },
 };
 
@@ -149,9 +149,12 @@ function attach(t, game, h) {
 export function act(t, game, out) {
   const retries = t.triage?.retries || 0;
   let verdict = out.verdict;
+  // A verdict without the part it needs is a bad run, not a stuck ticket: try again later.
+  if ((verdict === 'retry' || verdict === 'split') && !out.retry) verdict = out.human ? 'human' : null;
+  if (verdict === 'split' && !out.human) verdict = 'retry';
+  if (verdict === 'human' && !out.human) verdict = out.retry ? 'retry' : null;
+  if (!verdict) throw new Error(`Triage said "${out.verdict}" without the details that go with it.`);
   if (verdict === 'retry' && retries >= MAX_RETRIES) verdict = out.human ? 'human' : 'retry-denied';
-  if ((verdict === 'retry' || verdict === 'split') && !out.retry) verdict = out.human ? 'human' : 'retry-denied';
-  if ((verdict === 'human' || verdict === 'split') && !out.human) verdict = verdict === 'split' ? 'retry' : 'retry-denied';
   t.triage = { status: 'done', at: Date.now(), reason: t.blockReason || '', verdict, why: out.reason, retries };
 
   if (verdict === 'retry' || verdict === 'split') {

@@ -150,6 +150,10 @@ export const listRemoteFiles = (dir, branch, prefix) =>
 
 export const readRemoteBlob = (dir, branch, file) => git(dir, ['show', `refs/ballast/remote/${branch}:${file}`], { encoding: 'buffer' });
 
+// When the file last changed on a fetched remote branch (ms), or 0 if it never did.
+export const remoteFileTime = (dir, branch, file) => git(dir, ['log', '-1', '--format=%ct', `refs/ballast/remote/${branch}`, '--', file])
+  .then((o) => Number(o.trim()) * 1000 || 0, () => 0);
+
 export const showRemoteFile =(dir, branch, file) => git(dir, ['show', `refs/ballast/remote/${branch}:${file}`]).catch(() => null);
 
 // Publishes a set of files as the only contents of `branch` on origin, without touching the
