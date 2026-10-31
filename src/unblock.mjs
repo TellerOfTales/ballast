@@ -223,7 +223,23 @@ export function dismiss(id) {
 // ---------------------------------------------------------------------------
 // Every minute: triage newly blocked tickets (a couple at a time, so a burst doesn't eat a week).
 
+// A ticket can move on without the person (rewritten, reopened, done): it stops waiting on the
+// request, and a request nothing waits on any more closes itself.
+function tidy() {
+  let touched = false;
+  for (const iv of db.interventions.filter((i) => i.status === 'open')) {
+    const still = iv.taskIds.filter((id) => db.tasks.find((t) => t.id === id)?.status === 'blocked');
+    for (const id of iv.taskIds.filter((x) => !still.includes(x))) { const t = db.tasks.find((x) => x.id === id); if (t?.human === iv.id) delete t.human; }
+    if (still.length === iv.taskIds.length) continue;
+    touched = true;
+    iv.taskIds = still;
+    if (!still.length) Object.assign(iv, { status: 'done', resolvedAt: Date.now(), note: 'Closed by itself: the tickets moved on without it.' });
+  }
+  if (touched) { save(); changed(); }
+}
+
 export function tick() {
+  tidy();
   if (db.settings.blockTriage === false) return;
   const live = new Set(db.games.filter((g) => ['active', 'shipped', undefined].includes(g.status)).map((g) => g.id));
   const waiting = db.tasks.filter((t) => live.has(t.gameId) && needsTriage(t) && !t.triage?.dismissed)
