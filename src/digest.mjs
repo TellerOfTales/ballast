@@ -26,6 +26,7 @@ export function buildDigest(since = Date.now() - DAY) {
       reviews: tasks.filter((t) => t.review?.state === 'pending').length,
       questions: db.inbox.filter((q) => q.gameId === g.id && q.status === 'open').length,
       deptNotes: (db.deptNotes || []).filter((n) => n.gameId === g.id && n.status === 'new').length,
+      needsYou: (db.interventions || []).filter((i) => i.gameId === g.id && i.status === 'open').map((i) => i.title),
       open: tasks.filter((t) => t.status === 'open' || t.status === 'claimed').length,
       builds: db.builds.filter((b) => b.gameId === g.id && b.startedAt >= since).map((b) => b.status),
       releases: (g.releases || []).filter((r) => r.at >= since),
@@ -33,15 +34,16 @@ export function buildDigest(since = Date.now() - DAY) {
   });
   const accounts = db.accounts.filter((a) => a.loggedIn).map((a) => ({ name: a.name, session: pct(a, 'five_hour'), weekly: pct(a, 'seven_day'), limited: a.limitedUntil > Date.now() }));
   const done = games.reduce((n, g) => n + g.done.length, 0);
-  const needs = games.reduce((n, g) => n + g.reviews + g.questions, 0);
+  const needs = games.reduce((n, g) => n + g.reviews + g.questions + g.needsYou.length, 0);
   return { id: uid('dig'), kind: 'daily', at: Date.now(), since, games, accounts, headline: `${done} task${done === 1 ? '' : 's'} finished${needs ? `, ${needs} thing${needs === 1 ? '' : 's'} waiting for you` : ''}` };
 }
 
 function digestText(d) {
   const lines = [`Ballast daily digest: ${d.headline}`];
   for (const g of d.games) {
-    if (!g.done.length && !g.blocked.length && !g.reviews && !g.questions && !g.builds.length) continue;
+    if (!g.done.length && !g.blocked.length && !g.reviews && !g.questions && !g.builds.length && !g.needsYou.length) continue;
     lines.push('', `${g.name}${g.status !== 'active' ? ` (${g.status})` : ''}: ${g.done.length} done, ${g.open} open`);
+    for (const n of g.needsYou) lines.push(`  🙋 Needs you: ${n}`);
     for (const t of g.done.slice(0, 8)) lines.push(`  ✓ #${t.num} ${t.title}`);
     if (g.done.length > 8) lines.push(`  … and ${g.done.length - 8} more`);
     for (const t of g.blocked.slice(0, 5)) lines.push(`  ⛔ #${t.num} ${t.title}${t.why ? `: ${t.why.slice(0, 120)}` : ''}`);

@@ -29,6 +29,7 @@ import * as play from './play.mjs';
 import * as roadmap from './roadmap.mjs';
 import * as askMode from './ask.mjs';
 import * as threads from './threads.mjs';
+import * as unblock from './unblock.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PUBLIC = path.join(ROOT, 'public');
@@ -132,6 +133,7 @@ route('PATCH', '/api/settings', (_, body) => {
   for (const key of ['limitRefreshMin', 'cloudSyncMin', 'contentRefreshMin']) if (body[key] !== undefined) db.settings[key] = Math.max(0, Number(body[key]) || 0);
   if (body.limitGuardPct !== undefined) db.settings.limitGuardPct = Math.min(100, Math.max(1, Number(body.limitGuardPct) || 95));
   if (body.digestDaily !== undefined) db.settings.digestDaily = !!body.digestDaily;
+  if (body.blockTriage !== undefined) db.settings.blockTriage = !!body.blockTriage;
   if (body.weeklyReport) {
     const day = body.weeklyReport.day === '' || body.weeklyReport.day == null ? null : Math.min(6, Math.max(0, Number(body.weeklyReport.day)));
     db.settings.weeklyReport = { day, time: /^([01]?\d|2[0-3]):[0-5]\d$/.test(body.weeklyReport.time || '') ? body.weeklyReport.time.padStart(5, '0') : '16:00' };
@@ -198,6 +200,9 @@ route('POST', '/api/agents/:id/adopt', (p, body) => orch.adoptSession(p.id, body
 
 route('PATCH', '/api/tasks/:id', (p, body) => orch.updateTask(p.id, body));
 route('DELETE', '/api/tasks/:id', (p) => orch.removeTask(p.id));
+route('POST', '/api/tasks/:id/triage', (p) => { unblock.triage(p.id).catch(() => {}); return { started: true }; });
+route('POST', '/api/interventions/:id/resolve', (p, body) => unblock.resolve(p.id, body));
+route('POST', '/api/interventions/:id/dismiss', (p) => unblock.dismiss(p.id));
 route('GET', '/api/tasks/:id/thread', (p) => threads.read(p.id));
 route('POST', '/api/tasks/:id/thread', (p, body) => threads.discuss(p.id, body));
 route('POST', '/api/tasks/:id/thread/propose', (p) => threads.propose(p.id));
@@ -392,6 +397,7 @@ server.listen(PORT, HOST, async () => {
   discord.init();
   play.init(PORT);
   roadmap.init();
+  unblock.init();
   startScheduler();
   console.log(`\n  BALLAST  ${ORIGIN}\n  data     ${paths.state}\n`);
   if (!argv.includes('--no-open')) openBrowser(ORIGIN);

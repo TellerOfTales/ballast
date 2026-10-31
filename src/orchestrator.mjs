@@ -113,6 +113,7 @@ export function publicState() {
     disciplines: review.DISCIPLINES.map(({ id, label }) => ({ id, label })),
     policy: { actions: policy.ACTIONS, metrics: policy.METRICS, presets: policy.PRESETS },
     audits: db.audits,
+    interventions: [...db.interventions.filter((i) => i.status === 'open'), ...db.interventions.filter((i) => i.status !== 'open').slice(-30)],
     digests: db.digests.slice(-7),
     weeklyReports: db.weeklyReports.slice(-4),
     roadmaps: Object.fromEntries(db.games.filter((g) => g.roadmap).map((g) => [g.id, roadmap.publicRoadmap(g)])),

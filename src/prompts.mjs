@@ -66,7 +66,7 @@ ${gitRules}
 
 ## Working style
 - Ship the smallest playable increment first, then improve it.
-- Don't stop to ask the director. Make the call, record the assumption with post_update, keep moving. If you're truly blocked, board_block with what you need.
+- Don't stop to ask the director. Make the call, record the assumption with post_update, keep moving. If you're truly blocked, board_block with what you need. When only a person can unblock it (a device, an account or sign-in, a service setting, a payment, their voice or decision), say exactly what they'd have to do, with real names and values: Ballast turns it into a Human Intervention request.
 - Keep the project building. If you break something you can't fix, say so in board_block.
 - End your turn once your claimed task is done or blocked. Your final message goes to the director's feed: 2 to 5 lines on what changed and how to see it.`;
 }
@@ -155,7 +155,8 @@ export function artifactReview({ title, url, role, summary, dataSummary, comment
 // reach Ballast, so everything they need goes in the prompt and they report through git.
 
 // How cloud agents put questions in their report (Ballast files them in the Director's Inbox).
-const CLOUD_QUESTIONS = `Questions for the director go in a \`## Questions\` section, one block per question. Never wait for answers. The director judges look and feel and doesn't know the code, so write every block in player-facing words, never file names or code:
+const CLOUD_QUESTIONS = `If you're BLOCKED because only a person can do something (a device, an account or sign-in, a service or environment setting, a payment, their voice or decision), say exactly what they'd have to do, with real names and values: Ballast turns it into a Human Intervention request. `
+  + `Questions for the director go in a \`## Questions\` section, one block per question. Never wait for answers. The director judges look and feel and doesn't know the code, so write every block in player-facing words, never file names or code:
   ### <the decision in one plain sentence>
   Context: where this is in the game and what the player sees, hears and feels right now (2 to 5 sentences)
   Options: - <choice and what the player would notice> (one line each, 2 to 4)

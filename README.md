@@ -183,6 +183,20 @@ Every task is **Urgent**, **High**, **Normal** (the default) or **Low**. On the 
 
 Priority decides what gets picked up next. Cloud agents are handed tasks by Ballast, highest priority first, ahead of role fit; tasks assigned to an agent still come first for that agent. Agents on this PC see the board sorted by priority with URGENT, high and low tags, and are told to take urgent work first and low only when nothing else fits. Promoting a task to Urgent wakes idle agents straight away.
 
+## Blocked tickets triage themselves
+
+When a ticket blocks (an agent gives it back, a cloud session reports BLOCKED or goes quiet), Claude triages it within a minute on the account with the most weekly room. It reads the ticket and the code it touches, and decides:
+
+- **Retry**: an agent can still do it another way (a workaround, a simulation, a smaller version). The ticket is rewritten with that approach and goes back on the board. A ticket can retry itself twice; after that it has to go to a person.
+- **Split**: part of it can go ahead now. This ticket becomes that part and goes back on the board; the rest becomes its own ticket waiting on a person.
+- **Human**: only a person can unblock it: a device, an account or sign-in, a service or environment setting, a payment, your voice, or your call. It gets a **🙋 NEEDS YOU** tag and a Human Intervention request at the top of the Director's Inbox, with:
+  - exactly what to do, as numbered steps with real names, URLs and values, how long it takes, and how you'll know it worked;
+  - who can do it: only you, or **you or a Cowork Claude**. For the second, it lists exactly what the Cowork Claude needs your authorization to do (which site, which account, which setting, read or write), and **Copy the Cowork brief** gives you a paste-ready brief for it;
+  - which tickets it's holding. One request can hold several tickets (one network allowlist, one headset); triage attaches new blocks to an open request when they need the same thing.
+- **Obsolete**: it looks like it's no longer needed. You're asked to confirm closing it.
+
+Press **Done** when you (or the Cowork Claude) have done it, with an optional note for the agent: every ticket waiting on it goes back on the board with your note. **Dismiss** leaves them blocked and stops asking. Open requests count toward the Inbox badge and appear in the daily digest. Blocked tickets also have a **Triage** button to run it again, and you can turn self-triage off in Settings.
+
 ## Talking a ticket through
 
 Any ticket on the Board can carry its own conversation with Claude. Blocked tickets get a **Work it out with Claude** button (it starts you off with the agent's reason for blocking); every other ticket has **💬 Discuss**, and the button shows how many messages a ticket's conversation has.
@@ -355,6 +369,7 @@ builds/<game>/<id>/   build.log + output/
 | `src/setup.mjs` | setup guide checks |
 | `src/ask.mjs` | conversation mode: questions answered by the account with the most weekly room |
 | `src/threads.mjs` | ticket conversations, and rewriting a ticket from what was decided |
+| `src/unblock.mjs` | blocked-ticket self-triage and Human Intervention requests |
 | `installer/` | Windows installer (IExpress): build, install, launch, uninstall, tests |
 | `src/cloud.mjs` | claude.ai artifact sync and review routing |
 | `src/remote.mjs` | cloud games: triage, cloud sessions, GitHub report polling |

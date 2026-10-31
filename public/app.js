@@ -186,7 +186,7 @@ function renderSide() {
   // Archived games fold away; the one you have open stays visible.
   const games = all.filter((g) => statusOf(g) !== 'archived' || S.showArchived || (S.view === 'game' && g.id === S.gameId));
   const running = S.st.agents.filter((a) => a.status === 'running').length; // delegate chats included
-  const questions = openQuestions().length;
+  const questions = openQuestions().length + openInterventions().length; // questions plus people-only blocks
   $('#games').innerHTML = `<button class="game-link${S.view === 'studio' ? ' active' : ''}" data-act="studio">
       <span class="gname">Studio</span><span class="hint" style="margin:0">${running ? `${running} running` : 'overview'}</span>
     </button>
@@ -261,8 +261,9 @@ function renderHead() {
   }
   if (S.view === 'inbox') {
     const n = openQuestions().length;
-    $('#ghead').innerHTML = `<div><h1>Director's Inbox</h1><span class="hint" style="margin:0">Questions from every agent on every game. Agents never wait on these: each one is working on the assumption shown, and your answer goes straight back to it.</span></div>
-      <span class="spacer"></span><span class="pill ${n ? 'limited' : ''}">${n} open</span>`;
+    const h = openInterventions().length;
+    $('#ghead').innerHTML = `<div><h1>Director's Inbox</h1><span class="hint" style="margin:0">Questions from every agent on every game, and blocked tickets that need a person. Agents never wait on questions: each one is working on the assumption shown, and your answer goes straight back to it.</span></div>
+      <span class="spacer"></span>${h ? `<span class="pill error">${h} need${h === 1 ? 's' : ''} you</span>` : ''}<span class="pill ${n ? 'limited' : ''}">${n} question${n === 1 ? '' : 's'}</span>`;
     return;
   }
   if (S.view === 'studio') {
@@ -1021,8 +1022,11 @@ function renderBoard() {
         : status === 'done' ? `${esc(name(t.doneBy))} · ${ago(t.doneAt)}`
         : `${t.assignee ? `for ${esc(name(t.assignee))} · ` : ''}from ${esc(t.createdBy || '?')}${t.noteNum ? ` · note #${t.noteNum}` : ''}`;
       const talk = t.thread?.count ? `💬 ${t.thread.count}` : status === 'blocked' ? 'Work it out with Claude' : '💬 Discuss';
+      const iv = t.human && openInterventions().find((i) => i.id === t.human);
       const acts = [
-        status === 'blocked' && `<button class="primary small" data-act="thread-open" data-id="${t.id}">${talk}</button>`,
+        iv && `<button class="primary small hi-btn" data-act="hi-open" data-id="${iv.id}">What's needed</button>`,
+        status === 'blocked' && !t.human && t.triage?.status !== 'running' && `<button class="ghost small" data-act="task-triage" data-id="${t.id}" title="Have Claude work out whether an agent can still do it, or what a person needs to do">Triage</button>`,
+        status === 'blocked' && `<button class="${iv ? 'ghost' : 'primary'} small" data-act="thread-open" data-id="${t.id}">${talk}</button>`,
         status === 'review' && `<button class="primary small" data-act="review-approve" data-id="${t.id}">Approve</button>`,
         status !== 'blocked' && `<button class="ghost small" data-act="thread-open" data-id="${t.id}" title="Talk this ticket through with Claude">${talk}</button>`,
         status !== 'open' && `<button class="ghost small" data-act="task-status" data-id="${t.id}" data-status="open">Reopen</button>`,
@@ -1039,6 +1043,10 @@ function renderBoard() {
         <div class="meta">${meta}${t.note && status === 'open' ? ` · ${esc(t.note)}` : ''}</div>
         ${t.detail && status !== 'done' ? `<div class="detail">${esc(t.detail)}</div>` : ''}
         ${t.summary ? `<div class="summary">${esc(t.summary)}</div>` : ''}
+        ${iv ? `<div class="hi-line"><span class="hi-tag">🙋 NEEDS YOU</span> ${esc(iv.title)}</div>` : ''}
+        ${status === 'blocked' && t.triage?.status === 'running' ? '<div class="hint" style="margin:4px 0 0">Self-triaging: can an agent still do this, or does it need a person?</div>' : ''}
+        ${status === 'blocked' && t.triage?.verdict === 'stuck' ? '<div class="hint" style="margin:4px 0 0;color:var(--accent)">Blocked again after retries, with no person-only cause found. Talk it through.</div>' : ''}
+        ${t.triage?.verdict === 'retry' && status !== 'blocked' && t.triage.why ? `<div class="hint" style="margin:4px 0 0">↻ Self-triaged: ${esc(t.triage.why.slice(0, 160))}</div>` : ''}
         ${t.blockReason && status === 'blocked' ? `<div class="blocked">${esc(t.blockReason)}</div>` : ''}
         <div class="acts">${acts}</div>
       </div>`;
@@ -1311,9 +1319,10 @@ function renderStudio() {
 function digestPanel() {
   const d = S.st.digests?.at(-1);
   if (!d) return '<p class="hint" style="margin:0">No digest yet. The first one arrives at the start of your next working day, or press Digest now.</p>';
-  const games = d.games.filter((g) => g.done.length || g.blocked.length || g.reviews || g.questions || g.builds.length);
+  const games = d.games.filter((g) => g.done.length || g.blocked.length || g.reviews || g.questions || g.builds.length || g.needsYou?.length);
   return `<div class="card digest"><div class="row"><b class="grow">${esc(d.headline)}</b><span class="hint" style="margin:0">${clock(d.at)} · since ${clock(d.since)}${d.shareError ? ` · webhook failed: ${esc(d.shareError)}` : ''}</span></div>
     ${games.length ? games.map((g) => `<div class="dg-game"><div class="row"><span class="link" data-act="game" data-id="${g.id}"><b>${esc(g.name)}</b></span><span class="hint" style="margin:0">${g.done.length} done · ${g.open} open${g.builds.length ? ` · builds: ${g.builds.map(esc).join(', ')}` : ''}</span></div>
+      ${g.needsYou?.length ? `<ul class="dg-list">${g.needsYou.map((n) => `<li><span class="hi-tag">🙋 NEEDS YOU</span> <span class="link" data-act="inbox">${esc(n)}</span></li>`).join('')}</ul>` : ''}
       ${g.done.length ? `<ul class="dg-list">${g.done.slice(0, 6).map((t) => `<li>✓ ${esc(t.title)}</li>`).join('')}${g.done.length > 6 ? `<li class="hint">… and ${g.done.length - 6} more</li>` : ''}</ul>` : ''}
       ${g.blocked.length ? `<ul class="dg-list blocked">${g.blocked.slice(0, 4).map((t) => `<li>⛔ #${t.num} ${esc(t.title)}${t.why ? ` <span class="hint" style="display:inline">${esc(t.why.slice(0, 100))}</span>` : ''}</li>`).join('')}</ul>` : ''}
       ${g.reviews || g.questions ? `<div class="dg-needs">⏳ ${[g.reviews && `${g.reviews} to review`, g.questions && `<span class="link" data-act="inbox">${g.questions} question${g.questions > 1 ? 's' : ''} in your Inbox</span>`].filter(Boolean).join(' · ')}</div>` : ''}</div>`).join('') : '<p class="hint">Quiet day: nothing finished or waiting.</p>'}
@@ -2435,10 +2444,53 @@ function deptNoteCard(n) {
 function renderInbox() {
   const el = $('#inbox');
   if (!el) return;
+  if (el.contains(document.activeElement) && document.activeElement.tagName === 'TEXTAREA') return; // don't wipe a note you're typing
   const open = openQuestions().sort((a, b) => a.createdAt - b.createdAt);
   const done = (S.st.inbox || []).filter((q) => q.status !== 'open').sort((a, b) => (b.answeredAt || 0) - (a.answeredAt || 0)).slice(0, 30);
-  el.innerHTML = `${open.length ? open.map(questionCard).join('') : '<div class="empty"><h2>Inbox zero</h2><p>When an agent has a question it adds it here, writes down what it is assuming, and keeps going. Your answer goes back to that agent.</p></div>'}
-    ${done.length ? `<details style="margin-top:18px"><summary class="hint" style="display:inline;cursor:pointer">Answered (${done.length})</summary>${done.map(questionCard).join('')}</details>` : ''}`;
+  const human = openInterventions();
+  const handled = (S.st.interventions || []).filter((i) => i.status !== 'open').sort((a, b) => (b.resolvedAt || 0) - (a.resolvedAt || 0));
+  el.innerHTML = `${human.length ? `<div class="section-head"><h3>🙋 Human intervention</h3><span class="hint">Blocked tickets that triaged themselves and need a person: ${human.length} request${human.length > 1 ? 's' : ''} holding ${human.reduce((n, i) => n + i.taskIds.length, 0)} ticket${human.reduce((n, i) => n + i.taskIds.length, 0) > 1 ? 's' : ''}</span></div>${human.map(interventionCard).join('')}<div class="section-head" style="margin-top:22px"><h3>Questions</h3></div>` : ''}
+    ${open.length ? open.map(questionCard).join('') : human.length ? '<p class="hint">No open questions.</p>' : '<div class="empty"><h2>Inbox zero</h2><p>When an agent has a question it adds it here, writes down what it is assuming, and keeps going. Your answer goes back to that agent. Blocked tickets that need a person show up here too, with exactly what to do.</p></div>'}
+    ${done.length ? `<details style="margin-top:18px"><summary class="hint" style="display:inline;cursor:pointer">Answered (${done.length})</summary>${done.map(questionCard).join('')}</details>` : ''}
+    ${handled.length ? `<details style="margin-top:10px"><summary class="hint" style="display:inline;cursor:pointer">Handled interventions (${handled.length})</summary>${handled.map(interventionCard).join('')}</details>` : ''}`;
+}
+
+// ---------------------------------------------------------------------------
+// Human Intervention: what a blocked ticket needs from a person (or a Cowork Claude they authorize)
+
+const openInterventions = (gid) => (S.st.interventions || []).filter((i) => i.status === 'open' && (!gid || i.gameId === gid));
+const KIND_LABEL = { access: 'Access or permissions', hardware: 'Hardware or a device', account: 'An account or service', payment: 'Payment', decision: 'Your decision', content: 'Content only you can make', other: 'Something else' };
+
+function coworkText(iv) {
+  const g = S.st.games.find((x) => x.id === iv.gameId);
+  return `${iv.coworkBrief}\n\nWhat you're authorized to do:\n${iv.authorization.map((a) => `- ${a}`).join('\n')}\n\nSteps:\n${iv.steps.map((s, i) => `${i + 1}. ${s}`).join('\n')}\n\nDone when: ${iv.verify}\n\n(This unblocks work on ${g?.name || 'the game'}: ${iv.why})`;
+}
+
+function interventionCard(iv) {
+  const g = S.st.games.find((x) => x.id === iv.gameId);
+  const tickets = iv.taskIds.map((id) => S.st.tasks.find((t) => t.id === id)).filter(Boolean);
+  const open = iv.status === 'open';
+  return `<div class="card hi-card${open ? '' : ' handled'}">
+    <div class="row"><span class="hi-tag">🙋 NEEDS YOU</span><b class="grow">${esc(iv.title)}</b>${S.view === 'inbox' && g ? `<span class="pill link" data-act="game" data-id="${g.id}">${esc(g.name)}</span>` : ''}</div>
+    <div class="hint" style="margin:4px 0 8px">${esc(KIND_LABEL[iv.kind] || iv.kind)} · ${iv.who === 'you' ? 'only you can do this' : 'you, or a Cowork Claude you authorize'}${iv.minutes ? ` · about ${iv.minutes} min` : ''}${open ? '' : ` · ${iv.status === 'done' ? `done ${ago(iv.resolvedAt)}` : 'dismissed'}`}</div>
+    <p style="margin:0 0 8px">${esc(iv.why)}</p>
+    ${iv.steps.length ? `<ol class="hi-steps">${iv.steps.map((s) => `<li>${mdInline(s)}</li>`).join('')}</ol>` : ''}
+    ${iv.verify ? `<div class="hint" style="margin:4px 0"><b style="color:var(--text)">You'll know it worked when:</b> ${esc(iv.verify)}</div>` : ''}
+    ${iv.authorization.length ? `<details class="hi-cowork"><summary>Hand it to a Cowork Claude instead</summary>
+      <div class="hint" style="margin:6px 0 4px">It needs your authorization to:</div><ul>${iv.authorization.map((a) => `<li>${esc(a)}</li>`).join('')}</ul>
+      <button class="ghost small" data-act="hi-cowork" data-id="${iv.id}">Copy the Cowork brief</button></details>` : ''}
+    <div class="hint" style="margin:8px 0 0">Holding ${tickets.map((t) => `<span class="link" data-act="thread-open" data-id="${t.id}" title="${esc(t.title)}">#${t.num}</span>`).join(', ') || 'no tickets'}${iv.note ? ` · your note: ${esc(iv.note)}` : ''}</div>
+    ${open ? `<div class="row" style="gap:6px;margin-top:10px">
+      ${iv.closeSuggested ? `<button class="primary small" data-act="hi-close" data-id="${iv.id}">Close the ticket</button>` : `<button class="primary small" data-act="hi-done" data-id="${iv.id}">Done: put ${tickets.length > 1 ? `the ${tickets.length} tickets` : 'it'} back on the board</button>`}
+      ${tickets[0] ? `<button class="ghost small" data-act="thread-open" data-id="${tickets[0].id}">Talk it through</button>` : ''}
+      <button class="ghost small" data-act="hi-dismiss" data-id="${iv.id}" title="Leave the tickets blocked and stop asking">Dismiss</button></div>` : ''}
+  </div>`;
+}
+
+function interventionModal(id) {
+  const iv = S.st.interventions.find((x) => x.id === id);
+  if (!iv) return;
+  modal({ title: 'Human intervention', wide: true, body: interventionCard(iv), actions: [] });
 }
 
 // Asset picker: pick a category, then search the game's assets (AI catalog + asset files) and
@@ -2940,6 +2992,7 @@ function globalSettingsModal() {
       <label class="field"><span>Send reports to (Slack or Discord webhook, optional)</span><input name="reportWebhook" value="${esc(s.reportWebhook || '')}" placeholder="https://hooks.slack.com/…"><small>Usage reports, the daily digest and the weekly report. A Discord channel webhook pushes them to your phone.</small></label>
       <div class="two">
         <label class="check" style="margin-top:22px"><input type="checkbox" name="digestDaily" ${s.digestDaily !== false ? 'checked' : ''}><span>Daily digest at the start of your working day</span></label>
+        <label class="check"><input type="checkbox" name="blockTriage" ${s.blockTriage !== false ? 'checked' : ''}><span>Blocked tickets triage themselves<br><span class="hint" style="margin:0">Claude retries them another way, or raises a Human Intervention request with exact steps.</span></span></label>
         <label class="field"><span>Weekly report</span><div class="row"><select name="wk.day" style="width:auto"><option value="">Off</option>${['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map((n, i) => `<option value="${i}"${(s.weeklyReport?.day ?? 5) === i ? ' selected' : ''}>${n}</option>`).join('')}</select><input name="wk.time" type="time" value="${esc(s.weeklyReport?.time || '16:00')}" style="width:auto"></div></label>
       </div>
       <h4 class="sub-h">Limits</h4>
@@ -2971,7 +3024,7 @@ function globalSettingsModal() {
         const workHours = { start: f['wh.start'], end: f['wh.end'], days: [0, 1, 2, 3, 4, 5, 6].filter((i) => f[`wh.day${i}`]) };
         const weeklyReport = { day: f['wk.day'], time: f['wk.time'] };
         for (const k of Object.keys(f)) if (k.startsWith('wh.') || k.startsWith('wk.')) delete f[k];
-        return api('PATCH', '/api/settings', { ...f, digestDaily: !!f.digestDaily, review: reviewModes, workHours, weeklyReport });
+        return api('PATCH', '/api/settings', { ...f, digestDaily: !!f.digestDaily, blockTriage: !!f.blockTriage, review: reviewModes, workHours, weeklyReport });
       },
     }],
   });
@@ -3168,7 +3221,17 @@ const ACTIONS = {
   'weekly-post-copy': (d) => copyText(S.st.weeklyReports.find((r) => r.id === d.id).games.find((e) => e.gameId === d.game).out.posts[Number(d.i)].text, 'Post'),
   'playtest-pick': (d) => playtestModal(d.id),
   'task-prio': (d) => api('PATCH', `/api/tasks/${d.id}`, { priority: d.dir }),
-  'thread-open': (d) => threadModal(d.id),
+  'thread-open': (d) => { $('.modal-back')?.remove(); threadModal(d.id); },
+  'hi-open': (d) => interventionModal(d.id),
+  'hi-cowork': (d) => copyText(coworkText(S.st.interventions.find((i) => i.id === d.id)), 'Cowork brief'),
+  'hi-done': (d) => modal({
+    title: 'Done?',
+    body: '<p class="hint" style="margin-top:0">The tickets waiting on this go back on the board, with your note for the agent.</p><label class="field"><span>Anything the agent should know (optional)</span><textarea name="note" rows="3" placeholder="e.g. The allowlist now has freesound.org and upload.wikimedia.org"></textarea></label>',
+    actions: [{ label: 'Cancel' }, { label: 'Back on the board', kind: 'primary', onClick: async (root) => { await api('POST', `/api/interventions/${d.id}/resolve`, { note: $('textarea', root).value }); $$('.modal-back').forEach((m) => m.remove()); toast('Back on the board'); } }],
+  }),
+  'hi-close': async (d) => { await api('POST', `/api/interventions/${d.id}/resolve`, { close: true }); $$('.modal-back').forEach((m) => m.remove()); toast('Ticket closed'); },
+  'hi-dismiss': async (d) => { await api('POST', `/api/interventions/${d.id}/dismiss`); $$('.modal-back').forEach((m) => m.remove()); toast('Dismissed: the tickets stay blocked'); },
+  'task-triage': async (d) => { await api('POST', `/api/tasks/${d.id}/triage`); toast('Triaging…'); },
   'ask-toggle': () => { S.askMode = !S.askMode; store('askMode', S.askMode ? '1' : '0'); renderAskLine(); $('#composer-feed textarea')?.focus(); },
   'ask-reset': async () => { await api('POST', `/api/games/${S.gameId}/ask/reset`); toast('New conversation: earlier questions won’t be carried into the next one'); },
   'ask-to-team': (d) => sendAnswerToTeam(d.id),
