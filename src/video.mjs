@@ -106,6 +106,12 @@ ${context(game)}`,
   if (result) recordUsage({ account: acct, gameId: game.id, kind: 'video', result });
   const out = result?.structured_output;
   if (!out?.items) throw new Error(result?.result?.slice(0, 200) || 'Claude returned no review.');
+  // The frame's own time is exact; the model's guess at a time isn't always.
+  for (const i of out.items) {
+    const f = frames.find((x) => x.file === i.frame);
+    if (f) i.t = f.t;
+  }
+  out.items.sort((a, b) => a.t - b.t);
   return { duration, frames, transcript, heard, out, account: acct.name };
 }
 
@@ -126,7 +132,7 @@ export function postWithReview(gameId, body) {
         sections.push(`🎬 Video review of ${v.name} (${mmss(r.duration)}; Claude watched ${r.frames.length} frames${r.transcript.length ? ' against my commentary' : ''}):\n${r.out.summary}\n\n${r.out.items.map((i) => `- [${mmss(i.t)}] [${i.area}] ${i.title}: ${i.detail}${i.frame ? ` (frame ${i.frame})` : ''}`).join('\n') || '- Nothing specific to act on.'}${r.transcript.length ? `\n\nWhat I said while playing:\n${r.transcript.map((s) => `[${mmss(s.start)}] ${s.text}`).join('\n').slice(0, 6000)}` : ''}`);
         for (const i of r.out.items) {
           const f = r.frames.find((x) => x.file === i.frame);
-          if (f && !frames.some((x) => x.path === f.path)) frames.push({ name: `${v.name.replace(/\.[^.]+$/, '')}-${mmss(i.t).replace(':', 'm')}s.jpg`, path: f.path, url: f.url });
+          if (f && !frames.some((x) => x.path === f.path)) frames.push({ name: `${v.name.replace(/\.[^.]+$/, '')}-${mmss(f.t).replace(':', 'm')}s-${f.file}`, path: f.path, url: f.url });
         }
         emit(gameId, id, 'done', { items: r.out.items.length });
       } catch (err) {

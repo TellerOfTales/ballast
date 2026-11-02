@@ -111,11 +111,19 @@ export async function transcribeFile(file, { lang = 'en', prompt = '' } = {}) {
   if (!res.ok || out.error) throw new Error(`Whisper: ${out.error || res.statusText}`);
   touch();
   // whisper.cpp reports start/end in seconds (OpenAI style) or t0/t1 in centiseconds.
-  return (out.segments || []).map((s) => ({
+  const segs = (out.segments || []).map((s) => ({
     start: s.start ?? (s.t0 ?? 0) / 100,
     end: s.end ?? (s.t1 ?? 0) / 100,
     text: String(s.text || '').replace(/\[[^\]]*\]/g, ' ').replace(/\s+/g, ' ').trim(),
   })).filter((s) => s.text && !NOISE.test(s.text));
+  // Over music and game noise Whisper can loop on one line; keep the first of any repeat run.
+  const seen = new Map();
+  return segs.filter((s, i) => {
+    const key = s.text.toLowerCase().replace(/[^a-z0-9 ]/g, '');
+    const n = (seen.get(key) || 0) + 1;
+    seen.set(key, n);
+    return n === 1 || (n <= 2 && segs[i - 1]?.text !== s.text);
+  });
 }
 
 export async function transcribe({ audio, lang = 'en', prompt = '' }) {
