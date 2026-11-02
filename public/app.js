@@ -223,7 +223,8 @@ const todayTokens = (accountId) => S.usage?.accounts?.[accountId]?.today || null
 function acctRow(a) {
   const status = !a.loggedIn ? 'error' : a.limited ? 'limited' : a.running ? 'running' : 'idle';
   const today = todayTokens(a.id);
-  const sub = !a.loggedIn ? 'Not logged in'
+  const sub = a.signedInAs ? `Paused: signed in as ${a.signedInAs}`
+    : !a.loggedIn ? 'Not logged in'
     : a.limited ? `Out of usage until ${clock(a.limitedUntil)}`
     : [a.email, a.plan, today?.tokens ? `${fmtTokens(today.tokens)} tokens today` : ''].filter(Boolean).join(' · ') || 'Logged in';
   return `<div class="acct">
@@ -236,7 +237,8 @@ function acctRow(a) {
         <button class="icon-btn" data-act="acct-edit" data-id="${a.id}" title="Edit">✎</button>
       </span>
     </div>
-    <div class="sub">${esc(sub)}${a.running ? ` · ${a.running} running` : ''}</div>
+    <div class="sub${a.signedInAs ? ' warn-text' : ''}">${esc(sub)}${a.running ? ` · ${a.running} running` : ''}</div>
+    ${a.signedInAs ? `<div class="row" style="gap:4px;margin:4px 0 2px"><button class="primary small" data-act="acct-detach" data-id="${a.id}">Give it its own login</button></div>` : ''}
     ${windowsOf(a).slice(0, 2).map((w) => meter(w)).join('')}
   </div>`;
 }
@@ -522,28 +524,51 @@ function updateTargetSelect() {
   sel.value = [...sel.options].some((o) => o.value === keep) ? keep : 'all';
 }
 
+const isVideoName = (n) => /\.(mp4|mov|m4v|webm|mkv|avi)$/i.test(n || '');
+const fmtSize = (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(b / 1e6))} MB`);
+
 function renderChips(kind) {
   const el = $(`#chips-${kind}`);
   if (!el) return;
-  el.innerHTML = S.pending[kind].map((f, i) => `<span class="chip">${f.isImage ? `<img src="${f.url}">` : ''}${esc(f.name)}<button type="button" data-act="chip-remove" data-kind="${kind}" data-i="${i}">✕</button></span>`).join('');
+  el.innerHTML = S.pending[kind].map((f, i) => `<span class="chip${f.uploading ? ' uploading' : ''}">${f.isImage && !f.uploading ? `<img src="${f.url}">` : ''}${isVideoName(f.name) ? '🎬 ' : ''}${esc(f.name)}${f.uploading ? ` <span class="hint" style="display:inline;margin:0">${f.pct}% of ${fmtSize(f.size)}</span><i class="chip-bar" style="width:${f.pct}%"></i>` : ''}<button type="button" data-act="chip-remove" data-kind="${kind}" data-i="${i}" title="${f.uploading ? 'Cancel upload' : 'Remove'}">✕</button></span>`).join('')
+    + (kind === 'feed' && S.pending.feed.some((f) => isVideoName(f.name)) ? '<div class="hint chip-note">🎬 Claude reviews the video (frames plus your commentary) before the note reaches the team; the review notes and key frames go with it.</div>' : '');
+}
+
+// Files stream straight to disk (any size, with progress), so playtest videos work like screenshots.
+function sendFile(endpoint, file, onProgress) {
+  const xhr = new XMLHttpRequest();
+  const done = new Promise((resolve, reject) => {
+    xhr.open('POST', `${endpoint}?name=${encodeURIComponent(file.name || 'pasted.png')}`);
+    xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(Math.floor((e.loaded / e.total) * 100));
+    xhr.onload = () => {
+      let body = {};
+      try { body = JSON.parse(xhr.responseText); } catch { /* not json */ }
+      xhr.status < 300 ? resolve(body) : reject(new Error(body.error || `Upload failed (${xhr.status})`));
+    };
+    xhr.onerror = () => reject(new Error('Upload failed: lost the connection to Ballast'));
+    xhr.onabort = () => reject(Object.assign(new Error('Upload cancelled'), { cancelled: true }));
+    xhr.send(file);
+  });
+  return { done, cancel: () => xhr.abort() };
 }
 
 async function upload(kind, files) {
   const g = game();
   for (const file of files) {
-    if (file.size > 60e6) { toast(`${file.name} is over 60 MB`, true); continue; }
-    const data = await new Promise((resolve, reject) => {
-      const r = new FileReader();
-      r.onload = () => resolve(String(r.result).split(',')[1] || '');
-      r.onerror = reject;
-      r.readAsDataURL(file);
-    });
+    const endpoint = kind === 'studio' ? '/api/studio/upload' : `/api/games/${g.id}/upload`;
+    const chip = { name: file.name || 'pasted.png', uploading: true, pct: 0, size: file.size, isImage: file.type.startsWith('image/') };
+    S.pending[kind].push(chip);
+    renderChips(kind);
+    let last = 0;
+    const up = sendFile(endpoint, file, (pct) => { chip.pct = pct; if (Date.now() - last > 250) { last = Date.now(); renderChips(kind); } });
+    chip.cancel = up.cancel;
     try {
-      const endpoint = kind === 'studio' ? '/api/studio/attachments' : `/api/games/${g.id}/attachments`;
-      const saved = await api('POST', endpoint, { name: file.name || 'pasted.png', data });
-      S.pending[kind].push({ ...saved, isImage: file.type.startsWith('image/') });
-      renderChips(kind);
-    } catch (err) { fail(err); }
+      Object.assign(chip, await up.done, { uploading: false, cancel: null });
+    } catch (err) {
+      S.pending[kind] = S.pending[kind].filter((x) => x !== chip);
+      if (!err.cancelled) fail(err);
+    }
+    renderChips(kind);
   }
 }
 
@@ -578,6 +603,7 @@ function bindComposer(kind) {
     const text = ta.value.trim();
     const attachments = S.pending[kind];
     if (!text && !attachments.length) return;
+    if (attachments.some((f) => f.uploading)) return toast('Wait for the upload to finish (or remove it).', true);
     const btn = $('button[type=submit]', form);
     btn.disabled = true;
     try {
@@ -624,9 +650,11 @@ const emptyFeed = () => `<div class="empty" id="feed-empty"><h2>Nothing here yet
 
 function attachmentsHtml(list = []) {
   if (!list.length) return '';
-  return `<div class="thumbs">${list.map((a) => /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(a.name)
+  const videos = list.filter((a) => isVideoName(a.name));
+  list = list.filter((a) => !isVideoName(a.name));
+  return `${videos.map((a) => `<div class="video-att"><video controls preload="metadata" src="${esc(a.url)}"></video><a class="hint" href="${esc(a.url)}?download">${esc(a.name)}</a></div>`).join('')}${list.length ? `<div class="thumbs">${list.map((a) => /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(a.name)
     ? `<img src="${esc(a.url)}" alt="${esc(a.name)}" data-act="img-zoom">`
-    : `<a class="file" href="${esc(a.url)}?download">${esc(a.name)}</a>`).join('')}</div>`;
+    : `<a class="file" href="${esc(a.url)}?download">${esc(a.name)}</a>`).join('')}</div>` : ''}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -690,6 +718,10 @@ function sendAnswerToTeam(askId) {
 function feedEntry(e) {
   const when = `<span class="when">${clock(e.ts)}</span>`;
   if (e.kind === 'system') return `<div class="entry system"><div class="body">${esc(e.text)} · ${clock(e.ts)}</div></div>`;
+  if (e.kind === 'video') {
+    return `<div class="entry video-entry" data-video="${esc(e.videoId)}"><div class="head"><span class="avatar" style="background:var(--accent)">★</span><span class="who">${esc(e.from)}</span><span class="pill queued vid-stage">🎬 reviewing the video…</span>${when}</div>
+      <div class="body">${e.text ? `<div class="md">${md(e.text)}</div>` : ''}${attachmentsHtml(e.attachments)}<div class="hint vid-progress">Your note goes to the team with Claude's timestamped review as soon as it's done.</div></div></div>`;
+  }
   if (e.kind === 'ask') {
     return `<div class="entry ask"><div class="head"><span class="avatar" style="background:var(--accent)">★</span><span class="who">${esc(e.from)}</span><span class="pill">asked ${esc(e.to || 'Claude')}</span>${when}</div>
       <div class="body"><div class="md">${md(e.text)}</div>${attachmentsHtml(e.attachments)}</div></div>`;
@@ -1661,6 +1693,10 @@ function accountCard(a) {
   return `<div class="card acct-card">
     <div class="row">${avatar(a.name, a.id)}<b class="grow">${esc(a.name)}</b><span class="pill ${state[0]}">${esc(state[1])}</span></div>
     <div class="hint" style="margin:2px 0 10px">${esc([a.email, a.plan, a.org].filter(Boolean).join(' · ') || (a.loggedIn ? '' : 'Log in from the sidebar'))}</div>
+    ${a.signedInAs ? `<div class="acct-alert"><b>Paused.</b> ${a.isDefault ? "This PC's Claude login" : 'Its login'} is now <b>${esc(a.signedInAs)}</b>, not ${esc(a.email)}, so its agents are waiting rather than spending the wrong account's usage.
+        <div class="row" style="gap:6px;margin-top:8px">${a.isDefault ? `<button class="primary small" data-act="acct-detach" data-id="${a.id}">Give ${esc(a.name)} its own login</button>` : `<button class="primary small" data-act="acct-login" data-id="${a.id}">Sign in as ${esc(a.email)} again</button>`}
+        <button class="ghost small" data-act="acct-accept" data-id="${a.id}">Use ${esc(a.signedInAs)} for ${esc(a.name)} from now on</button></div></div>`
+      : a.isDefault ? `<div class="acct-note">Uses this PC's Claude login, which changes when you switch accounts in the Claude app or CLI. <a href="#" data-act="acct-detach" data-id="${a.id}">Give it its own login</a> so Ballast keeps running whatever you're signed into.</div>` : ''}
     ${windows.length ? windows.map((w) => meter(w, { full: true })).join('') : '<div class="hint">No limit data yet.</div>'}
     <div class="row hint" style="margin:6px 0 0">
       <span class="grow">${a.usage?.updatedAt ? `limits checked ${ago(a.usage.updatedAt)}` : 'limits not checked yet'}${a.usage?.overage === 'using' ? ' · using extra usage' : ''}</span>
@@ -2833,7 +2869,7 @@ function newAccountModal() {
   modal({
     title: 'Add a Claude account',
     body: `<label class="field"><span>Name</span><input name="name" placeholder="e.g. Studio Max, Personal Pro"></label>
-      ${hasDefault ? '' : `<label class="check"><input type="checkbox" name="useDefault"><span>Use the Claude login already on this computer<br><span class="hint" style="margin:0">Otherwise Ballast makes a separate profile and opens a terminal to log in.</span></span></label>`}
+      ${hasDefault ? '' : `<label class="check"><input type="checkbox" name="useDefault"><span>Use the Claude login already on this computer<br><span class="hint" style="margin:0">Quick, but it follows whatever you sign into in the Claude app or CLI. Leave this off and Ballast gives the account its own profile and opens a terminal to sign in once (recommended): then switching accounts elsewhere never affects Ballast.</span></span></label>`}
       <p class="hint">Each account keeps its own login and usage limits in its own Claude config folder.</p>`,
     actions: [{ label: 'Cancel' }, {
       label: 'Add', kind: 'primary', onClick: async (root) => {
@@ -3386,6 +3422,14 @@ const ACTIONS = {
   'new-game': () => (S.st.accounts.length ? newGameModal() : toast('Add a Claude account first.', true)),
   'new-account': newAccountModal,
   'acct-login': (d) => loginFlow(d.id),
+  'acct-detach': (d) => {
+    const a = acctOf(d.id);
+    confirmModal(`Give ${a.name} its own login?`, `Ballast gives ${a.name} its own Claude profile, like your other accounts, and opens a terminal to sign it in. Sign in as ${a.email}. After that, whatever you're signed into in the Claude app or CLI never changes who Ballast runs as. Its agents keep their conversations.`, 'Open the sign-in', async () => {
+      const r = await api('POST', `/api/accounts/${d.id}/detach`);
+      toast(`Sign in as ${r.signIn} in the terminal that opened${r.sessionsCopied ? ` (${r.sessionsCopied} agent conversation${r.sessionsCopied > 1 ? 's' : ''} copied over)` : ''}`);
+    });
+  },
+  'acct-accept': (d) => api('POST', `/api/accounts/${d.id}/accept-identity`),
   'acct-refresh': async (d) => { const a = await api('POST', `/api/accounts/${d.id}/refresh`); toast(a.loggedIn ? `${a.name}: logged in as ${a.email}` : `${a.name}: not logged in`); },
   'acct-edit': (d) => editAccountModal(d.id),
   'wake': async () => { const r = await api('POST', `/api/games/${S.gameId}/wake`); toast(r.woken ? `Woke ${r.woken} agent${r.woken > 1 ? 's' : ''}` : 'Nothing to hand out: no open tasks or no idle agents.'); },
@@ -3421,7 +3465,7 @@ const ACTIONS = {
   },
   'more': (_, el) => { el.previousElementSibling.classList.remove('clamp'); el.remove(); },
   'img-zoom': (_, el) => modal({ title: el.alt || 'Image', wide: true, body: `<img class="viewer-img" src="${el.src}">` }),
-  'chip-remove': (d) => { S.pending[d.kind].splice(Number(d.i), 1); renderChips(d.kind); },
+  'chip-remove': (d) => { const [f] = S.pending[d.kind].splice(Number(d.i), 1); f?.cancel?.(); renderChips(d.kind); },
 };
 
 document.addEventListener('click', async (e) => {
@@ -3502,6 +3546,16 @@ function handleEvent(ev) {
     list.insertAdjacentHTML('beforeend', threadMsg(ev.entry));
     list.scrollTop = list.scrollHeight;
     if (ev.entry.role === 'assistant' && !ev.entry.error) { const b = $('[data-thread-update]'); if (b) b.disabled = false; }
+    return;
+  }
+  if (ev.type === 'video') {
+    const box = $(`.entry.video-entry[data-video="${ev.id}"]`);
+    if (!box) return;
+    const pill = $('.vid-stage', box);
+    const line = $('.vid-progress', box);
+    if (ev.stage === 'done') { pill.className = 'pill success vid-stage'; pill.textContent = `🎬 reviewed · ${ev.items} note${ev.items === 1 ? '' : 's'}`; line.textContent = 'Reviewed: the note with the review is below.'; }
+    else if (ev.stage === 'error') { pill.className = 'pill error vid-stage'; pill.textContent = '🎬 review failed'; line.textContent = `${ev.error} The note goes out with the video attached.`; }
+    else line.textContent = ev.stage;
     return;
   }
   if (ev.type === 'ask') {

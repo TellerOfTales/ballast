@@ -183,6 +183,26 @@ Every task is **Urgent**, **High**, **Normal** (the default) or **Low**. On the 
 
 Priority decides what gets picked up next. Cloud agents are handed tasks by Ballast, highest priority first, ahead of role fit; tasks assigned to an agent still come first for that agent. Agents on this PC see the board sorted by priority with URGENT, high and low tags, and are told to take urgent work first and low only when nothing else fits. Promoting a task to Urgent wakes idle agents straight away.
 
+## Playtest videos
+
+Attach a playtest recording in the Feed like a screenshot (**📎**, drag and drop, or paste). Any size works: it streams to disk with a progress bar, and plays in the feed with seeking.
+
+When you send a note with a video, Ballast reviews it before the team gets it. The video shows in the feed right away with the review's progress. Ballast:
+
+1. pulls up to 40 frames from across the video (ffmpeg);
+2. transcribes what you said while playing, with timestamps (local Whisper, if it's set up);
+3. has Claude look at every frame against your commentary and your note, on the account with the most weekly room.
+
+Your note then goes out with a short summary and timestamped review notes, each tagged with its department (`[1:42] [art] Timer hard to read against the fog: ...`), the transcript of what you said, and the key frames attached. What you said carries the most weight; Claude adds what it can clearly see, and doesn't invent problems. Cloud agents get the text; agents on this PC can open the frames too.
+
+Needs ffmpeg (`winget install ffmpeg`). Without Whisper, only the frames are reviewed.
+
+## Accounts and the Claude app
+
+Ballast doesn't depend on which account you're signed into in the Claude app or CLI. Each account is locked to the email it was first signed in as: if its login ever turns out to be someone else, it's paused with a warning (its agents wait) rather than running on the wrong account's usage.
+
+The one account that can be affected is one added with *Use the Claude login already on this computer*: it shares the login with the Claude app and CLI, so switching accounts there changes it. Its card says so and offers **Give it its own login**: Ballast moves it to its own profile (keeping its agents' conversations) and opens a terminal to sign it in once. After that, switch accounts in the app as much as you like. If a switch was on purpose, **Use … from now on** accepts the new account instead.
+
 ## Blocked tickets triage themselves
 
 When a ticket blocks (an agent gives it back, a cloud session reports BLOCKED or goes quiet), Claude triages it within a minute on the account with the most weekly room. It reads the ticket and the code it touches, and decides:
@@ -370,6 +390,7 @@ builds/<game>/<id>/   build.log + output/
 | `src/ask.mjs` | conversation mode: questions answered by the account with the most weekly room |
 | `src/threads.mjs` | ticket conversations, and rewriting a ticket from what was decided |
 | `src/unblock.mjs` | blocked-ticket self-triage and Human Intervention requests |
+| `src/video.mjs` | playtest video review: frames, commentary transcript, Claude's notes |
 | `installer/` | Windows installer (IExpress): build, install, launch, uninstall, tests |
 | `src/cloud.mjs` | claude.ai artifact sync and review routing |
 | `src/remote.mjs` | cloud games: triage, cloud sessions, GitHub report polling |

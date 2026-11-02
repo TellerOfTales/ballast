@@ -96,6 +96,28 @@ export function warm() {
 // Whisper invents these on breaths, game audio and silence.
 const NOISE = /^(?:\[[^\]]*\]|\([^)]*\)|\*[^*]*\*|you|thank you\.?|thanks for watching!?|bye\.?|\.+|…)$/i;
 
+// A whole recording (a playtest video's commentary): timestamped segments, in seconds.
+export async function transcribeFile(file, { lang = 'en', prompt = '' } = {}) {
+  touch();
+  await start();
+  const form = new FormData();
+  form.append('file', await fs.openAsBlob(file, { type: 'audio/wav' }), 'audio.wav');
+  form.append('response_format', 'verbose_json');
+  form.append('temperature', '0.0');
+  form.append('language', lang);
+  if (prompt) form.append('prompt', prompt.slice(-900));
+  const res = await fetch(`${BASE}/inference`, { method: 'POST', body: form });
+  const out = await res.json().catch(() => ({}));
+  if (!res.ok || out.error) throw new Error(`Whisper: ${out.error || res.statusText}`);
+  touch();
+  // whisper.cpp reports start/end in seconds (OpenAI style) or t0/t1 in centiseconds.
+  return (out.segments || []).map((s) => ({
+    start: s.start ?? (s.t0 ?? 0) / 100,
+    end: s.end ?? (s.t1 ?? 0) / 100,
+    text: String(s.text || '').replace(/\[[^\]]*\]/g, ' ').replace(/\s+/g, ' ').trim(),
+  })).filter((s) => s.text && !NOISE.test(s.text));
+}
+
 export async function transcribe({ audio, lang = 'en', prompt = '' }) {
   if (!audio) throw Object.assign(new Error('No audio.'), { status: 400 });
   touch();

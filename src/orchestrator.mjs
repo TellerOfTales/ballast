@@ -178,17 +178,74 @@ export async function addAccount({ name, useDefault }) {
 export async function refreshAccount(id) {
   const acct = must(getAccount(id), 'Unknown account');
   const s = await claude.authStatus(acct);
+  // Identity lock: an account is the person it was first signed in as. If its login turns out to
+  // be someone else (the PC's default login switched in the Claude app, say), it pauses instead
+  // of quietly spending another account's usage.
+  const found = s.loggedIn ? s.email || null : null;
+  const expected = acct.expectedEmail || acct.email || found;
+  const mismatch = !!(found && expected && found.toLowerCase() !== expected.toLowerCase());
+  const was = acct.signedInAs;
   Object.assign(acct, {
-    loggedIn: !!s.loggedIn,
-    email: s.email || null,
-    plan: s.subscriptionType || null,
-    org: s.orgName || null,
+    loggedIn: !!s.loggedIn && !mismatch,
+    expectedEmail: expected,
+    email: expected,
+    signedInAs: mismatch ? found : null,
+    plan: mismatch ? acct.plan : s.subscriptionType || null,
+    org: mismatch ? acct.org : s.orgName || null,
     authMethod: s.authMethod || null,
     checkedAt: Date.now(),
   });
+  if (mismatch && was !== found) {
+    for (const gameId of new Set(db.agents.filter((a) => a.accountId === acct.id).map((a) => a.gameId))) {
+      feedPost(gameId, { kind: 'error', text: `${acct.name} is paused: ${acct.isDefault ? "this PC's Claude login" : 'its login'} is now ${found}, not ${expected}. Its agents wait so they don't run on the wrong account. Give ${acct.name} its own login (Studio → the account) to keep it independent of the Claude app.` });
+    }
+  } else if (!mismatch && was) {
+    for (const gameId of new Set(db.agents.filter((a) => a.accountId === acct.id).map((a) => a.gameId))) feedPost(gameId, { kind: 'system', text: `${acct.name} is back on ${expected}.` });
+    setTimeout(() => pump(), 100);
+  }
   save();
   changed();
   return acct;
+}
+
+// Moves an account off this PC's default Claude login onto its own Ballast profile, so switching
+// accounts in the Claude app or CLI never changes who Ballast runs as. Its agents' local session
+// files come along so they keep their conversations. Opens a terminal to sign it in.
+export function detachAccount(id) {
+  const acct = must(getAccount(id), 'Unknown account');
+  must(acct.isDefault, `${acct.name} already has its own login.`);
+  let s = acct.slug;
+  const dir = () => path.join(paths.accounts, s);
+  for (let i = 2; fs.existsSync(dir()) && fs.readdirSync(dir()).length; i++) s = `${acct.slug}-${i}`;
+  const to = dir();
+  fs.mkdirSync(to, { recursive: true });
+  const from = acct.configDir;
+  const sessions = new Set(db.agents.filter((a) => a.accountId === acct.id && a.sessionId).map((a) => a.sessionId));
+  let copied = 0;
+  try {
+    for (const proj of fs.readdirSync(path.join(from, 'projects'))) {
+      for (const f of fs.readdirSync(path.join(from, 'projects', proj))) {
+        if (!sessions.has(f.replace(/\.jsonl$/, ''))) continue;
+        fs.mkdirSync(path.join(to, 'projects', proj), { recursive: true });
+        fs.copyFileSync(path.join(from, 'projects', proj, f), path.join(to, 'projects', proj, f));
+        copied++;
+      }
+    }
+  } catch { /* no local sessions yet */ }
+  Object.assign(acct, { isDefault: false, configDir: to, loggedIn: false, signedInAs: null });
+  save();
+  changed();
+  loginAccount(acct.id);
+  return { configDir: to, sessionsCopied: copied, signIn: acct.expectedEmail };
+}
+
+// Accept whoever the account is signed in as now (when the switch was on purpose).
+export function acceptIdentity(id) {
+  const acct = must(getAccount(id), 'Unknown account');
+  must(acct.signedInAs, `${acct.name} isn't signed in as anyone else.`);
+  acct.expectedEmail = acct.signedInAs;
+  acct.signedInAs = null;
+  return refreshAccount(acct.id);
 }
 
 export function loginAccount(id) {
@@ -197,9 +254,8 @@ export function loginAccount(id) {
   let polls = 0;
   const timer = setInterval(async () => {
     polls++;
-    const before = acct.email;
     await refreshAccount(acct.id).catch(() => {});
-    if ((acct.loggedIn && acct.email !== before) || polls > 72) clearInterval(timer);
+    if (acct.loggedIn || acct.signedInAs || polls > 72) clearInterval(timer);
   }, 5000);
   return res;
 }
@@ -787,7 +843,7 @@ export function pump() {
       continue;
     }
     const acct = getAccount(agent.accountId);
-    if (!acct || isLimited(acct)) continue;
+    if (!acct || isLimited(acct) || !acct.loggedIn) continue; // signed out, or signed in as someone else
     // The game's usage cap (or a "stop" rule) holds everything but messages sent to this agent.
     if (!r.queue[0].direct && policy.effects(game, acct).stop) continue;
     const max = acct.maxConcurrent || db.settings.maxConcurrentPerAccount || 2;
@@ -1566,6 +1622,9 @@ export async function init() {
   }
   save();
   await Promise.all(db.accounts.map((a) => refreshAccount(a.id).catch(() => {})));
+  // An account on this PC's default login changes whenever you switch accounts in the Claude app
+  // or CLI, so check who it is every couple of minutes.
+  setInterval(() => { for (const a of db.accounts.filter((x) => x.isDefault)) refreshAccount(a.id).catch(() => {}); }, 2 * 60e3).unref();
 }
 
 export function shutdown() {

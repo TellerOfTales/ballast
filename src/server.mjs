@@ -6,7 +6,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { db, save, flush, paths } from './store.mjs';
+import { pipeline } from 'node:stream/promises';
+import { db, save, flush, paths, attachmentsDir } from './store.mjs';
 import { bus, changed } from './bus.mjs';
 import * as orch from './orchestrator.mjs';
 import { runBuild, cancelBuild, startScheduler } from './scheduler.mjs';
@@ -30,6 +31,7 @@ import * as roadmap from './roadmap.mjs';
 import * as askMode from './ask.mjs';
 import * as threads from './threads.mjs';
 import * as unblock from './unblock.mjs';
+import * as video from './video.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PUBLIC = path.join(ROOT, 'public');
@@ -47,7 +49,7 @@ const MIME = {
   '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.bmp': 'image/bmp',
   '.ico': 'image/x-icon', '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime', '.mp3': 'audio/mpeg',
   '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.wasm': 'application/wasm', '.glb': 'model/gltf-binary',
-  '.webmanifest': 'application/manifest+json',
+  '.webmanifest': 'application/manifest+json', '.mkv': 'video/x-matroska', '.m4v': 'video/mp4', '.avi': 'video/x-msvideo',
 };
 
 // ---------------------------------------------------------------------------
@@ -95,20 +97,55 @@ function cookie(req, name) {
 
 const safeEqual = (a, b) => !!a && !!b && a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
-function serveFile(res, root, rel, extraHeaders = {}) {
+// Supports Range requests, so videos can be scrubbed without downloading the whole file.
+function serveFile(res, root, rel, extraHeaders = {}, req = null) {
   const file = path.resolve(root, rel);
   if (!file.startsWith(path.resolve(root) + path.sep) && file !== path.resolve(root)) return send(res, 403, 'Forbidden');
   fs.stat(file, (err, st) => {
     if (err || !st.isFile()) return send(res, 404, 'Not found');
+    const type = MIME[path.extname(file).toLowerCase()] || 'application/octet-stream';
+    const range = req?.headers.range?.match(/^bytes=(\d*)-(\d*)$/);
+    if (range && (range[1] || range[2])) {
+      let start = range[1] ? Number(range[1]) : st.size - Number(range[2]);
+      let end = range[1] && range[2] ? Number(range[2]) : st.size - 1;
+      start = Math.max(0, start);
+      end = Math.min(end, st.size - 1);
+      if (start > end) { res.writeHead(416, { 'content-range': `bytes */${st.size}` }); return res.end(); }
+      res.writeHead(206, { 'content-type': type, 'content-length': end - start + 1, 'content-range': `bytes ${start}-${end}/${st.size}`, 'accept-ranges': 'bytes', 'cache-control': 'no-store', ...extraHeaders });
+      return fs.createReadStream(file, { start, end }).pipe(res);
+    }
     res.writeHead(200, {
-      'content-type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream',
+      'content-type': type,
       'content-length': st.size,
+      'accept-ranges': 'bytes',
       'cache-control': 'no-store',
       ...extraHeaders,
     });
     fs.createReadStream(file).pipe(res);
   });
 }
+
+// Large attachments (playtest videos) stream straight to disk instead of going through JSON.
+const MAX_UPLOAD = 8 * 1024 ** 3;
+async function saveUpload(req, gameId, name) {
+  if (gameId) must(orch.getGame(gameId), 'Unknown game');
+  const dir = gameId ? attachmentsDir(gameId) : paths.studioAttachments;
+  fs.mkdirSync(dir, { recursive: true });
+  const safe = path.basename(String(name || 'upload')).replace(/[^\w.\-]+/g, '_').slice(-80) || 'upload';
+  const file = `${Date.now().toString(36)}-${safe}`;
+  const full = path.join(dir, file);
+  if (Number(req.headers['content-length'] || 0) > MAX_UPLOAD) throw Object.assign(new Error('Files over 8 GB aren\'t supported.'), { status: 413 });
+  try {
+    await pipeline(req, fs.createWriteStream(full));
+  } catch (err) {
+    fs.rmSync(full, { force: true });
+    throw err;
+  }
+  const url = gameId ? `/files/attachments/${gameId}/${encodeURIComponent(file)}` : `/files/studio/${encodeURIComponent(file)}`;
+  return { name: safe, path: full, url, size: fs.statSync(full).size };
+}
+
+const must = (v, msg) => { if (!v) throw Object.assign(new Error(msg), { status: 400 }); return v; };
 
 // ---------------------------------------------------------------------------
 // Routes
@@ -148,6 +185,8 @@ route('POST', '/api/accounts', (_, body) => orch.addAccount(body));
 route('PATCH', '/api/accounts/:id', (p, body) => orch.updateAccount(p.id, body));
 route('DELETE', '/api/accounts/:id', (p) => orch.removeAccount(p.id));
 route('POST', '/api/accounts/:id/login', (p) => orch.loginAccount(p.id));
+route('POST', '/api/accounts/:id/detach', (p) => orch.detachAccount(p.id));
+route('POST', '/api/accounts/:id/accept-identity', (p) => orch.acceptIdentity(p.id));
 route('POST', '/api/accounts/:id/refresh', (p) => orch.refreshAccount(p.id));
 route('POST', '/api/accounts/:id/probe', (p) => {
   orch.probeAccount(p.id).catch(() => {});
@@ -171,7 +210,10 @@ route('POST', '/api/games', (_, body) => orch.createGame(body));
 route('PATCH', '/api/games/:id', (p, body) => orch.updateGame(p.id, body));
 route('DELETE', '/api/games/:id', (p) => orch.removeGame(p.id));
 route('GET', '/api/games/:id/feed', (p, _, q) => orch.readFeed(p.id, Number(q.get('limit')) || 300));
-route('POST', '/api/games/:id/notes', (p, body) => orch.postNote(p.id, body));
+// Notes with playtest videos are reviewed (frames + commentary) before they reach the team.
+route('POST', '/api/games/:id/notes', (p, body) => ((body.attachments || []).some((a) => video.isVideo(a.name)) && db.settings.videoReview !== false
+  ? video.postWithReview(p.id, body)
+  : orch.postNote(p.id, body)));
 route('POST', '/api/games/:id/attachments', (p, body) => orch.saveAttachment(p.id, body));
 route('POST', '/api/games/:id/agents', (p, body) => orch.addAgent(p.id, body));
 route('POST', '/api/games/:id/tasks', (p, body) => orch.addTask(p.id, body));
@@ -365,8 +407,11 @@ async function routeRequest(req, res, url, pathname, fileRead = false) {
       const root = roots[files[1]] || paths[files[1]];
       const rel = files[1] === 'attachments' ? files[2].replace(/^([^/]+)\//, '$1/attachments/') : files[2];
       const download = url.searchParams.has('download') ? { 'content-disposition': `attachment; filename="${path.basename(rel)}"` } : {};
-      return serveFile(res, root, rel, { 'content-security-policy': 'sandbox allow-scripts allow-forms allow-popups allow-modals allow-pointer-lock', ...download });
+      return serveFile(res, root, rel, { 'content-security-policy': 'sandbox allow-scripts allow-forms allow-popups allow-modals allow-pointer-lock', ...download }, req);
     }
+
+    const up = req.method === 'POST' && !fileRead && pathname.match(/^\/api\/(?:games\/([^/]+)|studio)\/upload$/);
+    if (up) return send(res, 200, await saveUpload(req, up[1], url.searchParams.get('name')));
 
     for (const r of routes) {
       if (r.method !== req.method) continue;
