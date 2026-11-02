@@ -35,9 +35,10 @@ async function probe(file) {
 
 const SCHEMA = {
   type: 'object',
-  required: ['summary', 'items'],
+  required: ['summary', 'items', 'commentaryUsable'],
   properties: {
     summary: { type: 'string', description: 'Two or three sentences: what this playtest shows and the main takeaways.' },
+    commentaryUsable: { type: 'boolean', description: 'true only if the transcript reads as the developer actually talking about this playtest. false if it is empty, garbled, repetitive, off-topic, or sounds like game audio, lyrics or noise misheard as speech.' },
     items: {
       type: 'array',
       description: 'Each thing worth acting on, in the order it happens.',
@@ -79,6 +80,10 @@ export async function reviewOne(game, att, note, id) {
     const wav = path.join(dir, 'audio.wav');
     await run('ffmpeg', ['-v', 'error', '-y', '-i', att.path, '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', wav]);
     try { transcript = await whisper.transcribeFile(wav, { prompt: `${game.name} playtest commentary.` }); } catch (err) { heard = `(Couldn't transcribe the audio: ${err.message})`; }
+    if (transcript.unreliable) {
+      transcript = [];
+      heard = '(The audio is mostly game sound: the transcription looped on the same line, a sign it was hearing music and effects, not a voice. Judge from the frames and the note.)';
+    }
     fs.rmSync(wav, { force: true });
   } else heard = audio ? '(Local Whisper isn\'t set up, so the commentary wasn\'t transcribed.)' : '(The video has no audio.)';
 
@@ -96,7 +101,7 @@ ${note || '(none)'}
 Frames, one every ${every} seconds (open each with Read; they're in ${dir}):
 ${frames.map((f) => `- ${f.file} at ${mmss(f.t)}`).join('\n')}
 
-${transcript.length ? `What the developer said:\n${transcript.map((s) => `[${mmss(s.start)}] ${s.text}`).join('\n')}` : heard}
+${transcript.length ? `Speech recognition of the recording's audio (it may be the developer talking, or game audio misheard as words; decide which, and only use it if it's clearly them):\n${transcript.map((s) => `[${mmss(s.start)}] ${s.text}`).join('\n')}` : heard}
 
 Look at every frame. Report what the developer pointed out (their words carry the most weight), plus anything clearly wrong you can see yourself: bugs, visual glitches, unreadable UI, things that look off against the game's direction. Don't invent problems; skip frames where nothing stands out. Give each item the time it happens and the frame that shows it.
 
@@ -112,6 +117,10 @@ ${context(game)}`,
     if (f) i.t = f.t;
   }
   out.items.sort((a, b) => a.t - b.t);
+  if (transcript.length && !out.commentaryUsable) {
+    transcript = [];
+    heard = '(The commentary didn\'t come through clearly, so it\'s left out.)';
+  }
   return { duration, frames, transcript, heard, out, account: acct.name };
 }
 
@@ -129,7 +138,7 @@ export function postWithReview(gameId, body) {
     for (const v of videos) {
       try {
         const r = await reviewOne(game, v, body.text, id);
-        sections.push(`🎬 Video review of ${v.name} (${mmss(r.duration)}; Claude watched ${r.frames.length} frames${r.transcript.length ? ' against my commentary' : ''}):\n${r.out.summary}\n\n${r.out.items.map((i) => `- [${mmss(i.t)}] [${i.area}] ${i.title}: ${i.detail}${i.frame ? ` (frame ${i.frame})` : ''}`).join('\n') || '- Nothing specific to act on.'}${r.transcript.length ? `\n\nWhat I said while playing:\n${r.transcript.map((s) => `[${mmss(s.start)}] ${s.text}`).join('\n').slice(0, 6000)}` : ''}`);
+        sections.push(`🎬 Video review of ${v.name} (${mmss(r.duration)}; Claude watched ${r.frames.length} frames${r.transcript.length ? ' against my commentary' : ''}):\n${r.out.summary}\n\n${r.out.items.map((i) => `- [${mmss(i.t)}] [${i.area}] ${i.title}: ${i.detail}${i.frame ? ` (frame ${i.frame})` : ''}`).join('\n') || '- Nothing specific to act on.'}${r.transcript.length ? `\n\nWhat Whisper heard me say (speech recognition, may have mistakes):\n${r.transcript.map((s) => `[${mmss(s.start)}] ${s.text}`).join('\n').slice(0, 6000)}` : r.heard && !/no audio/.test(r.heard) ? `\n\n${r.heard}` : ''}`);
         for (const i of r.out.items) {
           const f = r.frames.find((x) => x.file === i.frame);
           if (f && !frames.some((x) => x.path === f.path)) frames.push({ name: `${v.name.replace(/\.[^.]+$/, '')}-${mmss(f.t).replace(':', 'm')}s-${f.file}`, path: f.path, url: f.url });

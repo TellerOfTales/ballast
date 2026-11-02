@@ -116,14 +116,20 @@ export async function transcribeFile(file, { lang = 'en', prompt = '' } = {}) {
     end: s.end ?? (s.t1 ?? 0) / 100,
     text: String(s.text || '').replace(/\[[^\]]*\]/g, ' ').replace(/\s+/g, ' ').trim(),
   })).filter((s) => s.text && !NOISE.test(s.text));
-  // Over music and game noise Whisper can loop on one line; keep the first of any repeat run.
+  // Over music and game audio Whisper hallucinates speech with full confidence (its own
+  // no-speech and log-prob scores stay clean), typically one line looping. If a big share of the
+  // lines are repeats, the whole transcript is marked unreliable; repeats are dropped either way.
   const seen = new Map();
-  return segs.filter((s, i) => {
-    const key = s.text.toLowerCase().replace(/[^a-z0-9 ]/g, '');
+  let repeats = 0;
+  const kept = segs.filter((s) => {
+    const key = s.text.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
     const n = (seen.get(key) || 0) + 1;
     seen.set(key, n);
-    return n === 1 || (n <= 2 && segs[i - 1]?.text !== s.text);
+    if (n > 1) repeats++;
+    return n === 1;
   });
+  kept.unreliable = segs.length >= 6 && repeats / segs.length > 0.3;
+  return kept;
 }
 
 export async function transcribe({ audio, lang = 'en', prompt = '' }) {

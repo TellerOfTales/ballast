@@ -193,7 +193,9 @@ When you send a note with a video, Ballast reviews it before the team gets it. T
 2. transcribes what you said while playing, with timestamps (local Whisper, if it's set up);
 3. has Claude look at every frame against your commentary and your note, on the account with the most weekly room.
 
-Your note then goes out with a short summary and timestamped review notes, each tagged with its department (`[1:42] [art] Timer hard to read against the fog: ...`), the transcript of what you said, and the key frames attached. What you said carries the most weight; Claude adds what it can clearly see, and doesn't invent problems. Cloud agents get the text; agents on this PC can open the frames too.
+Your note then goes out with a short summary and timestamped review notes, each tagged with its department (`[1:42] [art] Timer hard to read against the fog: ...`), what Whisper heard you say, and the key frames attached. What you said carries the most weight; Claude adds what it can clearly see, and doesn't invent problems. Cloud agents get the text; agents on this PC can open the frames too.
+
+Over music and game sound, speech recognition makes up words with full confidence, so the transcript is only used when it's clearly you talking. If the lines mostly repeat (a sure sign it's hearing game audio), or Claude judges them garbled or off-topic, the transcript is left out and the note says the commentary didn't come through. For the best commentary, record with your mic on and the game volume down.
 
 Needs ffmpeg (`winget install ffmpeg`). Without Whisper, only the frames are reviewed.
 
