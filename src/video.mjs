@@ -80,6 +80,7 @@ export async function reviewOne(game, att, note, id) {
     const wav = path.join(dir, 'audio.wav');
     await run('ffmpeg', ['-v', 'error', '-y', '-i', att.path, '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', wav]);
     try { transcript = await whisper.transcribeFile(wav, { prompt: `${game.name} playtest commentary.` }); } catch (err) { heard = `(Couldn't transcribe the audio: ${err.message})`; }
+    if (transcript.vad && !transcript.length && !heard) heard = '(No voice in the recording, only game audio: judge from the frames and the note.)';
     if (transcript.unreliable) {
       transcript = [];
       heard = '(The audio is mostly game sound: the transcription looped on the same line, a sign it was hearing music and effects, not a voice. Judge from the frames and the note.)';

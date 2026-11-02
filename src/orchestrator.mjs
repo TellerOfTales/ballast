@@ -682,6 +682,31 @@ export function saveAttachment(gameId, { name, data }) {
   return { name: safe, path: path.join(dir, file), url: `/files/attachments/${gameId}/${encodeURIComponent(file)}` };
 }
 
+// Text attachments (profiler JSON, logs, CSV, configs, code) written into the note, for agents
+// that can't open files on this PC. Big files are trimmed with a clear marker.
+const TEXT_FILE = /\.(json|txt|md|csv|tsv|log|ya?ml|xml|ini|cfg|toml|cs|ts|tsx|js|mjs|py|gd|shader|glsl|hlsl|lua|sql|html?)$/i;
+const INLINE_FILE = 48 * 1024;
+const INLINE_TOTAL = 120 * 1024;
+export function inlineAttachments(attachments = []) {
+  let used = 0;
+  let count = 0;
+  const parts = [];
+  const left = [];
+  for (const a of attachments) {
+    let body = null;
+    try { if (TEXT_FILE.test(a.name) && a.path && fs.statSync(a.path).size < 20e6) body = fs.readFileSync(a.path, 'utf8'); } catch { /* unreadable */ }
+    if (body == null || used >= INLINE_TOTAL) { left.push(a); continue; }
+    const room = Math.min(INLINE_FILE, INLINE_TOTAL - used);
+    const cut = body.length > room;
+    const shown = cut ? body.slice(0, room) : body;
+    used += shown.length;
+    count++;
+    const lang = (a.name.match(/\.(\w+)$/)?.[1] || '').toLowerCase();
+    parts.push(`Attached file ${a.name}${cut ? ` (first ${Math.round(room / 1024)} KB of ${Math.round(body.length / 1024)} KB)` : ''}:\n\`\`\`${lang}\n${shown}${cut ? '\n… (trimmed)' : ''}\n\`\`\``);
+  }
+  return { text: parts.length ? `\n\n${parts.join('\n\n')}` : '', count, left };
+}
+
 // `source` is 'director' for notes typed in Ballast, 'studio' for cross-game notes and
 // 'review' for feedback pulled from claude.ai artifacts.
 export function postNote(gameId, { text = '', target = 'all', attachments = [], from = director(), source = 'director' }) {
@@ -694,16 +719,21 @@ export function postNote(gameId, { text = '', target = 'all', attachments = [], 
     const agent = must(getAgent(target), 'Unknown agent');
     must(agent.gameId === gameId, 'That agent is on another game.');
     feedPost(gameId, { kind: 'note', from, to: agent.name, toAgentId: agent.id, source, text, attachments });
-    enqueue(agent, { kind: 'message', direct: true, text, prompt: P.direct({ text, director: from, attachments }) });
+    // A cloud agent gets the message as text only, so its text attachments go inside it.
+    const sent = game.runner === 'cloud' ? `${text}${inlineAttachments(attachments).text}` : text;
+    enqueue(agent, { kind: 'message', direct: true, text: sent, prompt: P.direct({ text: sent, director: from, attachments }) });
     return;
   }
 
   if (game.runner === 'cloud') {
     // Cloud sessions can't triage through Ballast's board tools, so Ballast splits the note itself.
+    // They can't open files on this PC either, so text attachments travel inside the note.
+    const inline = inlineAttachments(attachments);
+    text = `${text}${inline.text}`;
     const note = { num: ++game.noteSeq, text, attachments, source };
     save();
     feedPost(gameId, { kind: 'note', num: note.num, from, source, text, attachments });
-    if (attachments.length) feedPost(gameId, { kind: 'system', text: 'Cloud sessions can’t open files on this PC; attachments stay with the note here.' });
+    if (inline.left.length) feedPost(gameId, { kind: 'system', text: `${inline.count ? `${inline.count} text file${inline.count > 1 ? 's were' : ' was'} included in the note. ` : ''}Cloud sessions can't open ${inline.left.map((a) => a.name).join(', ')} on this PC; ${inline.left.length > 1 ? 'they stay' : 'it stays'} with the note here.` });
     remote.triage(game, note).catch((err) => feedPost(gameId, { kind: 'error', text: `Triage failed: ${err.message}` })).finally(() => wakeIdle(gameId));
     return;
   }

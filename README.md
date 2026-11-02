@@ -195,7 +195,11 @@ When you send a note with a video, Ballast reviews it before the team gets it. T
 
 Your note then goes out with a short summary and timestamped review notes, each tagged with its department (`[1:42] [art] Timer hard to read against the fog: ...`), what Whisper heard you say, and the key frames attached. What you said carries the most weight; Claude adds what it can clearly see, and doesn't invent problems. Cloud agents get the text; agents on this PC can open the frames too.
 
-Over music and game sound, speech recognition makes up words with full confidence, so the transcript is only used when it's clearly you talking. If the lines mostly repeat (a sure sign it's hearing game audio), or Claude judges them garbled or off-topic, the transcript is left out and the note says the commentary didn't come through. For the best commentary, record with your mic on and the game volume down.
+Over music and game sound, speech recognition makes up words with full confidence, so the transcript is only used when it's clearly you talking. If the lines mostly repeat (a sure sign it's hearing game audio), or Claude judges them garbled or off-topic, the transcript is left out and the note says the commentary didn't come through. For the best commentary, record with your mic on and the game volume down. With the Silero voice-activity model installed (`~/.ballast/whisper/vad/ggml-silero-v6.2.0.bin`, about 1 MB, from huggingface.co/ggml-org/whisper-vad), video commentary goes through whisper-cli with voice detection, so only stretches where someone is actually talking are transcribed and game audio can't turn into made-up words.
+
+### Attachments for cloud games
+
+Cloud agents run on GitHub and can't open files on this PC, so for cloud games Ballast puts **text attachments inside the note**: profiler JSON, logs, CSV, Markdown, configs and code (up to 48 KB per file and 120 KB per note; bigger files are trimmed with a marker). The note splitter and the agents read them like the rest of your note. Videos are reviewed into text (above). Images and other files stay with the note in Ballast, and the feed says which ones.
 
 Needs ffmpeg (`winget install ffmpeg`). Without Whisper, only the frames are reviewed.
 

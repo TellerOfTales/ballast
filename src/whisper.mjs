@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import { HOME } from './store.mjs';
 
 const DIR = path.join(HOME, 'whisper');
@@ -28,17 +28,20 @@ function find(dir, test, depth = 3) {
 function locate() {
   const exe = find(path.join(DIR, 'bin'), (n) => /^whisper-server(\.exe)?$/i.test(n));
   const model = find(path.join(DIR, 'models'), (n) => /^ggml-.+\.bin$/i.test(n), 0);
-  return { exe, model };
+  // Optional voice activity detection (Silero): only stretches with a voice are transcribed, so
+  // game audio and music can't be turned into made-up speech.
+  const vad = find(path.join(DIR, 'vad'), (n) => /^ggml-silero.+\.bin$/i.test(n), 0);
+  return { exe, model, vad };
 }
 
 export function info() {
-  const { exe, model } = locate();
-  return { installed: !!(exe && model), running: !!proc, model: model ? path.basename(model) : null, error: lastError };
+  const { exe, model, vad } = locate();
+  return { installed: !!(exe && model), running: !!proc, model: model ? path.basename(model) : null, vad: vad ? path.basename(vad) : null, error: lastError };
 }
 
 function start() {
   if (ready) return ready;
-  const { exe, model } = locate();
+  const { exe, model, vad } = locate();
   if (!exe || !model) return Promise.reject(Object.assign(new Error(`Whisper isn't installed (expected it under ${DIR}).`), { status: 400 }));
   lastError = '';
   const log = fs.createWriteStream(path.join(DIR, 'server.log'));
@@ -96,8 +99,34 @@ export function warm() {
 // Whisper invents these on breaths, game audio and silence.
 const NOISE = /^(?:\[[^\]]*\]|\([^)]*\)|\*[^*]*\*|you|thank you\.?|thanks for watching!?|bye\.?|\.+|…)$/i;
 
+// With the Silero VAD model, recordings go through whisper-cli, which transcribes only the
+// stretches with a voice (the server crashes when VAD finds no speech, so it isn't used there).
+function transcribeWithVad(file, { lang, prompt, exe, model, vad }) {
+  const cli = path.join(path.dirname(exe), process.platform === 'win32' ? 'whisper-cli.exe' : 'whisper-cli');
+  const outBase = path.join(path.dirname(file), `vad-${Date.now().toString(36)}`);
+  const args = ['-m', model, '-f', file, '-l', lang, '--vad', '-vm', vad, '-vsd', '300', '-vp', '120', '-sns', '-oj', '-of', outBase, '-np'];
+  if (prompt) args.push('--prompt', prompt.slice(-400));
+  return new Promise((resolve, reject) => {
+    execFile(cli, args, { cwd: path.dirname(cli), windowsHide: true, timeout: 30 * 60e3, maxBuffer: 32 * 1024 * 1024 }, (err, _out, stderr) => {
+      const json = `${outBase}.json`;
+      try {
+        if (err && !fs.existsSync(json)) throw new Error(`whisper-cli: ${String(stderr || err.message).trim().split('\n').slice(-2).join(' ')}`);
+        const out = JSON.parse(fs.readFileSync(json, 'utf8'));
+        resolve((out.transcription || []).map((s) => ({ start: (s.offsets?.from ?? 0) / 1000, end: (s.offsets?.to ?? 0) / 1000, text: String(s.text || '').replace(/\s+/g, ' ').trim() })));
+      } catch (e) { reject(e); } finally { fs.rmSync(json, { force: true }); }
+    });
+  });
+}
+
 // A whole recording (a playtest video's commentary): timestamped segments, in seconds.
 export async function transcribeFile(file, { lang = 'en', prompt = '' } = {}) {
+  const found = locate();
+  if (found.vad && found.exe && found.model && fs.existsSync(path.join(path.dirname(found.exe), process.platform === 'win32' ? 'whisper-cli.exe' : 'whisper-cli'))) {
+    const segs = await transcribeWithVad(file, { lang, prompt, ...found });
+    const kept = segs.filter((s) => s.text && !NOISE.test(s.text));
+    kept.vad = true;
+    return kept;
+  }
   touch();
   await start();
   const form = new FormData();
