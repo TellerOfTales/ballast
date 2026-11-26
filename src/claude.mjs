@@ -37,6 +37,13 @@ export function accountEnv(account, extra = {}) {
   }
   delete env.ANTHROPIC_API_KEY; // would silently bill every account to one key
   if (!account.isDefault) env.CLAUDE_CONFIG_DIR = account.configDir;
+  // Prompt cache lifetime for Ballast's runs (Claude Code's main conversation). Agent turns are often
+  // minutes to hours apart and one-off runs of a kind repeat within the hour, so a 1-hour cache is read
+  // back far more than a 5-minute one. On a subscription Claude Code already uses 1 hour, but drops to
+  // 5 minutes once an account runs on usage credits; pinning it keeps Ballast's caches warm there too.
+  // Settings → promptCacheTtl: '1h' (default), '5m', or 'auto' to leave it to Claude Code.
+  const ttl = db.settings.promptCacheTtl || '1h';
+  if (ttl === '1h' || ttl === '5m') env.CLAUDE_CODE_PROMPT_CACHE_TTL = ttl;
   Object.assign(env, account.env || {}, extra);
   return env;
 }
@@ -95,13 +102,21 @@ export function runTurn({ args, cwd, env, prompt, onMessage }) {
   return { child, done };
 }
 
+// An account whose claude.ai sign-in has lapsed (the refresh token expired): every run and cloud
+// message fails the same way until it signs in again. Hooks (orchestrator) pause its agents.
+export const isAuthError = (text) => /OAuth session expired|could not be refreshed|need a claude\.ai sign-in|Failed to authenticate|Please run \/login|Invalid API key|authentication_error|401 Unauthorized|token (?:has )?expired/i.test(String(text || ''));
+export const authErrorHooks = [];
+const authFailed = (account, text) => { if (account && isAuthError(text)) for (const h of authErrorHooks) { try { h(account, String(text).slice(0, 300)); } catch { /* a hook's problem */ } } };
+
 // A short, tool-limited, throwaway run for Ballast's own housekeeping (limit probes,
-// artifact syncs). --safe-mode skips plugins, skills and MCP servers, so it's cheap.
-export async function runQuick({ account, args, prompt, onMessage, env = {}, cwd = path.join(paths.tmp, 'quick') }) {
+// artifact syncs). --safe-mode skips plugins, skills and MCP servers, so it's cheap. `connectors`
+// keeps the account's claude.ai connectors (e.g. Claude Docs) for the runs that need them; what the
+// run may call is still limited by its --allowedTools.
+export async function runQuick({ account, args, prompt, onMessage, env = {}, cwd = path.join(paths.tmp, 'quick'), connectors = false }) {
   fs.mkdirSync(cwd, { recursive: true });
   let result = null;
   const { done } = runTurn({
-    args: ['-p', '--output-format', 'stream-json', '--verbose', '--safe-mode', '--no-session-persistence', ...args],
+    args: ['-p', '--output-format', 'stream-json', '--verbose', ...(connectors ? [] : ['--safe-mode']), '--no-session-persistence', ...args],
     cwd,
     env: accountEnv(account, env),
     prompt,
@@ -111,6 +126,8 @@ export async function runQuick({ account, args, prompt, onMessage, env = {}, cwd
     },
   });
   const res = await done;
+  if (result?.is_error) authFailed(account, result.result);
+  else if (!result) authFailed(account, res.stderr);
   return { ...res, result };
 }
 
@@ -214,7 +231,7 @@ export async function sendCloudMessage({ account, cwd, sessionId, text }) {
   const { out } = await collect(['-p', '--output-format', 'json', '--cloud', sessionId], { account, cwd, input: text, timeoutMs: 90e3 });
   let res;
   try { res = JSON.parse(out.trim().split('\n').filter((l) => l.startsWith('{')).pop()); } catch { /* fall through */ }
-  if (!res?.ok) throw new Error(res?.error || out.trim().slice(-300) || 'Message not delivered');
+  if (!res?.ok) { const msg = res?.error || out.trim().slice(-300) || 'Message not delivered'; authFailed(account, msg); throw new Error(msg); }
   return res;
 }
 

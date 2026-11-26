@@ -101,3 +101,20 @@ export function usageSummary(days = 14) {
   cache = { at: Date.now(), value };
   return value;
 }
+
+// Every project's token spend since Ballast started recording: Ballast's own runs (triage, audits,
+// conversation mode, reviews, local agent turns) by kind, all time and the last 30 days.
+// Cloud sessions don't report tokens, so their work is estimated separately (budget.spendByGame).
+export function projectTotals() {
+  const all = readJsonlTail(usageFile, 500000, 128 * 1024 * 1024);
+  const monthStart = Date.now() - 30 * 86400e3;
+  const out = {};
+  for (const r of all) {
+    const g = (out[r.gameId || '_none'] ||= { all: bucket(), month: bucket(), kinds: {}, since: r.ts, last: r.ts });
+    add(g.all, r);
+    if (r.ts >= monthStart) add(g.month, r);
+    add(g.kinds[r.kind] ||= bucket(), r);
+    g.last = r.ts;
+  }
+  return { since: all[0]?.ts || null, games: out };
+}

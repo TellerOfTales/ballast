@@ -41,8 +41,25 @@ async function withLockRetry(cwd, fn) {
   }
 }
 
+// The network can be missing for a minute or two: right after the PC wakes from sleep, when Wi-Fi
+// reconnects, when DNS hiccups. A scheduled job that starts then shouldn't fail for it: commands
+// that reach a remote retry for about two minutes before giving up. Real errors (no access, a
+// missing repo or branch) fail at once.
+const NET_RE = /Could not resolve host|Failed to connect to|Connection (timed out|refused|reset)|Operation timed out|Could not connect to server|network is unreachable|Temporary failure in name resolution|SSL_ERROR_SYSCALL|schannel: failed to receive|The remote end hung up unexpectedly|early EOF/i;
+const NET_WAITS = [5e3, 15e3, 30e3, 60e3];
+async function withNetRetry(fn) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (!NET_RE.test(err.message) || attempt >= NET_WAITS.length) throw err;
+      await new Promise((r) => setTimeout(r, NET_WAITS[attempt]));
+    }
+  }
+}
+
 export function git(cwd, args, opts) {
-  return serial(cwd, () => withLockRetry(cwd, () => run(cwd, args, opts)));
+  return serial(cwd, () => withLockRetry(cwd, () => withNetRetry(() => run(cwd, args, opts))));
 }
 
 export const isRepo = (dir) => git(dir, ['rev-parse', '--is-inside-work-tree']).then((o) => o === 'true', () => false);
@@ -109,9 +126,10 @@ export async function remoteSlug(dir) {
   return parseGithub(url)?.slug || null;
 }
 
-export async function cloneRepo(url, dir) {
+// `reference`: a local clone of the same repo to copy objects from instead of downloading them.
+export async function cloneRepo(url, dir, reference = null) {
   fs.mkdirSync(path.dirname(dir), { recursive: true });
-  await git(path.dirname(dir), ['clone', url, dir]);
+  await git(path.dirname(dir), ['clone', ...(reference ? ['--reference-if-able', reference, '--dissociate'] : []), url, dir]);
 }
 
 // Remote branch heads, without fetching anything.
@@ -178,9 +196,30 @@ export async function publishFlatBranch(dir, branch, files, message) {
 
 // Brings the local clone to the remote base branch. It must be a real branch, not a detached
 // commit: `claude --cloud` starts the session from the clone's remote at its current branch.
+// Ballast's clone is its own, but something outside Ballast (an editor, a Claude Code session opened
+// in the folder) can still edit it. Before the forced checkout throws those edits away, they're saved
+// as a patch in .git/ballast-backups/, so they can be recovered. Returns that file, if any.
 export async function syncClone(dir, base) {
   await git(dir, ['fetch', '--no-tags', '--quiet', 'origin', base]);
+  let backup = null;
+  // "XY path" lines (git() trims the output, so the first line may have lost its leading space).
+  const entries = (await git(dir, ['status', '--porcelain']).catch(() => '')).split('\n').filter((l) => l.trim())
+    .map((l) => ({ code: l.slice(0, l.length - l.replace(/^[ MADRCU?!]{1,2}\s/, '').length).trim(), file: l.replace(/^[ MADRCU?!]{1,2}\s/, '') }));
+  // Two tracked files whose names differ only in capitals can't both exist on Windows or macOS, so one
+  // always shows as modified. That isn't anyone's edit: leave it out (the repo needs one renamed).
+  const lower = new Map();
+  for (const f of (await git(dir, ['ls-files']).catch(() => '')).split('\n')) lower.set(f.toLowerCase(), (lower.get(f.toLowerCase()) || 0) + 1);
+  const real = entries.filter((e) => (lower.get(e.file.toLowerCase()) || 0) < 2);
+  if (real.length) {
+    const diff = await git(dir, ['diff', 'HEAD', '--binary', '--', ...real.filter((e) => e.code !== '??').map((e) => e.file)]).catch(() => '');
+    const untracked = real.filter((e) => e.code === '??').map((e) => e.file);
+    const folder = path.join(dir, '.git', 'ballast-backups');
+    fs.mkdirSync(folder, { recursive: true });
+    backup = path.join(folder, `${new Date().toISOString().replace(/[:.]/g, '-')}.patch`);
+    fs.writeFileSync(backup, `${diff}\n${untracked.length ? `\n# Untracked files (not removed by the refresh, left in place):\n${untracked.map((f) => `#   ${f}`).join('\n')}\n` : ''}`);
+  }
   await git(dir, ['checkout', '--quiet', '--force', '-B', base, `origin/${base}`]);
+  return { backup, changed: real.map((e) => e.file), caseClashes: entries.filter((e) => !real.includes(e)).map((e) => e.file) };
 }
 
 export const log = (dir, from, to) =>

@@ -47,6 +47,7 @@ export async function open(parent, { brief, name, role, task_ids = [] }) {
     const t = db.tasks.find((x) => x.gameId === game.id && x.num === Number(String(num).replace('#', '')));
     if (t && (t.status === 'open' || (t.status === 'claimed' && t.claimedBy === parent.id))) {
       Object.assign(t, { status: 'claimed', claimedBy: agent.id, claimedAt: Date.now(), updatedAt: Date.now(), handedFrom: parent.id });
+      orch.logWork(t, agent.id);
       handed.push(t);
     }
   }

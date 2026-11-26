@@ -132,7 +132,7 @@ export function queueEarlierWork(gameId) {
     if (m) prFromFeed[m[1]] = m[2];
   }
   for (const t of db.tasks.filter((x) => x.gameId === gameId && !x.pr && prFromFeed[x.num])) t.pr = prFromFeed[t.num];
-  for (const t of db.tasks.filter((x) => x.gameId === gameId && x.status === 'done' && !x.review)) {
+  for (const t of db.tasks.filter((x) => x.gameId === gameId && x.status === 'done' && !x.cancelled && !x.review)) {
     t.discipline ||= disciplineOf(t.title);
     t.pr ||= String(t.summary || '').match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/)?.[0];
     if (policyFor(game, t.discipline) === 'skip') {

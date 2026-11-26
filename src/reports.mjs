@@ -4,6 +4,7 @@ import { db, save } from './store.mjs';
 import { changed } from './bus.mjs';
 import * as orch from './orchestrator.mjs';
 import { usageSummary } from './usage.mjs';
+import * as pace from './pace.mjs';
 
 const hm = (d) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 
@@ -71,12 +72,14 @@ export async function report({ reason = 'scheduled' } = {}) {
 function text(entry) {
   const lines = entry.accounts.map((a) => {
     const s = a.session ? `session ${a.session.pct}% (resets in ${until(a.session.resetsAt)})` : 'session ?';
-    const w = a.weekly ? `weekly ${a.weekly.pct}% (resets ${until(a.weekly.resetsAt)})` : 'weekly ?';
+    const w = a.weekly ? `weekly ${a.weekly.pct}% (resets ${until(a.weekly.resetsAt)}${weeklyPace(a, entry.at) ? `; ${weeklyPace(a, entry.at)}` : ''})` : 'weekly ?';
     const flag = a.status === 'ok' ? '' : ` [${a.status.toUpperCase()}]`;
     return `• ${a.name}${flag}: ${s}, ${w}, ${(a.tokensToday / 1000).toFixed(1)}k tokens today`;
   });
-  const best = [...entry.accounts].filter((a) => a.status === 'ok' && a.weekly).sort((a, b) => a.weekly.pct - b.weekly.pct)[0];
-  return `Ballast usage report ${new Date(entry.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}\n${lines.join('\n')}${best ? `\nMost headroom: ${best.name}` : ''}`;
+  // Reset-aware: the account with the most weekly budget to spend per hour before its reset.
+  const urgency = (a) => (100 - a.weekly.pct) / Math.max(0.5, (a.weekly.resetsAt - entry.at) / 3600e3);
+  const first = [...entry.accounts].filter((a) => a.status === 'ok' && a.weekly?.resetsAt).sort((a, b) => urgency(b) - urgency(a))[0];
+  return `Ballast usage report ${new Date(entry.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}\n${lines.join('\n')}${first ? `\nSpend first: ${first.name} (${100 - first.weekly.pct}% left, resets ${until(first.weekly.resetsAt)})` : ''}`;
 }
 
 async function share(entry) {
@@ -97,4 +100,10 @@ export function tick() {
   if (!every || running || !inWorkHours()) return;
   const last = db.usageReports.at(-1)?.at || 0;
   if (Date.now() - last >= every) report().catch(() => {});
+}
+
+// "57 points behind pace, ~57% would go unused at this rate" for one account in a report entry.
+function weeklyPace(a, at) {
+  if (!a.weekly?.resetsAt) return '';
+  return pace.describeWeekly({ weekly: pace.windowPace({ utilization: a.weekly.pct / 100, resetsAt: a.weekly.resetsAt }, pace.WEEK_MS, at) });
 }

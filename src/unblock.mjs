@@ -196,7 +196,7 @@ export function resolve(id, { note = '', close = false } = {}) {
     if (!t) continue;
     delete t.human;
     if (close || iv.closeSuggested) {
-      orch.updateTask(t.id, { status: 'done', summary: `Closed: ${iv.closeSuggested ? 'no longer needed' : iv.title}.${iv.note ? ` ${iv.note}` : ''}` });
+      orch.updateTask(t.id, { status: 'done', cancelled: !!iv.closeSuggested, summary: `Closed: ${iv.closeSuggested ? 'no longer needed' : iv.title}.${iv.note ? ` ${iv.note}` : ''}` });
       continue;
     }
     if (t.status !== 'blocked') continue;

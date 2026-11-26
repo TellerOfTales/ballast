@@ -22,6 +22,12 @@ import * as targets from './targets.mjs';
 import * as subagents from './subagents.mjs';
 import * as delegates from './delegates.mjs';
 import * as policy from './policy.mjs';
+import * as pace from './pace.mjs';
+import * as away from './away.mjs';
+import * as jungledocs from './jungledocs.mjs';
+import * as worksplit from './worksplit.mjs';
+import * as gates from './gates.mjs';
+import * as focus from './focus.mjs';
 import * as play from './play.mjs';
 import * as roadmap from './roadmap.mjs';
 
@@ -51,9 +57,19 @@ export const PRIORITIES = ['low', 'normal', 'high', 'urgent'];
 const prio = (t) => t.priority ?? 1;
 const byPriority = (a, b) => prio(b) - prio(a) || a.num - b.num;
 const openTasks = (gameId) => gameTasks(gameId).filter((t) => t.status === 'open').sort(byPriority);
+// What this game's agents may take: its own open tickets that Ballast does (not Jungle Studio's
+// share), plus repo-wide maintenance on any game in the same repo.
+export function claimable(gameId) {
+  const game = getGame(gameId);
+  if (!game) return [];
+  const repo = worksplit.repoKey(game);
+  const shared = repo ? db.tasks.filter((t) => t.repoWide && t.status === 'open' && t.gameId !== gameId && t.repo === repo) : [];
+  return [...openTasks(gameId).filter((t) => worksplit.forBallast(game, t) && gates.claimOk(game, t) && focus.claimOk(game, t)), ...shared].sort(byPriority);
+}
 const heldTask = (agentId) => db.tasks.find((t) => t.claimedBy === agentId && t.status === 'claimed');
 const heldTasks = (agentId) => db.tasks.filter((t) => t.claimedBy === agentId && t.status === 'claimed');
-const isLimited = (acct) => !!(acct?.limitedUntil && acct.limitedUntil > Date.now());
+// A signed-out account (expired claude.ai sign-in) is out of play like a limited one until it's repaired.
+const isLimited = (acct) => !!((acct?.limitedUntil && acct.limitedUntil > Date.now()) || acct?.authBroken);
 // Game life cycle: active → shipped (still takes your notes, no autopilot) → archived (nothing runs).
 // Paused and archived games only run messages sent straight to one agent.
 export const GAME_STATUSES = ['active', 'paused', 'shipped', 'archived'];
@@ -61,8 +77,13 @@ const isPaused = (game) => game?.status === 'paused' || game?.status === 'archiv
 const isActive = (game) => !game?.status || game.status === 'active';
 // The game's usage cap and rules for this agent's account right now.
 const fxFor = (agent) => policy.effects(getGame(agent.gameId), getAccount(agent.accountId));
-export const claimBatchFor = (agent) => (fxFor(agent).oneTask ? 1 : getGame(agent.gameId)?.claimBatch || 1);
-export const policyNoteFor = (agent) => policy.promptNote(fxFor(agent), getAccount(agent.accountId));
+// An account whose weekly limit resets within a day with budget left takes one more ticket per claim.
+export const claimBatchFor = (agent) => {
+  if (fxFor(agent).oneTask) return 1;
+  const base = getGame(agent.gameId)?.claimBatch || 1;
+  return pace.accountPace(getAccount(agent.accountId)).expiring ? Math.min(5, base + 1) : base;
+};
+export const policyNoteFor = (agent) => away.note() + policy.promptNote(fxFor(agent), getAccount(agent.accountId)) + worksplit.agentNote(getGame(agent.gameId)) + gates.agentNote(getGame(agent.gameId)) + focus.agentNote(getGame(agent.gameId));
 
 // Highest utilization across the account's limit windows (session, weekly, per-model), 0..1.
 export function utilization(acct) {
@@ -82,6 +103,26 @@ function must(value, message) {
 
 export const publicAgentStatus = (agent) => agentStatus(agent);
 
+// Read-only view of an agent's live state for diagnostics: what it's doing, what's queued and why it
+// waits, its account's load, and any usage-rule change held back to keep its prompt cache.
+export function agentDiagnostics(agent) {
+  const r = R(agent.id);
+  const acct = getAccount(agent.accountId);
+  const game = getGame(agent.gameId);
+  return {
+    status: agentStatus(agent),
+    running: !!r.child, runningSince: r.child ? r.startedAt : null, setup: !!r.setup, paused: !!r.paused, error: r.error || null,
+    queue: r.queue.map((i) => ({ kind: i.kind, direct: !!i.direct })),
+    waiting: waitReason(agent),
+    heldTasks: heldTasks(agent.id).map((t) => `#${t.num}`),
+    cloud: agent.cloud ? { since: agent.cloud.since, kind: agent.cloud.kind, items: (agent.cloud.items || []).map((i) => `${i.key}${i.done ? ' (reported)' : ''}`), url: agent.cloud.url } : null,
+    cloudLinked: !!agent.cloudLink, dispatching: remote.isDispatching(agent.id),
+    account: acct ? { name: acct.name, loggedIn: !!acct.loggedIn, limited: isLimited(acct), overGuard: overGuard(acct), load: accountLoad(acct.id), max: acct.maxConcurrent || db.settings.maxConcurrentPerAccount || 2 } : null,
+    policy: game && acct ? (({ stop, capHit, oneTask, noClaims, noFanout, model, effort }) => ({ stop, capHit, oneTask, noClaims, noFanout, model, effort }))(policy.effects(game, acct)) : null,
+    cacheDeferred: agent.cacheDeferred || null,
+  };
+}
+
 function agentStatus(agent) {
   const r = R(agent.id);
   if (agent.retired && !r.child && !r.queue.length) return 'done';
@@ -96,6 +137,22 @@ function agentStatus(agent) {
   return 'idle';
 }
 
+// Why a queued agent hasn't started: what it will do, and what it waits on (the same checks as pump()).
+function waitReason(agent) {
+  const r = R(agent.id);
+  if (!r.queue.length || r.child || agent.cloud) return null;
+  const item = r.queue[0];
+  const what = item.kind === 'next' ? 'take its next ticket' : item.direct ? 'deliver your message' : `run its ${item.kind}`;
+  const game = getGame(agent.gameId);
+  const acct = getAccount(agent.accountId);
+  if (!acct?.loggedIn) return { what, why: `${acct?.name || 'Its account'} is signed out`, short: 'signed out' };
+  if (isPaused(game) && !item.direct) return { what, why: 'the game is paused', short: 'game paused' };
+  const max = acct.maxConcurrent || db.settings.maxConcurrentPerAccount || 2;
+  const load = accountLoad(acct.id);
+  if (load >= max) return { what, why: `a free ${acct.name} slot: ${load} of ${max} sessions on that account are running`, short: `${acct.name} full ${load}/${max}`, account: acct.id };
+  return { what, why: 'its turn (starting now)', short: 'starting' };
+}
+
 export function publicState() {
   return {
     settings: db.settings,
@@ -103,13 +160,14 @@ export function publicState() {
     claudePath: claude.resolveClaude(),
     home: paths.state.replace(/state\.json$/, ''),
     fileKey: db.secrets.fileKey,
-    accounts: db.accounts.map((a) => ({ ...a, running: accountLoad(a.id), limited: isLimited(a), guarded: overGuard(a), probing: probing.has(a.id), syncing: cloud.isSyncing(a.id) })),
+    accounts: db.accounts.map((a) => ({ ...a, running: accountLoad(a.id), limited: isLimited(a), guarded: overGuard(a), probing: probing.has(a.id), syncing: cloud.isSyncing(a.id), pace: pace.accountPace(a) })),
     cloudArtifacts: db.cloudArtifacts,
     cloudIndex: db.cloudIndex,
     inbox: db.inbox,
     deptNotes: db.deptNotes,
     targets: db.targets,
     usageReports: db.usageReports.slice(-20),
+    jungleDocs: jungledocs.publicState(),
     disciplines: review.DISCIPLINES.map(({ id, label }) => ({ id, label })),
     policy: { actions: policy.ACTIONS, metrics: policy.METRICS, presets: policy.PRESETS },
     audits: db.audits,
@@ -117,11 +175,12 @@ export function publicState() {
     digests: db.digests.slice(-7),
     weeklyReports: db.weeklyReports.slice(-4),
     roadmaps: Object.fromEntries(db.games.filter((g) => g.roadmap).map((g) => [g.id, roadmap.publicRoadmap(g)])),
+    focus: Object.fromEntries(db.games.filter((g) => g.focuses?.length).map((g) => [g.id, focus.publicFocus(g)])),
     levels: roadmap.LEVELS,
     games: db.games,
     agents: db.agents.map((a) => {
       const r = R(a.id);
-      return { ...a, status: agentStatus(a), queue: r.queue.length, error: r.error, startedAt: r.child ? r.startedAt : a.cloud?.since || null, subagents: subagents.publicFor(a.id), subagentLimit: subagents.limitFor(getGame(a.gameId)), delegateLimit: delegates.limitFor(getGame(a.gameId)) };
+      return { ...a, status: agentStatus(a), queue: r.queue.length, waiting: waitReason(a), error: r.error, startedAt: r.child ? r.startedAt : a.cloud?.since || null, subagents: subagents.publicFor(a.id), subagentLimit: subagents.limitFor(getGame(a.gameId)), delegateLimit: delegates.limitFor(getGame(a.gameId)) };
     }),
     // Older records predate disciplines; derive one so department tabs can file them.
     tasks: db.tasks.map((t) => (t.discipline ? t : { ...t, discipline: review.disciplineOf(t.title) })),
@@ -175,6 +234,70 @@ export async function addAccount({ name, useDefault }) {
   return acct;
 }
 
+// The first failure from an expired sign-in pauses the account's agents (instead of retrying every
+// second) and says so once on each of its games; Repair sign-in (repairAccount) brings it back.
+export function markAuthBroken(acct, error) {
+  if (!acct || acct.authBroken) return;
+  acct.authBroken = { at: Date.now(), error };
+  acct.loggedIn = false;
+  for (const gameId of new Set(db.agents.filter((a) => a.accountId === acct.id).map((a) => a.gameId))) {
+    feedPost(gameId, { kind: 'error', text: `${acct.name}'s claude.ai sign-in has expired (${error.slice(0, 160)}). Its agents are paused so they stop failing. Press Repair sign-in on ${acct.name} (Studio, or this game's header).` });
+  }
+  save();
+  changed();
+}
+claude.authErrorHooks.push((acct, error) => markAuthBroken(db.accounts.find((a) => a.id === acct.id) || acct, error));
+
+// Repair sign-in: first a real call, since a lapse can be passing; if it still fails, a terminal to
+// sign the account in again, then a check every few seconds until a real call works.
+async function signInWorks(acct) {
+  const { result, stderr } = await claude.runQuick({ account: acct, args: ['--model', 'haiku', '--tools', '', '--max-turns', '1'], prompt: 'Reply with the single word ok.' });
+  const text = result?.is_error ? result.result : !result ? stderr : '';
+  return { ok: !!result && !result.is_error, error: String(text || '').slice(0, 300) };
+}
+const repairing = new Map();
+export async function repairAccount(id) {
+  const acct = must(getAccount(id), 'Unknown account');
+  if (repairing.has(acct.id)) return { status: 'waiting', message: 'A sign-in window is already open for this account. Finish signing in there; Ballast checks every few seconds.' };
+  // The test runs while the account stays marked, so a failing test doesn't post the notice again.
+  const first = await signInWorks(acct);
+  if (first.ok) { authRepaired(acct, true); return { status: 'ok', message: `${acct.name} is signed in and working.` }; }
+  if (!acct.authBroken) markAuthBroken(acct, first.error || 'Sign-in failed');
+  const res = claude.openTerminal({ account: acct, commandArgs: ['auth', 'login'], title: `Ballast - repair sign-in for ${acct.name}` });
+  let polls = 0;
+  const timer = setInterval(async () => {
+    polls++;
+    const cred = credentialsTime(acct);
+    if (polls > 120 || (!cred.changed && polls % 6)) { if (polls > 120) { clearInterval(timer); repairing.delete(acct.id); } return; }
+    const t = await signInWorks(acct).catch((err) => ({ ok: false, error: err.message }));
+    if (t.ok) { clearInterval(timer); repairing.delete(acct.id); authRepaired(acct, true); }
+  }, 5000);
+  repairing.set(acct.id, timer);
+  return { ...res, status: 'login', message: `Sign ${acct.name} in again in the window that opened (${acct.email || 'its claude.ai account'}). Ballast checks every few seconds and starts its agents again once a real call works.` };
+}
+// The sign-in file's change is the cue to test again (a test every 30 s otherwise).
+function credentialsTime(acct) {
+  const dir = acct.isDefault ? path.join(os.homedir(), '.claude') : acct.configDir;
+  let t = 0;
+  for (const f of ['.credentials.json', 'credentials.json']) { try { t = Math.max(t, fs.statSync(path.join(dir, f)).mtimeMs); } catch { /* none */ } }
+  const changed = !!t && t !== acct.credSeen;
+  acct.credSeen = t;
+  return { changed };
+}
+function authRepaired(acct, announce) {
+  const was = !!acct.authBroken && announce;
+  delete acct.authBroken;
+  acct.loggedIn = true;
+  save();
+  refreshAccount(acct.id).catch(() => {});
+  if (was) for (const gameId of new Set(db.agents.filter((a) => a.accountId === acct.id).map((a) => a.gameId))) {
+    for (const a of db.agents.filter((x) => x.accountId === acct.id && x.gameId === gameId)) R(a.id).error = null;
+    feedPost(gameId, { kind: 'system', text: `${acct.name} is signed in again. Its agents are back to work.` });
+    setTimeout(() => wakeIdle(gameId), 300);
+  }
+  changed();
+}
+
 export async function refreshAccount(id) {
   const acct = must(getAccount(id), 'Unknown account');
   const s = await claude.authStatus(acct);
@@ -186,7 +309,7 @@ export async function refreshAccount(id) {
   const mismatch = !!(found && expected && found.toLowerCase() !== expected.toLowerCase());
   const was = acct.signedInAs;
   Object.assign(acct, {
-    loggedIn: !!s.loggedIn && !mismatch,
+    loggedIn: !!s.loggedIn && !mismatch && !acct.authBroken, // the CLI still says "logged in" when the sign-in has lapsed
     expectedEmail: expected,
     email: expected,
     signedInAs: mismatch ? found : null,
@@ -329,6 +452,8 @@ export async function createGame({ name, repoPath, isolation = 'worktree', brief
     status: 'active',
     priority: 2,
     claimBatch: 2, // tasks an agent claims at once
+    checkCommand: '', // what agents run before handing work in (e.g. npm run check)
+    modelRoutes: [{ tags: ['docs', 'backend', 'qa'], model: 'sonnet' }], // tagged tickets go to agents on that model
     coordinatorFile: '', // repo file where the coordinating agent records each note's breakdown
     briefSuggestion: '',
     leadAgentId: null,
@@ -375,7 +500,12 @@ export function updateGame(id, patch) {
     if (patch[key] === '' || patch[key] === null) delete game[key];
     else game[key] = Math.min(16, Math.max(0, Number(patch[key]) || 0));
   }
-  for (const key of ['name', 'permissionMode', 'model', 'effort', 'leadAgentId', 'coordinatorFile']) {
+  if (patch.modelRoutes !== undefined) game.modelRoutes = normalizeRoutes(patch.modelRoutes);
+  // Work split with Jungle Studio, and how strictly Ballast keeps to Jungle Engine (src/worksplit.mjs).
+  if (patch.split !== undefined) { game.split = worksplit.normalizeSplit(patch.split); setTimeout(() => wakeIdle(game.id), 300); }
+  if (patch.jungleMode !== undefined) game.jungleMode = patch.jungleMode === 'strict' ? 'strict' : 'guided';
+  if (patch.jungleAllow !== undefined) game.jungleAllow = (Array.isArray(patch.jungleAllow) ? patch.jungleAllow : String(patch.jungleAllow).split(/[\n,]+/)).map((x) => x.trim()).filter(Boolean).slice(0, 20);
+  for (const key of ['name', 'permissionMode', 'model', 'effort', 'leadAgentId', 'coordinatorFile', 'checkCommand']) {
     if (patch[key] !== undefined) game[key] = typeof patch[key] === 'string' ? patch[key].trim() : patch[key];
   }
   if (patch.autopilot !== undefined) {
@@ -533,6 +663,7 @@ export function updateAgent(id, patch) {
   const agent = must(getAgent(id), 'Unknown agent');
   if (patch.name?.trim()) agent.name = patch.name.trim();
   if (patch.role !== undefined) agent.role = patch.role.trim();
+  if (patch.model !== undefined) agent.model = String(patch.model || '').trim().toLowerCase();
   save();
   changed();
   return agent;
@@ -707,9 +838,13 @@ export function inlineAttachments(attachments = []) {
   return { text: parts.length ? `\n\n${parts.join('\n\n')}` : '', count, left };
 }
 
+// Called with (game, note) for every note to the whole team (the feedback check listens here).
+export const onNote = [];
+const noteSent = (game, note) => { for (const h of onNote) { try { h(game, note); } catch { /* a listener's problem */ } } };
+
 // `source` is 'director' for notes typed in Ballast, 'studio' for cross-game notes and
 // 'review' for feedback pulled from claude.ai artifacts.
-export function postNote(gameId, { text = '', target = 'all', attachments = [], from = director(), source = 'director' }) {
+export function postNote(gameId, { text = '', target = 'all', attachments = [], from = director(), source = 'director', sectionId = null }) {
   const game = must(getGame(gameId), 'Unknown game');
   must(game.status !== 'archived', `${game.name} is archived. Restore it from the Studio first.`);
   text = text.trim();
@@ -730,17 +865,19 @@ export function postNote(gameId, { text = '', target = 'all', attachments = [], 
     // They can't open files on this PC either, so text attachments travel inside the note.
     const inline = inlineAttachments(attachments);
     text = `${text}${inline.text}`;
-    const note = { num: ++game.noteSeq, text, attachments, source };
+    const note = { num: ++game.noteSeq, text, attachments, source, sectionId };
     save();
-    feedPost(gameId, { kind: 'note', num: note.num, from, source, text, attachments });
+    feedPost(gameId, { kind: 'note', num: note.num, from, source, text, attachments, sectionId });
     if (inline.left.length) feedPost(gameId, { kind: 'system', text: `${inline.count ? `${inline.count} text file${inline.count > 1 ? 's were' : ' was'} included in the note. ` : ''}Cloud sessions can't open ${inline.left.map((a) => a.name).join(', ')} on this PC; ${inline.left.length > 1 ? 'they stay' : 'it stays'} with the note here.` });
     remote.triage(game, note).catch((err) => feedPost(gameId, { kind: 'error', text: `Triage failed: ${err.message}` })).finally(() => wakeIdle(gameId));
+    noteSent(game, note);
     return;
   }
 
   const note = { num: ++game.noteSeq, text, attachments, source };
   save();
   feedPost(gameId, { kind: 'note', num: note.num, from, source, text, attachments });
+  noteSent(game, note);
   if (isPaused(game)) feedPost(gameId, { kind: 'system', text: 'This game is paused; the note runs when you resume it.' });
   const triager = pickTriager(game);
   if (!triager) {
@@ -894,16 +1031,61 @@ async function cloudFollowUp(agent, item) {
 }
 
 // Cloud agents are handed a task by Ballast instead of claiming one themselves.
+// ---------------------------------------------------------------------------
+// Models by ticket type. A game routes tagged tickets ("[docs] …") to a model; an agent runs one
+// model (its own setting, else the game's). A ticket meant for another model is left for an agent
+// on that model while one can take it, and taken by anyone otherwise, so nothing waits on routing.
+
+const tagWords = (t) => (String(t.title || '').match(/^\s*\[([^\]]+)\]/)?.[1] || '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+
+export function normalizeRoutes(routes) {
+  return (Array.isArray(routes) ? routes : []).map((r) => ({
+    tags: [...new Set((Array.isArray(r?.tags) ? r.tags : String(r?.tags || '').split(/[\s,]+/)).map((x) => String(x).toLowerCase().trim()).filter(Boolean))],
+    model: String(r?.model || '').toLowerCase().trim(),
+  })).filter((r) => r.tags.length && r.model);
+}
+
+// '' means the game's default model.
+export function modelForTask(game, t) {
+  const words = tagWords(t);
+  return (game?.modelRoutes || []).find((r) => r.tags.some((x) => words.includes(x)))?.model || '';
+}
+const tierOf = (agent, game) => (agent.model && agent.model !== game?.model ? agent.model : '');
+
+// Could this agent take board work right now?
+function canTakeWork(a, game) {
+  if (a.retired || a.parentId) return false;
+  if (game.runner === 'cloud' && !a.cloudLink) return false;
+  const acct = getAccount(a.accountId);
+  if (!acct || isLimited(acct) || overGuard(acct)) return false;
+  const fx = policy.effects(game, acct);
+  return !fx.stop && !fx.noClaims;
+}
+
+// True when the ticket should wait for an agent on its model instead of this one.
+export function reservedElsewhere(game, t, agent) {
+  const want = modelForTask(game, t);
+  if (want === tierOf(agent, game)) return false;
+  return gameAgents(game.id).some((a) => a.id !== agent.id && tierOf(a, game) === want && canTakeWork(a, game));
+}
+
+// Each claim is logged on the ticket ({ a: agent, from }) so the Budget tab can tell who worked it when.
+export const logWork = (t, agentId) => { (t.work ||= []).push({ a: agentId, from: Date.now() }); if (t.work.length > 20) t.work.splice(0, t.work.length - 20); };
+
 export function claimForAgent(agent) {
   // Tasks assigned to this agent come first, then the highest priority; role fit only breaks
-  // ties within a priority. Tasks assigned to someone else are off limits.
+  // ties within a priority. Tasks assigned to someone else, or waiting for an agent on another
+  // model, are off limits.
+  const game = getGame(agent.gameId);
   const role = agent.role?.toLowerCase().split(/[^a-z]+/).filter(Boolean) || [];
   const fits = (t) => role.some((w) => t.title.toLowerCase().includes(w));
-  const open = openTasks(agent.gameId).filter((t) => !t.assignee || t.assignee === agent.id)
-    .sort((a, b) => (b.assignee === agent.id) - (a.assignee === agent.id) || prio(b) - prio(a) || fits(b) - fits(a) || a.num - b.num);
+  const isAway = away.isAway();
+  const open = claimable(agent.gameId).filter((t) => (!t.assignee || t.assignee === agent.id) && (t.assignee === agent.id || (!reservedElsewhere(game, t, agent) && !(isAway && away.needsDirector(game, t)))))
+    .sort((a, b) => (b.assignee === agent.id) - (a.assignee === agent.id) || (prio(b) === 3) - (prio(a) === 3) || focus.rank(game, b) - focus.rank(game, a) || gates.focusRank(game, b) - gates.focusRank(game, a) || prio(b) - prio(a) || fits(b) - fits(a) || a.num - b.num);
   const fit = open[0];
   if (!fit) return null;
   Object.assign(fit, { status: 'claimed', claimedBy: agent.id, claimedAt: Date.now(), updatedAt: Date.now() });
+  logWork(fit, agent.id);
   save();
   changed();
   return fit;
@@ -953,6 +1135,25 @@ function writeAgentFiles(agent, game) {
   return { sysFile, mcpFile, settingsFile };
 }
 
+// Each model (and, on older models, each effort level) keeps its own prompt cache, so switching a
+// resumed session re-reads its whole conversation uncached. A switch that comes from a usage rule
+// therefore waits while the session's cache is still warm, and applies with the next session or once
+// the cache has gone cold, when it costs nothing extra. A rule that flaps around its threshold can't
+// force repeated full re-reads. Changes the director makes (game or agent model) apply at once.
+const cacheTtlMs = () => ((db.settings.promptCacheTtl || '1h') === '5m' ? 5 : 60) * 60e3;
+function cacheSafe(agent, key, base, rule) {
+  const last = agent.cacheSettings?.[key];
+  const wanted = rule || base;
+  const warm = agent.sessionId && agent.lastActive && Date.now() - agent.lastActive < cacheTtlMs();
+  if (warm && last && last.base === base && last.rule !== rule && last.used !== wanted) {
+    agent.cacheDeferred = { ...(agent.cacheDeferred || {}), [key]: wanted };
+    return last.used;
+  }
+  agent.cacheSettings = { ...(agent.cacheSettings || {}), [key]: { base, rule, used: wanted } };
+  if (agent.cacheDeferred) delete agent.cacheDeferred[key];
+  return wanted;
+}
+
 function startTurn(agent, acct, item) {
   const game = getGame(agent.gameId);
   const r = R(agent.id);
@@ -969,7 +1170,7 @@ function startTurn(agent, acct, item) {
   if (agent.sessionId && (agent.briefRevSeen || 0) < game.briefRev && game.brief?.trim()) prompt = P.briefUpdate(game.brief) + prompt;
   if (item.lost) prompt = P.sessionLost() + prompt;
   const fx = policy.effects(game, acct);
-  prompt = policy.promptNote(fx, acct) + prompt;
+  prompt = away.note() + policy.promptNote(fx, acct) + worksplit.agentNote(game) + gates.agentNote(game) + focus.agentNote(game) + jungledocs.agentNote(game, { local: true }) + prompt;
   agent.briefRevSeen = game.briefRev;
 
   const attachDir = attachmentsDir(game.id);
@@ -983,9 +1184,10 @@ function startTurn(agent, acct, item) {
     '--settings', settingsFile,
     '--add-dir', attachDir, paths.studioAttachments,
     '--allowedTools', 'mcp__ballast',
+    ...jungledocs.forRun(game).args,
   ];
-  const model = fx.model || game.model;
-  const effort = fx.effort || game.effort;
+  const model = cacheSafe(agent, 'model', agent.model || game.model || '', fx.model || '');
+  const effort = cacheSafe(agent, 'effort', game.effort || '', fx.effort || '');
   if (model) args.push('--model', model);
   if (effort) args.push('--effort', effort);
   if (agent.sessionId) {
@@ -1074,6 +1276,7 @@ export function updateUsage(acct, info) {
     updatedAt: Date.now(),
   };
   if (info.status === 'rejected') markLimited(acct, (info.resetsAt || 0) * 1000 || Date.now() + 3600e3, 'usage limit');
+  pace.logReading(acct);
   for (const game of db.games) syncPolicy(game, acct);
   save();
   changed();
@@ -1210,7 +1413,7 @@ function afterTurn(agent, game, item, ok) {
   const held = heldTask(agent.id);
   if (held) {
     if (item.kind === 'nudge') {
-      Object.assign(held, { status: 'blocked', blockReason: 'Agent ended its turn twice without finishing.', updatedAt: Date.now() });
+      Object.assign(held, { status: 'blocked', blockReason: 'Agent ended its turn twice without finishing.', blockedAt: Date.now(), updatedAt: Date.now() });
       feedPost(game.id, { kind: 'task', from: agent.name, agentId: agent.id, text: `Blocked #${held.num} ${held.title}: ended its turn without finishing.` });
       save();
     } else if (game.autopilot && !(held.nudges > 0)) {
@@ -1222,8 +1425,18 @@ function afterTurn(agent, game, item, ok) {
 
   const fx = fxFor(agent);
   if (!isActive(game) || overGuard(getAccount(agent.accountId)) || fx.stop || fx.noClaims) return;
-  if (game.autopilot && !R(agent.id).queue.length && openTasks(game.id).length && autopilotBudget(game)) {
-    enqueue(agent, { kind: 'next', prompt: P.nextTask({ openCount: openTasks(game.id).length, batch: claimBatchFor(agent) }) }, { noPump: true });
+  if (game.autopilot && !R(agent.id).queue.length && claimable(game.id).length && autopilotBudget(game)) {
+    enqueue(agent, { kind: 'next', prompt: P.nextTask({ openCount: claimable(game.id).length, batch: claimBatchFor(agent) }) }, { noPump: true });
+  }
+}
+
+// An automatic turn that never started (a failed hand-off, nothing left to claim) gives its turn
+// back, so failures can't use up a game's day.
+export function refundTurn(game) {
+  if (game?.autoTurns?.day === new Date().toDateString() && game.autoTurns.count > 0) {
+    game.autoTurns.count--;
+    if (game.autoTurns.warned && game.autoTurns.count < (db.settings.autopilotDailyTurns || 150)) game.autoTurns.warned = false;
+    save();
   }
 }
 
@@ -1247,10 +1460,11 @@ function autopilotBudget(game) {
 export function wakeIdle(gameId, force = false) {
   const game = getGame(gameId);
   if (!game || isPaused(game) || (!force && (!game.autopilot || !isActive(game)))) return 0;
-  let open = openTasks(gameId).length;
+  let open = claimable(gameId).length;
   let woken = 0;
-  // Freshest accounts first, so work drains toward whoever has the most headroom.
-  const agents = gameAgents(gameId).sort((a, b) => utilization(getAccount(a.accountId)) - utilization(getAccount(b.accountId)));
+  // Reset-aware: the account with the most weekly budget to spend per hour before its reset goes
+  // first (a weekly limit unused at its reset is lost), then the one with the lowest session use.
+  const agents = gameAgents(gameId).sort((a, b) => pace.compareAccounts(getAccount(a.accountId), getAccount(b.accountId)));
   for (const a of agents) {
     if (open <= 0) break;
     const r = R(a.id);
@@ -1265,7 +1479,7 @@ export function wakeIdle(gameId, force = false) {
     if (force) r.paused = false;
     if (!force && !autopilotBudget(game)) break;
     const batch = claimBatchFor(a);
-    enqueue(a, { kind: 'next', prompt: P.nextTask({ openCount: openTasks(gameId).length, batch }) }, { noPump: true });
+    enqueue(a, { kind: 'next', prompt: P.nextTask({ openCount: claimable(gameId).length, batch }) }, { noPump: true });
     open -= batch; // each woken agent claims a batch
     woken++;
   }
@@ -1360,11 +1574,17 @@ export function updateTask(id, patch) {
     if (t.priority === 3 && was < 3 && t.status === 'open') setTimeout(() => wakeIdle(t.gameId), 300);
   }
   if (patch.status && patch.status !== t.status) {
+    // Time spent blocked, for the Budget tab's waiting figures.
+    if (t.status === 'blocked' && t.blockedAt) { t.blockedMs = (t.blockedMs || 0) + (Date.now() - t.blockedAt); t.blockedAt = null; }
+    if (patch.status === 'blocked') { t.blockedAt = Date.now(); t.everBlocked = true; }
     t.status = patch.status;
     if (patch.status === 'open') Object.assign(t, { claimedBy: null, nudges: 0, blockReason: null });
     if (patch.status === 'open') setTimeout(() => wakeIdle(t.gameId), 300);
     if (patch.status === 'done') Object.assign(t, { doneAt: Date.now(), doneBy: patch.doneBy || t.claimedBy || null });
   }
+  // Cancelled tickets are closed like done ones (nothing waits on them), just flagged.
+  if (t.status === 'done' && patch.cancelled !== undefined) t.cancelled = !!patch.cancelled;
+  if (t.status !== 'done') delete t.cancelled;
   t.updatedAt = Date.now();
   save();
   changed();
@@ -1420,10 +1640,15 @@ export async function agentApi(agentId, tool, args = {}) {
       if (t.claimedBy === agent.id && t.status === 'claimed') return `You already hold #${t.num}.`;
       if (t.status !== 'open') throw new Error(`#${t.num} is ${t.status}${t.claimedBy ? ` by ${agentName(t.claimedBy)}` : ''}. Pick another open task.`);
       if (t.assignee && t.assignee !== agent.id) throw new Error(`#${t.num} is for ${agentName(t.assignee)}. Pick another open task.`);
+      if (!worksplit.forBallast(game, t)) throw new Error(`#${t.num} is Jungle Studio's work on this game, not Ballast's. Pick another open task.`);
+      { const held = gates.heldBy(game, t) || focus.heldBy(game, t); if (held) throw new Error(`#${t.num} is waiting: ${held.text}. Pick another open task.`); }
+      if (!t.assignee && reservedElsewhere(game, t, agent)) throw new Error(`#${t.num} is for an agent on ${modelForTask(game, t)}. Pick another open task.`);
+      if (!t.assignee && away.isAway() && away.needsDirector(game, t)) throw new Error(`#${t.num} needs the director, who is away. Pick work you can finish and verify yourself.`);
       const held = heldTasks(agent.id);
-      const limit = game.claimBatch || 1;
+      const limit = claimBatchFor(agent);
       if (held.length >= limit) throw new Error(`You already hold ${held.map((h) => `#${h.num}`).join(', ')} (the limit is ${limit}). Finish one (board_done) or give one back (board_block) first.`);
       Object.assign(t, { status: 'claimed', claimedBy: agent.id, claimedAt: Date.now(), updatedAt: Date.now(), nudges: 0 });
+      logWork(t, agent.id);
       save();
       changed();
       const discipline = t.discipline || review.disciplineOf(t.title);
@@ -1431,7 +1656,7 @@ export async function agentApi(agentId, tool, args = {}) {
       // Working in a department means picking up that department's waiting notes too.
       const note = deptnotes.pickFor(agent, game, discipline);
       const refs = targets.forTask({ ...t, discipline }, game);
-      return `Claimed #${t.num}: ${t.title}${t.detail ? `\n${t.detail}` : ''}\n\n${P.reviewRuleLocal({ task: t, game, policy })}\n${P.deliveryLine(nextDelivery(game))}${refs.length ? `\n\n${P.targetsLocal(targets.describe(refs, { local: true }))}` : ''}${note ? `\n\n${P.deptNoteLocal({ note, label: deptnotes.label(discipline), ref: deptnotes.ref(note), taskNum: t.num })}` : ''}`;
+      return `Claimed #${t.num}: ${t.title}${t.detail ? `\n${t.detail}` : ''}\n\n${P.reviewRuleLocal({ task: t, game, policy })}\n${P.checkLine(game)}${P.deliveryLine(nextDelivery(game))}${refs.length ? `\n\n${P.targetsLocal(targets.describe(refs, { local: true }))}` : ''}${note ? `\n\n${P.deptNoteLocal({ note, label: deptnotes.label(discipline), ref: deptnotes.ref(note), taskNum: t.num })}` : ''}`;
     }
     case 'board_done': {
       const t = byNum(args.task_id);
@@ -1442,7 +1667,7 @@ export async function agentApi(agentId, tool, args = {}) {
       feedPost(game.id, { kind: 'task', from: agent.name, agentId: agent.id, text: `${parked ? 'Ready for review' : 'Done'} #${t.num} ${t.title}${t.summary ? `\n${t.summary}` : ''}` });
       save();
       changed();
-      const open = openTasks(game.id).length;
+      const open = claimable(game.id).length;
       return `${parked ? `#${t.num} is waiting for the director's approval; don't land it. Ballast tells you when it's approved.` : `Marked #${t.num} done.`}${open ? ` ${open} open task(s) remain on the board: take the next one.` : ' Nothing else is open.'}`;
     }
     case 'reference_targets': {
@@ -1488,7 +1713,7 @@ export async function agentApi(agentId, tool, args = {}) {
     case 'board_block': {
       const t = byNum(args.task_id);
       if (t.claimedBy && t.claimedBy !== agent.id) throw new Error(`#${t.num} belongs to ${agentName(t.claimedBy)}.`);
-      Object.assign(t, { status: 'blocked', blockReason: String(args.reason || '').trim(), claimedBy: null, updatedAt: Date.now() });
+      Object.assign(t, { status: 'blocked', blockReason: String(args.reason || '').trim(), claimedBy: null, blockedAt: Date.now(), updatedAt: Date.now() });
       feedPost(game.id, { kind: 'task', from: agent.name, agentId: agent.id, text: `Blocked #${t.num} ${t.title}: ${t.blockReason}` });
       save();
       changed();

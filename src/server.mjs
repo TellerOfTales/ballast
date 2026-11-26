@@ -11,7 +11,7 @@ import { db, save, flush, paths, attachmentsDir } from './store.mjs';
 import { bus, changed } from './bus.mjs';
 import * as orch from './orchestrator.mjs';
 import { runBuild, cancelBuild, startScheduler } from './scheduler.mjs';
-import { usageSummary } from './usage.mjs';
+import { usageSummary, projectTotals } from './usage.mjs';
 import * as cloud from './cloud.mjs';
 import * as remote from './remote.mjs';
 import * as review from './review.mjs';
@@ -31,6 +31,20 @@ import * as roadmap from './roadmap.mjs';
 import * as askMode from './ask.mjs';
 import * as threads from './threads.mjs';
 import * as unblock from './unblock.mjs';
+import * as feedback from './feedback.mjs';
+import * as perf from './perf.mjs';
+import * as jungle from './jungle.mjs';
+import * as budget from './budget.mjs';
+import * as gddreview from './gddreview.mjs';
+import * as levelaudit from './levelaudit.mjs';
+import * as loops from './loops.mjs';
+import * as worksplit from './worksplit.mjs';
+import * as gates from './gates.mjs';
+import * as focus from './focus.mjs';
+import * as workbench from './workbench.mjs';
+import * as gddedit from './gddedit.mjs';
+import * as daily from './daily.mjs';
+import * as jungledocs from './jungledocs.mjs';
 import * as video from './video.mjs';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -168,6 +182,7 @@ route('PATCH', '/api/settings', (_, body) => {
   for (const key of ['reviewAutoApproveHours', 'deliveryHeadsUpMin', 'deptNoteFallbackMin', 'usageReportMin', 'subagentLimit', 'delegateLimit', 'delegateDepth']) if (body[key] !== undefined) db.settings[key] = Math.max(0, Number(body[key]) || 0);
   for (const key of ['maxConcurrentPerAccount', 'autopilotDailyTurns']) if (body[key] !== undefined) db.settings[key] = Math.max(1, Number(body[key]) || 1);
   for (const key of ['limitRefreshMin', 'cloudSyncMin', 'contentRefreshMin']) if (body[key] !== undefined) db.settings[key] = Math.max(0, Number(body[key]) || 0);
+  if (body.promptCacheTtl !== undefined) db.settings.promptCacheTtl = ['1h', '5m', 'auto'].includes(body.promptCacheTtl) ? body.promptCacheTtl : '1h';
   if (body.limitGuardPct !== undefined) db.settings.limitGuardPct = Math.min(100, Math.max(1, Number(body.limitGuardPct) || 95));
   if (body.digestDaily !== undefined) db.settings.digestDaily = !!body.digestDaily;
   if (body.blockTriage !== undefined) db.settings.blockTriage = !!body.blockTriage;
@@ -185,6 +200,7 @@ route('POST', '/api/accounts', (_, body) => orch.addAccount(body));
 route('PATCH', '/api/accounts/:id', (p, body) => orch.updateAccount(p.id, body));
 route('DELETE', '/api/accounts/:id', (p) => orch.removeAccount(p.id));
 route('POST', '/api/accounts/:id/login', (p) => orch.loginAccount(p.id));
+route('POST', '/api/accounts/:id/repair', (p) => orch.repairAccount(p.id));
 route('POST', '/api/accounts/:id/detach', (p) => orch.detachAccount(p.id));
 route('POST', '/api/accounts/:id/accept-identity', (p) => orch.acceptIdentity(p.id));
 route('POST', '/api/accounts/:id/refresh', (p) => orch.refreshAccount(p.id));
@@ -207,6 +223,9 @@ route('PATCH', '/api/cloud/:id', (p, body) => cloud.updateTracked(p.id, body));
 route('DELETE', '/api/cloud/:id', (p) => cloud.untrack(p.id));
 
 route('POST', '/api/games', (_, body) => orch.createGame(body));
+route('GET', '/api/jungle/check', () => jungle.check());
+route('POST', '/api/jungle/projects', (_, body) => jungle.createProject(body));
+route('POST', '/api/jungle/repo-games', (_, body) => jungle.addToGamesRepo({ ...body, dryRun: false }));
 route('PATCH', '/api/games/:id', (p, body) => orch.updateGame(p.id, body));
 route('DELETE', '/api/games/:id', (p) => orch.removeGame(p.id));
 route('GET', '/api/games/:id/feed', (p, _, q) => orch.readFeed(p.id, Number(q.get('limit')) || 300));
@@ -214,6 +233,14 @@ route('GET', '/api/games/:id/feed', (p, _, q) => orch.readFeed(p.id, Number(q.ge
 route('POST', '/api/games/:id/notes', (p, body) => ((body.attachments || []).some((a) => video.isVideo(a.name)) && db.settings.videoReview !== false
   ? video.postWithReview(p.id, body)
   : orch.postNote(p.id, body)));
+// Check a note you already sent against the blocked tickets (new notes are checked by themselves).
+route('POST', '/api/games/:id/notes/:num/check', (p) => feedback.checkNote(p.id, p.num));
+route('GET', '/api/games/:id/perf', (p) => perf.runs(p.id));
+route('GET', '/api/games/:id/gdd-review', (p) => gddreview.publicState(orch.getGame(p.id) || {}));
+route('POST', '/api/games/:id/gdd-review', (p) => gddreview.start(p.id));
+route('PATCH', '/api/games/:id/gdd-review', (p, body) => gddreview.configure(p.id, body));
+route('GET', '/api/games/:id/budget', (p, _, q) => budget.report(p.id, { days: Number(q?.get('days')) || 14 }));
+route('PATCH', '/api/games/:id/perf/:run', (p, body) => perf.update(p.id, p.run, body));
 route('POST', '/api/games/:id/attachments', (p, body) => orch.saveAttachment(p.id, body));
 route('POST', '/api/games/:id/agents', (p, body) => orch.addAgent(p.id, body));
 route('POST', '/api/games/:id/tasks', (p, body) => orch.addTask(p.id, body));
@@ -265,6 +292,77 @@ route('POST', '/api/games/:id/ask/reset', (p) => askMode.reset(p.id));
 route('GET', '/api/games/:id/roadmap', (p) => roadmap.publicRoadmap(orch.getGame(p.id)));
 route('POST', '/api/games/:id/roadmap', (p, body) => roadmap.start(p.id, body));
 route('PATCH', '/api/games/:id/roadmap', (p, body) => roadmap.update(p.id, body));
+route('POST', '/api/games/:id/roadmap/audit', (p, body) => levelaudit.start(p.id, body));
+route('PATCH', '/api/games/:id/focus', (p, body) => focus.update(p.id, body));
+route('GET', '/api/games/:id/gdd', (p) => gddedit.publicGdd(must(orch.getGame(p.id), 'Unknown game')));
+route('POST', '/api/games/:id/gdd/import', (p, body) => gddedit.importGdd(p.id, body || {}));
+route('POST', '/api/games/:id/gdd/drafts', (p, body) => gddedit.draft(p.id, body || {}));
+route('POST', '/api/games/:id/gdd/drafts/:d/reply', (p, body) => gddedit.reply(p.id, p.d, body || {}));
+route('PATCH', '/api/games/:id/gdd/drafts/:d', (p, body) => gddedit.updateDraft(p.id, p.d, body || {}));
+route('POST', '/api/games/:id/gdd/drafts/:d/accept', (p) => gddedit.accept(p.id, p.d));
+route('POST', '/api/games/:id/gyms', (p, body) => workbench.requestGym(p.id, body || {}));
+route('POST', '/api/games/:id/gyms/:gym/note', (p, body) => workbench.gymNote(p.id, p.gym, body?.text));
+route('DELETE', '/api/games/:id/gyms/:gym', (p) => workbench.removeGym(p.id, p.gym));
+route('POST', '/api/games/:id/subjects', (p, body) => workbench.saveSubject(p.id, body || {}));
+route('POST', '/api/games/:id/subjects/:sub/round', (p, body) => workbench.startRound(p.id, p.sub, body || {}));
+route('PATCH', '/api/games/:id/subjects/:sub', (p, body) => workbench.updateSubject(p.id, p.sub, body || {}));
+route('PATCH', '/api/games/:id/gates', (p, body) => gates.update(p.id, body));
+route('POST', '/api/games/:id/gates/sort', (p) => gates.sort(p.id));
+route('POST', '/api/games/:id/sections/:fid/note', (p, body) => {
+  const game = must(orch.getGame(p.id), 'Unknown game');
+  const f = must(game.roadmap?.features?.find((x) => x.id === p.fid), 'Unknown section');
+  orch.postNote(p.id, { text: `[${f.name}] ${String(body?.text || '').trim()}`, sectionId: f.id, attachments: body?.attachments || [] });
+  return { ok: true };
+});
+route('GET', '/api/games/:id/jungle-share', (p) => worksplit.handoff(p.id));
+route('PATCH', '/api/tasks/:id/owner', (p, body) => worksplit.setOwner(p.id, body?.owner ?? ''));
+route('GET', '/api/repos', () => worksplit.repos());
+// Total spend per project: Ballast's own runs in tokens (exact), cloud agents' work as an estimate.
+route('GET', '/api/token-totals', () => {
+  const t = projectTotals();
+  const cloud = budget.spendByGame();
+  const row = (id, name, status) => {
+    const g = t.games[id] || null;
+    return {
+      id, name, status,
+      all: g?.all || null, month: g?.month || null, since: g?.since || null,
+      kinds: g ? Object.entries(g.kinds).map(([kind, b]) => ({ kind, ...b })).sort((a, b) => b.tokens - a.tokens) : [],
+      cloudPct: cloud.byGame[id] != null ? Math.round(cloud.byGame[id] * 10) / 10 : null,
+    };
+  };
+  return {
+    since: t.since, cloudSince: cloud.since,
+    games: db.games.map((g) => row(g.id, g.name, g.status || 'active')).sort((a, b) => (b.all?.tokens || 0) - (a.all?.tokens || 0)),
+    housekeeping: row('_none', 'Housekeeping (artifact syncs, limit checks)', 'active'),
+  };
+});
+route('POST', '/api/repo-work', (p, body) => worksplit.addRepoWork(body || {}));
+route('GET', '/api/games/:id/loops', (p) => loops.publicState(must(orch.getGame(p.id), 'Unknown game')));
+route('POST', '/api/games/:id/loops/audit', (p) => loops.startAudit(p.id));
+route('PATCH', '/api/games/:id/loops/schedule', (p, body) => loops.configure(p.id, body));
+route('POST', '/api/games/:id/loops/lock', (p) => loops.lockIn(p.id));
+route('POST', '/api/games/:id/loops/digest', (p) => loops.digest(p.id));
+route('POST', '/api/games/:id/loops/actions/:action', (p, body) => loops.act(p.id, p.action, body?.do));
+route('PATCH', '/api/games/:id/loops/:loop/params', (p, body) => loops.setValues(p.id, p.loop, body));
+route('POST', '/api/games/:id/loops/:loop/chat', (p, body) => loops.ask(p.id, p.loop, body?.text));
+route('POST', '/api/games/:id/loops/:loop/changes', (p, body) => loops.addNote(p.id, p.loop, body?.text));
+route('DELETE', '/api/games/:id/loops/:loop/changes/:change', (p) => loops.dropNote(p.id, p.loop, p.change));
+route('DELETE', '/api/games/:id/loops/:loop/charts/:chart', (p) => loops.removeChart(p.id, p.loop, p.chart));
+route('POST', '/api/games/:id/daily-report', (p) => daily.writeReport(p.id));
+route('POST', '/api/daily-report', () => daily.writeAll());
+route('PATCH', '/api/director', (_, body) => daily.configure(body));
+route('GET', '/api/jungle-docs', () => jungledocs.publicState());
+route('POST', '/api/jungle-docs/sync', () => { jungledocs.sync({ force: true }).catch(() => {}); return jungledocs.publicState(); });
+route('POST', '/api/jungle-docs/catch-up', (p, body) => {
+  db.jungleDocs ||= { changes: [] };
+  db.jungleDocs.catchUp = { startedAt: Date.now(), report: null, error: null };
+  jungledocs.catchUp({ gameIds: body?.gameIds || null, from: body?.from || null })
+    .then((report) => { db.jungleDocs.catchUp = { ...db.jungleDocs.catchUp, finishedAt: Date.now(), report }; save(); })
+    .catch((err) => { db.jungleDocs.catchUp = { ...db.jungleDocs.catchUp, finishedAt: Date.now(), error: err.message }; save(); });
+  return { started: true };
+});
+route('GET', '/api/jungle-docs/catch-up', () => db.jungleDocs?.catchUp || null);
+route('POST', '/api/games/:id/away-work', (p) => daily.awayWork(p.id));
 route('POST', '/api/builds/:id/run', (p) => play.run(p.id));
 route('POST', '/api/builds/:id/quest', (p) => play.questInstall(p.id));
 route('POST', '/api/builds/:id/itch', (p, body) => play.itchPush(p.id, body));
@@ -298,6 +396,8 @@ route('POST', '/api/dept-notes/:id/breakdown', (p) => deptnotes.breakDownNow(p.i
 route('DELETE', '/api/dept-notes/:id', (p) => deptnotes.remove(p.id));
 route('POST', '/api/inbox/:id/answer', (p, body) => inbox.answer(p.id, body.answer));
 route('POST', '/api/inbox/:id/dismiss', (p) => inbox.dismiss(p.id));
+route('POST', '/api/inbox/:id/reopen', (p) => inbox.reopen(p.id));
+route('POST', '/api/inbox/:id/add-task', (p) => inbox.addNoteAsTask(p.id));
 route('DELETE', '/api/artifacts/:id', (p) => orch.removeArtifact(p.id));
 route('GET', '/api/builds/:id/log', (p) => {
   const b = db.builds.find((x) => x.id === p.id);
@@ -344,7 +444,7 @@ async function handle(req, res, remote = false) {
       if (req.method !== 'GET' && req.headers.origin && req.headers.origin !== `http://${req.headers.host}`) return send(res, 403, { error: 'Cross-origin request refused' });
       if (pathname.startsWith('/agent-api/')) return send(res, 403, { error: 'Forbidden' });
       if (pathname === '/' || pathname === '/index.html') return serveFile(res, PUBLIC, 'index.html');
-      if (/^\/(app\.js|style\.css)$/.test(pathname)) return serveFile(res, PUBLIC, pathname.slice(1));
+      if (/^\/(app\.js|loopmath\.js|style\.css)$/.test(pathname)) return serveFile(res, PUBLIC, pathname.slice(1));
       return await routeRequest(req, res, url, pathname);
     }
 
@@ -365,7 +465,7 @@ async function handle(req, res, remote = false) {
         'set-cookie': `ballast=${db.secrets.uiToken}; HttpOnly; SameSite=Strict; Path=/`,
       });
     }
-    if (/^\/(app\.js|style\.css|favicon\.svg|logo\.svg|manifest\.webmanifest)$/.test(pathname)) return serveFile(res, PUBLIC, pathname.slice(1));
+    if (/^\/(app\.js|loopmath\.js|style\.css|favicon\.svg|logo\.svg|manifest\.webmanifest)$/.test(pathname)) return serveFile(res, PUBLIC, pathname.slice(1));
 
     // Sandboxed artifact frames get no cookie, so file URLs can carry a read-only key in
     // the path instead (/f/<key>/...). In the path, relative links inside HTML artifacts keep it.
@@ -443,6 +543,17 @@ server.listen(PORT, HOST, async () => {
   play.init(PORT);
   roadmap.init();
   unblock.init();
+  feedback.init();
+  jungle.init();
+  gddreview.init();
+  levelaudit.init();
+  loops.init();
+  focus.init();
+  workbench.init();
+  gddedit.init();
+  daily.init();
+  jungledocs.init();
+  remote.repairSplitQuestions();
   startScheduler();
   console.log(`\n  BALLAST  ${ORIGIN}\n  data     ${paths.state}\n`);
   if (!argv.includes('--no-open')) openBrowser(ORIGIN);

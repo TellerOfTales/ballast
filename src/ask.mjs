@@ -1,6 +1,9 @@
 // Conversation mode: questions for Claude from a game's feed. Each question goes to the account
 // with the most weekly room right now, which reads the repo (and the web) but changes nothing.
 // Answers stay between you and Claude: agents only ever read notes, never these.
+// It can also troubleshoot Ballast itself: every question comes with a read-only diagnostics snapshot
+// (live agent state, accounts, board, errors, logs, schedules; live checks for troubleshooting
+// questions) and read access to Ballast's own source, so a symptom can be traced to its cause.
 import fs from 'node:fs';
 import path from 'node:path';
 import { db, save, paths, attachmentsDir, uid } from './store.mjs';
@@ -10,6 +13,9 @@ import * as orch from './orchestrator.mjs';
 import { recordUsage } from './usage.mjs';
 import * as roadmap from './roadmap.mjs';
 import * as policy from './policy.mjs';
+import * as diagnostics from './diagnostics.mjs';
+import * as git from './git.mjs';
+import * as jungledocs from './jungledocs.mjs';
 
 const busy = new Map(); // gameId -> askId
 const HISTORY = 6; // earlier Q&A pairs carried into each question
@@ -47,7 +53,7 @@ Latest notes from the director to the team:
 ${notes.map((n) => `- #${n.num}: ${n.text.replace(/\s+/g, ' ').slice(0, 300)}`).join('\n') || '(none)'}`;
 }
 
-function systemPrompt(game, folder) {
+function systemPrompt(game, folder, diag) {
   return `You are answering questions from ${orch.directorName()}, the solo developer of the game "${game.name}", inside Ballast (the app that runs their team of AI agents). You are a knowledgeable collaborator in a conversation, not one of the agents building the game.
 
 - Answer directly and concisely in Markdown. Lead with the answer.
@@ -55,6 +61,12 @@ function systemPrompt(game, folder) {
 - Don't change files or run builds; you can read files and search the web.
 - If they ask for a change to the game, explain what you'd change and tell them they can send it to the team as a note with the "Send to team" button under your answer.
 - They think in terms of look and feel; explain technical things in player-facing terms first.
+${diag ? `
+Troubleshooting Ballast itself: when the question is about Ballast not doing what they expect (an agent stuck or idle, a ticket nobody claims, a queue that doesn't move, an error in the feed, a schedule that didn't run, numbers that look wrong, anything "not working"), diagnose it properly:
+1. Read ${diag}/index.md, then the snapshot files it lists: they show Ballast's live state, taken when this question was asked.${diag && fs.existsSync(path.join(diag, 'checks.md')) ? ' checks.md has live checks of the network, the repo clone and the tools, run just now.' : ''}
+2. Read Ballast's own source (${diagnostics.SOURCE_DIR}, src/ for the server) to see exactly what the code does in that situation: which condition holds the work back, which setting decides it, what error path was taken.
+3. Answer with the cause, the evidence (the snapshot field or log line, and the source file and function), and the fix: what they can click or change in Ballast, or, if Ballast itself is at fault, the change it needs, precise enough to hand to someone fixing Ballast.
+Don't guess when the snapshot can tell you. Say plainly when something is outside what you can see (a cloud session's own work on claude.ai, for instance).` : ''}
 
 What Ballast knows about the game right now:
 ${context(game)}`;
@@ -90,8 +102,22 @@ export function ask(gameId, { text = '', attachments = [] } = {}) {
 async function run(game, acct, askId, text, attachments, prior) {
   const folder = game.subdir ? path.join(game.repoPath, game.subdir) : game.repoPath;
   fs.mkdirSync(attachmentsDir(game.id), { recursive: true });
+  // A cloud game's files are Ballast's own copy of the repo, which otherwise only refreshes for builds,
+  // GDD runs and asset scans: bring it up to the base branch so answers read what's really on GitHub.
+  // Local edits someone made in that copy are saved as a patch first (git.syncClone) and named here.
+  if (game.runner === 'cloud' && game.repoPath && fs.existsSync(path.join(game.repoPath, '.git'))) {
+    try {
+      const r = await git.syncClone(game.repoPath, game.baseBranch);
+      if (r.backup) orch.feedPost(game.id, { kind: 'system', text: `Ballast's copy of the repo had local edits (${r.changed.slice(0, 6).join(', ')}${r.changed.length > 6 ? ', …' : ''}). They were saved to ${r.backup} before refreshing the copy to ${game.baseBranch}.` });
+    } catch (err) {
+      console.error('[ballast] ask: refreshing the clone failed', err.message);
+    }
+  }
+  // A fresh read-only snapshot of Ballast's state; live checks only for troubleshooting questions.
+  let diag = null;
+  try { diag = await diagnostics.snapshot(game, { live: diagnostics.looksLikeTroubleshooting(text) }); } catch (err) { console.error('[ballast] diagnostics', err.message); }
   const sysFile = path.join(paths.tmp, `ask-${game.id}.md`);
-  fs.writeFileSync(sysFile, systemPrompt(game, folder));
+  fs.writeFileSync(sysFile, systemPrompt(game, folder, diag) + jungledocs.forRun(game).text);
   const files = attachments.filter((a) => a.path).map((a) => `- ${a.name}: ${a.path}`).join('\n');
   const prompt = `${prior.length ? `Our conversation so far:\n\n${prior.map((p) => `Q: ${p.q}\n\nA: ${p.a.slice(0, 2500)}`).join('\n\n---\n\n')}\n\n---\n\n` : ''}${text || '(see the attached files)'}${files ? `\n\nAttached (open with Read):\n${files}` : ''}`;
   let live = '';
@@ -110,7 +136,7 @@ async function run(game, acct, askId, text, attachments, prior) {
         '--append-system-prompt-file', sysFile,
         '--tools', 'Read,Glob,Grep,WebSearch,WebFetch',
         '--permission-mode', 'dontAsk', '--allowedTools', 'Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch',
-        '--add-dir', attachmentsDir(game.id), paths.studioAttachments,
+        '--add-dir', attachmentsDir(game.id), paths.studioAttachments, ...(diag ? [diag, diagnostics.SOURCE_DIR] : []), ...jungledocs.forRun(game).args,
         ...(db.settings.askModel ? ['--model', db.settings.askModel] : []),
       ],
       prompt,

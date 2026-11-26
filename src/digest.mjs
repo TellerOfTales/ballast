@@ -21,7 +21,7 @@ export function buildDigest(since = Date.now() - DAY) {
       id: g.id,
       name: g.name,
       status: g.status || 'active',
-      done: tasks.filter((t) => t.status === 'done' && t.doneAt >= since).map((t) => ({ num: t.num, title: strip(t.title) })),
+      done: tasks.filter((t) => t.status === 'done' && !t.cancelled && t.doneAt >= since).map((t) => ({ num: t.num, title: strip(t.title) })),
       blocked: tasks.filter((t) => t.status === 'blocked').map((t) => ({ num: t.num, title: strip(t.title), why: t.blockReason || '' })),
       reviews: tasks.filter((t) => t.review?.state === 'pending').length,
       questions: db.inbox.filter((q) => q.gameId === g.id && q.status === 'open').length,
@@ -95,7 +95,7 @@ const WEEKLY_SCHEMA = {
 
 function weeklyPrompt(g, since) {
   const tasks = db.tasks.filter((t) => t.gameId === g.id);
-  const done = tasks.filter((t) => t.status === 'done' && t.doneAt >= since);
+  const done = tasks.filter((t) => t.status === 'done' && !t.cancelled && t.doneAt >= since);
   const audit = [...db.audits].reverse().find((a) => a.gameId === g.id && a.status === 'done')?.result;
   const caps = db.artifacts.filter((a) => a.gameId === g.id && (a.createdAt || 0) >= since).map((a) => a.title).slice(-30);
   return `Write this week's devlog and social posts for "${g.name}", made by a solo developer (an author developer building it with AI agents; don't dwell on the AI, players care about the game).

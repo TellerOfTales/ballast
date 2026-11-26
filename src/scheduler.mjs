@@ -85,7 +85,7 @@ export async function runBuild(gameId, reason = 'manual', slot = null) {
     build.commit = await git.head(cwd).catch(() => null);
     if (previous?.commit && build.commit && previous.commit !== build.commit) build.changelog = await git.log(cwd, previous.commit, build.commit);
     const since = previous?.startedAt || Date.now() - 24 * 3600e3;
-    build.tasksDone = db.tasks.filter((t) => t.gameId === gameId && t.status === 'done' && (t.doneAt || 0) > since).map((t) => `#${t.num} ${t.title}`);
+    build.tasksDone = db.tasks.filter((t) => t.gameId === gameId && t.status === 'done' && !t.cancelled && (t.doneAt || 0) > since).map((t) => `#${t.num} ${t.title}`);
 
     if (game.build.command) {
       const code = await runShell(game.build.command, {

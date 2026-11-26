@@ -11,6 +11,7 @@ import * as claude from './claude.mjs';
 import { recordUsage } from './usage.mjs';
 import * as orch from './orchestrator.mjs';
 import * as P from './prompts.mjs';
+import * as docs from './claudedocs.mjs';
 
 const URL_RE = /^https:\/\/claude\.ai\/(?:code\/)?artifact\/[\w-]+/;
 const ROLES = new Set(['gdd', 'reference', 'review', 'output']);
@@ -203,9 +204,10 @@ export async function syncAccount(accountId, { force = false } = {}) {
     db.cloudIndex[accountId] = { at: Date.now(), items: (out.listed || []).slice(0, 300).map((i) => ({ ...i, url: normalize(i.url) })) };
     const readUrls = new Set(reads.map((a) => a.url));
     for (const item of out.artifacts || []) apply(acct, item, readUrls.has(normalize(item.url)));
+    for (const a of reads) if (a.isDoc) await readDocInto(acct, a);
     for (const a of tracked) {
       const listed = db.cloudIndex[accountId].items.find((i) => i.url === a.url);
-      if (listed) Object.assign(a, { title: listed.title || a.title, updated: listed.updated || a.updated });
+      if (listed) Object.assign(a, { title: a.isDoc ? a.title : listed.title || a.title, updated: listed.updated || a.updated });
       a.lastSyncAt = Date.now();
     }
     acct.cloudSyncedAt = Date.now();
@@ -225,6 +227,7 @@ function mirror(a, savedFile) {
   try {
     if (!savedFile || !fs.existsSync(savedFile) || fs.statSync(savedFile).size > 20e6) return null;
     const page = fs.readFileSync(savedFile, 'utf8');
+    if (a.isDoc || docs.isDocsShell(page)) { a.isDoc = true; return null; }
     const dir = path.join(paths.cloud, a.id);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'page.html'), page);
@@ -239,7 +242,7 @@ function apply(acct, item, wasRead) {
   const url = normalize(item.url);
   const a = db.cloudArtifacts.find((x) => x.url === url);
   if (!a) return;
-  if (item.title) a.title = item.title;
+  if (item.title && !a.isDoc) a.title = item.title;
   if (item.updated) a.updated = item.updated;
 
   let contentChanged = false;
@@ -250,9 +253,10 @@ function apply(acct, item, wasRead) {
     // The page file is exact; without it, the listed updated date is the only stable signal
     // (two summaries of the same page never match word for word).
     const hash = page ? sha(page) : null;
-    contentChanged = !first && (hash ? hash !== a.hash : (item.updated || a.updated) !== a.readUpdated);
+    // A Claude Docs doc's changes are found when its text is read (readDocInto), not from its viewer page.
+    contentChanged = !first && !a.isDoc && (hash ? hash !== a.hash : (item.updated || a.updated) !== a.readUpdated);
     if (hash) a.hash = hash;
-    if (first || contentChanged || !a.summary) a.summary = item.summary || a.summary;
+    if (!a.isDoc && (first || contentChanged || !a.summary)) a.summary = item.summary || a.summary;
     if (item.dataFingerprint !== undefined) {
       dataChanged = !first && !!a.dataFingerprint && item.dataFingerprint !== a.dataFingerprint;
       a.dataFingerprint = item.dataFingerprint;
@@ -288,6 +292,43 @@ const reviewerAllowed = (author) => {
   return !list.length || list.some((r) => String(author || '').toLowerCase().includes(r));
 };
 
+// GDD page changes: a handler that returns true takes the change (the GDD re-evaluation, for games
+// that use it), so it isn't also posted as a note and ticketed twice.
+// A Claude Docs doc: its tabs read through the account's Claude Docs connector and kept as text
+// (page.html for the readers that strip tags, page.md as written). Changes are found by comparing text.
+async function readDocInto(acct, a) {
+  try {
+    const d = await docs.readDoc(acct, a.url, { gameId: a.gameId });
+    const md = docs.toMarkdown(d);
+    const dir = path.join(paths.cloud, a.id);
+    fs.mkdirSync(dir, { recursive: true });
+    const before = a.docHash && fs.existsSync(path.join(dir, 'page.md')) ? fs.readFileSync(path.join(dir, 'page.md'), 'utf8') : null;
+    fs.writeFileSync(path.join(dir, 'page.html'), docs.toHtml(d));
+    fs.writeFileSync(path.join(dir, 'page.md'), md);
+    const words = d.tabs.reduce((n, t) => n + t.words, 0);
+    const hash = sha(md);
+    const changedNow = !!a.docHash && hash !== a.docHash;
+    Object.assign(a, {
+      mirrored: true, title: d.name, docHash: hash, docError: d.missing.length ? `Couldn't read ${d.missing.join(', ')}.` : null,
+      doc: { at: Date.now(), words, tabs: d.tabs.map((t) => ({ name: t.name, words: t.words })), missing: d.missing },
+      summary: `Claude Docs document "${d.name}": ${d.tabs.length} tabs, about ${words.toLocaleString()} words (${d.tabs.map((t) => t.name).join(', ')}). Ballast keeps the full text${d.missing.length ? `, except ${d.missing.join(', ')}, which couldn't be read this time` : ''}.`,
+    });
+    if (!changedNow) return;
+    // What changed, by line (+ added, - removed), for the note a review or GDD change becomes.
+    const was = new Set((before || '').split('\n').map((l) => l.trim()).filter(Boolean));
+    const now = md.split('\n').map((l) => l.trim()).filter(Boolean);
+    const nowSet = new Set(now);
+    a.lastDiff = [...now.filter((l) => !was.has(l)).map((l) => `+ ${l}`), ...[...was].filter((l) => !nowSet.has(l)).map((l) => `- ${l}`)].join('\n').slice(0, 8000);
+    a.changedAt = Date.now();
+    if (a.gameId && orch.getGame(a.gameId)) route(a, { contentChanged: true, dataChanged: false, fresh: [] });
+  } catch (err) {
+    a.docError = err.message.slice(0, 300);
+  }
+}
+
+export const gddHandlers = [];
+const isGddPage = (a) => a.role === 'gdd' || /\bgdd\b|game design doc/i.test(a.title || '');
+
 function route(a, { contentChanged, dataChanged, fresh }) {
   const what = [contentChanged && 'page updated', dataChanged && 'live data changed', fresh.length && `${fresh.length} new comment${fresh.length > 1 ? 's' : ''}`].filter(Boolean).join(', ');
   orch.feedPost(a.gameId, {
@@ -300,7 +341,8 @@ function route(a, { contentChanged, dataChanged, fresh }) {
   // Comments are reviews wherever they land; page changes only become work on review pages.
   const comments = fresh.filter((c) => reviewerAllowed(c.author));
   // The GDD is the source of truth, so its changes flow into work just like a review page's.
-  const pageIsReview = (a.role === 'review' || a.role === 'gdd') && (contentChanged || dataChanged);
+  const handled = isGddPage(a) && (contentChanged || dataChanged) && gddHandlers.some((h) => { try { return h(a) === true; } catch { return false; } });
+  const pageIsReview = !handled && (a.role === 'review' || a.role === 'gdd') && (contentChanged || dataChanged);
   if (!comments.length && !pageIsReview) return;
   const authors = [...new Set(comments.map((c) => c.author).filter(Boolean))];
   orch.postNote(a.gameId, {
@@ -308,7 +350,7 @@ function route(a, { contentChanged, dataChanged, fresh }) {
       title: a.title,
       url: a.url,
       role: a.role,
-      summary: pageIsReview ? a.summary : '',
+      summary: pageIsReview ? (a.isDoc && a.lastDiff ? `${a.summary}\nWhat changed (+ added, - removed):\n${a.lastDiff}` : a.summary) : '',
       dataSummary: pageIsReview && dataChanged ? a.dataSummary : '',
       comments,
     }),

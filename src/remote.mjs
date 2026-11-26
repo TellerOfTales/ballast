@@ -4,7 +4,7 @@
 // outcome from the report file the agent pushes on its branch.
 import fs from 'node:fs';
 import path from 'node:path';
-import { db, save, paths } from './store.mjs';
+import { db, save, paths, attachmentsDir, HOME } from './store.mjs';
 import { changed } from './bus.mjs';
 import * as claude from './claude.mjs';
 import * as git from './git.mjs';
@@ -13,6 +13,12 @@ import { recordUsage } from './usage.mjs';
 import * as orch from './orchestrator.mjs';
 import * as review from './review.mjs';
 import * as inbox from './inbox.mjs';
+import * as jungledocs from './jungledocs.mjs';
+import * as loops from './loops.mjs';
+import * as worksplit from './worksplit.mjs';
+import * as gates from './gates.mjs';
+import * as focus from './focus.mjs';
+import * as gddedit from './gddedit.mjs';
 import * as deptnotes from './deptnotes.mjs';
 import * as targets from './targets.mjs';
 
@@ -27,7 +33,9 @@ export async function prepareClone(game, githubInput) {
   const gh = git.parseGithub(githubInput);
   if (!gh) throw Object.assign(new Error('Give the GitHub repo as owner/name or its github.com URL.'), { status: 400 });
   const dir = clonePath(game);
-  if (!fs.existsSync(path.join(dir, '.git'))) await git.cloneRepo(gh.url, dir);
+  // Another game on the same repo (several Game Packs in one project) lends its objects, so the clone is local.
+  const sibling = db.games.find((g) => g.id !== game.id && g.github === gh.slug && g.repoPath && fs.existsSync(path.join(g.repoPath, '.git')));
+  if (!fs.existsSync(path.join(dir, '.git'))) await git.cloneRepo(gh.url, dir, sibling?.repoPath);
   game.github = gh.slug;
   game.repoPath = dir;
   if (gh.subdir) game.subdir = gh.subdir;
@@ -74,6 +82,8 @@ const TRIAGE_SCHEMA = {
   type: 'object',
   properties: {
     summary: { type: 'string' },
+    covered: { type: 'array', items: { type: 'integer' }, description: 'When no new tasks are needed: the numbers of the board tickets that already cover the note.' },
+    gddChange: { type: 'string', description: 'When the note changes the game\'s design (a rule, number, system, content or goal the GDD states): what should change in the GDD, in the director\'s terms. Empty when it only asks for work.' },
     tasks: {
       type: 'array',
       items: {
@@ -82,6 +92,9 @@ const TRIAGE_SCHEMA = {
           title: { type: 'string' },
           detail: { type: 'string' },
           everyAgent: { type: 'boolean', description: 'True when the note asks each agent to do this themselves (e.g. "every agent should...").' },
+          section: { type: 'string', description: 'The id of the GDD section this task develops, when sections are listed; empty if none.' },
+          level: { type: 'integer', minimum: 0, maximum: 3, description: 'The quality level the task works toward, when sections are listed.' },
+          focus: { type: 'array', items: { type: 'string' }, description: 'Ids of the director\'s focuses this task serves, when focuses are listed.' },
         },
         required: ['title'],
       },
@@ -100,10 +113,17 @@ export async function triage(game, note) {
     return;
   }
   const open = db.tasks.filter((t) => t.gameId === game.id && t.status !== 'done');
+  // The GDD's full text as Ballast last read it (Claude Docs docs included), for triage to check against.
+  const own = path.join(HOME, 'gdd', game.id, 'current.md');
+  const gdd = fs.existsSync(own) ? [{ title: `GDD v${game.gdd?.versions?.at(-1)?.v || ''} (Ballast)`, url: db.cloudArtifacts.find((a) => a.gameId === game.id && a.role === 'gdd')?.url || '', file: own, dir: path.dirname(own) }] : db.cloudArtifacts.filter((a) => a.gameId === game.id && a.role === 'gdd').map((a) => {
+    const dir = path.join(paths.cloud, a.id);
+    const file = ['page.md', 'page.html'].map((f) => path.join(dir, f)).find((f) => fs.existsSync(f));
+    return { ...a, file: a.mirrored && file ? file : null, dir };
+  });
   const { result } = await claude.runQuick({
     account: acct,
-    args: ['--model', db.settings.triageModel || 'sonnet', '--tools', 'Read', '--json-schema', JSON.stringify(TRIAGE_SCHEMA)],
-    prompt: P.cloudTriage({ game, note, open, gdd: db.cloudArtifacts.filter((a) => a.gameId === game.id && a.role === 'gdd') }),
+    args: ['--model', db.settings.triageModel || 'sonnet', '--tools', 'Read', '--add-dir', attachmentsDir(game.id), ...gdd.filter((a) => a.file).flatMap((a) => ['--add-dir', a.dir]), ...jungledocs.forRun(game).args, '--json-schema', JSON.stringify(TRIAGE_SCHEMA)],
+    prompt: P.cloudTriage({ game, note, open, gdd }) + jungledocs.forRun(game).text + loops.triageNote(game) + worksplit.triageNote(game) + gates.triageNote(game, note) + focus.triageNote(game),
     onMessage: (m) => { if (m.type === 'rate_limit_event') orch.updateUsage(acct, m.rate_limit_info || {}); },
   });
   if (result) recordUsage({ account: acct, gameId: game.id, kind: 'triage', result });
@@ -116,8 +136,8 @@ export async function triage(game, note) {
   // "Every agent should..." becomes one task per agent, each assigned to its agent.
   const agents = db.agents.filter((a) => a.gameId === game.id);
   const nums = out.tasks.flatMap((t) => (t.everyAgent && agents.length > 1
-    ? agents.map((a) => orch.addTask(game.id, { title: `${t.title} (${a.name})`, detail: t.detail, noteNum: note.num, createdBy: 'Ballast triage', assignee: a.id }).num)
-    : [orch.addTask(game.id, { title: t.title, detail: t.detail, noteNum: note.num, createdBy: 'Ballast triage' }).num]));
+    ? agents.map((a) => focus.tag(game, orch.addTask(game.id, { title: `${t.title} (${a.name})`, detail: t.detail, noteNum: note.num, createdBy: 'Ballast triage', assignee: a.id, ...gates.link(game, t, note) }), t.focus).num)
+    : [focus.tag(game, orch.addTask(game.id, { title: t.title, detail: t.detail, noteNum: note.num, createdBy: 'Ballast triage', ...gates.link(game, t, note) }), t.focus).num]));
   // The agent with the most headroom records the feedback and breakdown in the coordinator file;
   // assigned tasks are claimed first, so it lands before the rest of the team gets far.
   const coordinator = game.coordinatorFile && nums.length ? orch.pickTriager(game) : null;
@@ -131,7 +151,17 @@ export async function triage(game, note) {
     });
     nums.unshift(t.num);
   }
-  orch.feedPost(game.id, { kind: 'system', text: nums.length ? `Note #${note.num} split into ${nums.map((n) => `#${n}`).join(', ')}. ${out.summary || ''}` : `Note #${note.num}: already covered by the board. ${out.summary || ''}` });
+  // A design change in the note also becomes a GDD draft for the director to review (GDD tab).
+  if (out.gddChange?.trim() && game.gdd?.versions?.length) {
+    try { gddedit.draft(game.id, { feedback: `${out.gddChange.trim()}\n\n(From note #${note.num}: ${note.text.slice(0, 3000)})`, from: `note #${note.num}` }); orch.feedPost(game.id, { kind: 'system', from: 'GDD', text: `Note #${note.num} changes the design: drafting the GDD change for your review (GDD tab).` }); } catch { /* no GDD in Ballast yet */ }
+  }
+  const covered = (out.covered || []).filter((n) => db.tasks.some((t) => t.gameId === game.id && t.num === n));
+  if (nums.length) orch.feedPost(game.id, { kind: 'system', text: `Note #${note.num} split into ${nums.map((n) => `#${n}`).join(', ')}. ${out.summary || ''}` });
+  else if (covered.length) orch.feedPost(game.id, { kind: 'system', text: `Note #${note.num}: already covered by ${covered.map((n) => `#${n}`).join(', ')}. ${out.summary || ''}` });
+  else {
+    orch.feedPost(game.id, { kind: 'system', text: `Note #${note.num} made no tasks: ${out.summary || 'triage found nothing to do'} It's in your Inbox in case that's wrong.` });
+    inbox.droppedNote({ game, note, why: out.summary || '' });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -159,7 +189,7 @@ export async function dispatch(agent, item) {
       if (!t) break;
       tasks.push(t);
     }
-    if (!tasks.length) return;
+    if (!tasks.length) { if (item.kind === 'next') orch.refundTurn(game); return; }
     items = tasks.map((t) => ({ key: `t${t.num}`, taskId: t.id }));
     const policy = (t) => review.policyFor(game, t.discipline || review.disciplineOf(t.title));
     prompt = tasks.length === 1
@@ -181,7 +211,7 @@ export async function dispatch(agent, item) {
     }
   }
 
-  prompt = orch.policyNoteFor(agent) + prompt; // the game's usage rules in force on this account
+  prompt = orch.policyNoteFor(agent) + jungledocs.agentNote(game) + prompt; // usage rules in force, and the Jungle Engine docs
   dispatching.add(agent.id);
   changed();
   try {
@@ -199,6 +229,7 @@ export async function dispatch(agent, item) {
     orch.feedPost(game.id, { kind: 'system', text: `${agent.name} took ${what}: ${url}` });
   } catch (err) {
     for (const task of tasks) orch.updateTask(task.id, { status: 'open' });
+    if (item.kind === 'next') orch.refundTurn(game);
     orch.setAgentError(agent.id, err.message);
     orch.feedPost(game.id, { kind: 'error', from: agent.name, agentId: agent.id, text: `Couldn't start a cloud session: ${err.message}` });
   } finally {
@@ -306,7 +337,10 @@ export async function poll() {
   if (polling) return;
   polling = true;
   try {
+    // A session is judged by its last progress (a report, or a push to one of its task branches), not
+    // by when its batch started: a quiet one gets a check-in, then its tickets are marked blocked.
     const timeout = (db.settings.cloudTaskTimeoutMin || 240) * 60e3;
+    const nudgeAfter = (db.settings.cloudNudgeMin || 90) * 60e3;
     for (const game of db.games.filter((g) => g.runner === 'cloud')) {
       const active = db.agents.filter((a) => a.gameId === game.id && a.cloud);
       if (!active.length) continue;
@@ -324,6 +358,12 @@ export async function poll() {
         const { baseline = {}, since, items } = agent.cloud;
         const moved = Object.keys(heads).filter((b) => heads[b] !== baseline[b]);
         if (moved.length) await git.fetchBranches(game.repoPath, moved.slice(0, 20)).catch(() => {});
+        // Progress: a push to a branch named for one of its tasks.
+        const mine = Object.keys(heads).filter((b) => items.some((i) => !i.done && b.includes(i.key))).sort();
+        const sig = mine.map((b) => `${b}@${heads[b]}`).join(',');
+        if (agent.cloud.sig !== undefined && sig !== agent.cloud.sig) agent.cloud.progressAt = Date.now();
+        agent.cloud.sig = sig;
+        const doneBefore = items.filter((i) => i.done).length;
         for (const item of items.filter((i) => !i.done)) {
           // Likely branches first: the suggested name, then anything new or updated since dispatch.
           const candidates = [...moved].sort((a, b) => (b.includes(item.key) - a.includes(item.key)) || (b.startsWith('ballast/') - a.startsWith('ballast/'))).slice(0, 20);
@@ -339,17 +379,24 @@ export async function poll() {
             }
           }
         }
+        if (agent.cloud && items.filter((i) => i.done).length > doneBefore) agent.cloud.progressAt = Date.now();
+        const quiet = agent.cloud ? Date.now() - Math.max(since, agent.cloud.progressAt || 0) : 0;
+        const left = items.filter((i) => !i.done && i.taskId).map((i) => db.tasks.find((t) => t.id === i.taskId)).filter(Boolean);
         if (agent.cloud && items.every((i) => i.done)) {
           agent.cloud = null;
           setTimeout(() => orch.wakeIdle(game.id), 500);
-        } else if (agent.cloud && Date.now() - since > timeout * items.length) {
-          const hours = Math.round((timeout * items.length) / 3600e3);
-          for (const item of items.filter((i) => !i.done && i.taskId)) {
-            orch.updateTask(item.taskId, { status: 'blocked', blockReason: `No report from the cloud session after ${hours}h: ${agent.cloud.url}` });
-          }
-          orch.feedPost(game.id, { kind: 'error', from: agent.name, agentId: agent.id, text: `No report pushed after ${hours}h; check the session: ${agent.cloud.url}` });
+        } else if (agent.cloud && quiet > timeout) {
+          const hours = Math.round(quiet / 3600e3 * 10) / 10;
+          for (const t of left) orch.updateTask(t.id, { status: 'blocked', blockReason: `No progress from the cloud session for ${hours}h (no report, no push), even after a check-in: ${agent.cloud.url}` });
+          orch.feedPost(game.id, { kind: 'error', from: agent.name, agentId: agent.id, text: `No progress for ${hours}h on ${left.map((t) => `#${t.num}`).join(', ') || 'its tasks'}, even after a check-in. Marked blocked (they triage themselves); the agent takes new work. Session: ${agent.cloud.url}` });
           agent.cloud = null;
           setTimeout(() => orch.wakeIdle(game.id), 500);
+        } else if (agent.cloud && quiet > nudgeAfter && !(agent.cloud.nudgedAt > Math.max(since, agent.cloud.progressAt || 0))) {
+          agent.cloud.nudgedAt = Date.now();
+          const mins = Math.round(quiet / 60e3);
+          message(agent, `Ballast check-in: no report or push from you for ${mins} minutes on ${left.map((t) => `#${t.num} ${t.title}`).join('; ')}. If a task is finished, push its report now. If you're stuck or waiting on something, push a report that starts with STATUS: BLOCKED and says what you need. Otherwise keep going, and push your work in progress so Ballast can see it moving.`)
+            .then(() => orch.feedPost(game.id, { kind: 'system', from: agent.name, agentId: agent.id, text: `${agent.name} has been quiet for ${mins} min on ${left.map((t) => `#${t.num}`).join(', ')}; sent it a check-in.` }))
+            .catch((err) => orch.feedPost(game.id, { kind: 'error', from: agent.name, agentId: agent.id, text: `Couldn't send ${agent.name} a check-in: ${err.message.slice(0, 200)}` }));
         }
       }
       save();
@@ -362,21 +409,46 @@ export async function poll() {
 
 // The "## Questions" section of a report goes to the Director's Inbox. Each question is a
 // "### question" block with Context / Options / Going with / Capture lines; older reports
-// used one "- question -> assumption" line each, which still works.
-function reportQuestions(body) {
+// used one "- question -> assumption" line each, which still works. Agents also write the labels
+// in bold or as bullets ("- **Context:** …") and open a block with "**Decision:** …" or a bold
+// question line instead of "###": those are read as blocks too, never one question per line.
+const Q_LABEL = /^(?:Decision|Question|Context|Options|Going with|Capture):/;
+const Q_LABEL_LINE = /^[ \t]*(?:[-*][ \t]+)?\**[ \t]*(decision|question|context|options|going with|assumption|capture)[ \t]*\**[ \t]*:[ \t]*\**[ \t]*/i;
+const plainTitle = (s) => s.replace(/^[ \t]*(?:[-*][ \t]+)?/, '').replace(/\*\*/g, '').replace(/^\*+|\*+$/g, '').trim();
+
+function questionBlocks(section) {
+  const lines = section.split('\n').map((l) => l.replace(Q_LABEL_LINE, (_, k) => {
+    const key = k.toLowerCase() === 'assumption' ? 'going with' : k.toLowerCase();
+    return `${key[0].toUpperCase()}${key.slice(1)}: `;
+  }));
+  if (/^###\s+/m.test(section)) return lines.join('\n');
+  if (!lines.some((l) => Q_LABEL.test(l))) return null; // the old one-line format
+  const out = [];
+  lines.forEach((l, i) => {
+    const opener = l.match(/^(?:Decision|Question): (.*)$/);
+    if (opener) { out.push(`### ${plainTitle(opener[1])}`); return; }
+    // A plain line right before "Context:" is that block's question.
+    const next = lines.slice(i + 1).find((x) => x.trim());
+    if (l.trim() && !Q_LABEL.test(l) && next?.startsWith('Context:') && !/^###/.test(out[out.length - 1] || '')) { out.push(`### ${plainTitle(l)}`); return; }
+    out.push(l);
+  });
+  return out.join('\n');
+}
+
+export function reportQuestions(body) {
   const section = body.match(/^##\s*Questions\s*\n([\s\S]*?)(?=\n##\s|(?![\s\S]))/im)?.[1] || '';
-  const blocks = section.split(/^###\s+/m).slice(1);
+  const blocks = (questionBlocks(section) || '').split(/^###\s+/m).slice(1);
   if (blocks.length) {
     return blocks.map((block) => {
       const [first, ...rest] = block.split('\n');
       const text = rest.join('\n');
       const field = (name) => text.match(new RegExp(`^[ \\t]*${name}:[ \\t]*([\\s\\S]*?)(?=^[ \\t]*(?:Context|Options|Going with|Capture):|(?![\\s\\S]))`, 'im'))?.[1]?.trim() || '';
       return {
-        question: first.trim(),
+        question: plainTitle(first),
         context: field('Context'),
         options: field('Options').split('\n').map((o) => o.replace(/^\s*[-*]\s*/, '').trim()).filter(Boolean),
         assumption: field('Going with'),
-        capture: field('Capture').split(/\s/)[0] || '',
+        capture: field('Capture').replace(/[`'"]/g, '').split(/\s/)[0] || '',
       };
     }).filter((q) => q.question);
   }
@@ -384,6 +456,35 @@ function reportQuestions(body) {
     const [question, assumption = ''] = line.split(/\s*(?:->|→)\s*/);
     return { question: question.trim(), assumption: assumption.trim(), context: '', options: [], capture: '' };
   }).filter((q) => q.question);
+}
+
+// One-time repair: questions an earlier parser split into one inbox card per line (same report,
+// same moment, lines like "Context: …", "(a) …") are merged back into one card. Answered ones stay.
+export function repairSplitQuestions() {
+  const groups = new Map();
+  for (const q of db.inbox) {
+    if (q.source !== 'report' || q.status !== 'open') continue;
+    const k = `${q.gameId}|${q.agentId}|${q.taskId}|${Math.round((q.createdAt || 0) / 5000)}`;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(q);
+  }
+  let merged = 0;
+  for (const g of groups.values()) {
+    if (g.length < 3 || !g.some((q) => Q_LABEL_LINE.test(`- ${q.question}`) && /context/i.test(q.question))) continue;
+    const parsed = reportQuestions(`## Questions\n${g.map((q) => `- ${q.question}`).join('\n')}`);
+    if (!parsed.length || parsed.length >= g.length) continue;
+    const [keep, ...drop] = g;
+    const p = parsed[0];
+    Object.assign(keep, { question: p.question, context: p.context, options: p.options, assumption: p.assumption });
+    // Further blocks in the same report, if any, keep their own cards.
+    parsed.slice(1).forEach((x, i) => { if (drop[i]) Object.assign(drop[i], { question: x.question, context: x.context, options: x.options, assumption: x.assumption, keep: true }); });
+    const gone = new Set(drop.filter((d) => !d.keep).map((d) => d.id));
+    for (const d of drop) delete d.keep;
+    db.inbox = db.inbox.filter((q) => !gone.has(q.id));
+    merged++;
+  }
+  if (merged) { save(); changed(); }
+  return merged;
 }
 
 // Screenshots, GIFs, video and audio the agent committed under .ballast/media/<key>/ on its
@@ -431,6 +532,8 @@ async function complete(game, agent, item, report, branch) {
     else {
       Object.assign(task, { summary: `${body.slice(0, 800)}${pr ? '' : `\nBranch: ${branch}`}`, doneBy: agent.id, doneAt: Date.now(), branch });
       orch.updateTask(task.id, { status: review.onFinished(task, game, { pr }) });
+      // Strict Jungle games: the PR's files are checked against the game's folder.
+      if (pr) worksplit.checkScope(task, orch.getGame(task.gameId), pr).catch(() => {});
     }
     const label = blocked ? 'Blocked' : task.status === 'review' ? 'Ready for review' : 'Done';
     orch.feedPost(game.id, { kind: 'task', from: agent.name, agentId: agent.id, text: `${label} #${task.num} ${task.title}${pr ? `\n${pr}` : `\nbranch ${branch}`}${media ? `\n${media} capture(s) attached` : ''}\n${body.slice(0, 600)}` });

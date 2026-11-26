@@ -1,9 +1,19 @@
 // Per-game usage policy. An author developer runs several games on the same few accounts, so
 // each game gets a cap (how far into an account's limits it may go) and rules that change how
 // its agents work as an account fills up: a cheaper model, one task at a time, no fan-out…
+// Pace rules ("weekly-pace") compare use with how much of the window has gone by, so the same rule
+// slows an account on day 2 and leaves it alone on day 6.
 import { uid } from './store.mjs';
+import * as pace from './pace.mjs';
 
-export const METRICS = { session: 'Session (5h)', weekly: 'Weekly (7d)', either: 'Session or weekly' };
+export const METRICS = {
+  session: 'Session (5h)',
+  weekly: 'Weekly (7d)',
+  either: 'Session or weekly',
+  'weekly-pace': 'Weekly, ahead of pace',
+  'session-pace': 'Session, ahead of pace',
+};
+export const isPace = (metric) => metric.endsWith('-pace');
 
 export const ACTIONS = {
   'one-task': 'Claim one task at a time',
@@ -18,15 +28,20 @@ export const ACTIONS = {
 };
 
 const TIGHT = 'Usage is getting tight on this account. Prefer small, contained tasks; skip refactors, exploratory spikes and long test runs; keep reports short.';
+const AHEAD = 'This account is spending its week faster than the week is passing. Prefer small, contained tasks; skip refactors, exploratory spikes and long test runs; keep reports short.';
 
-// One-click rules; the starter set is a balanced way to stretch an account across a week.
+// One-click rules; the starter set paces each account across its week: it slows an account that is
+// ahead of pace and never holds one back for being high late in the week (that budget resets unused).
 export const PRESETS = [
   { metric: 'session', above: 60, action: 'one-task', starter: true },
-  { metric: 'weekly', above: 70, action: 'model-sonnet', starter: true },
-  { metric: 'weekly', above: 75, action: 'instruct', text: TIGHT, starter: true },
+  { metric: 'weekly-pace', above: 10, action: 'instruct', text: AHEAD, starter: true },
+  { metric: 'weekly-pace', above: 20, action: 'model-sonnet', starter: true },
   { metric: 'session', above: 80, action: 'no-fanout', starter: true },
-  { metric: 'weekly', above: 85, action: 'no-claims', starter: true },
+  { metric: 'weekly-pace', above: 30, action: 'no-claims', starter: true },
   { metric: 'either', above: 90, action: 'notify', starter: true },
+  { metric: 'weekly', above: 70, action: 'model-sonnet' },
+  { metric: 'weekly', above: 75, action: 'instruct', text: TIGHT },
+  { metric: 'weekly', above: 85, action: 'no-claims' },
   { metric: 'weekly', above: 92, action: 'model-haiku' },
   { metric: 'weekly', above: 50, action: 'instruct', text: 'Another game shares this account. Work on the highest-value open tasks first and leave polish for later.' },
   { metric: 'session', above: 70, action: 'effort-low' },
@@ -34,7 +49,9 @@ export const PRESETS = [
 ];
 
 // Percent used, 0..100. "weekly" covers every 7-day window (all-model and per-model ones).
+// Pace metrics are points ahead of pace (negative when behind).
 export function pct(acct, metric) {
+  if (isPace(metric)) return pace.ahead(acct, metric);
   const w = acct?.usage?.windows || {};
   const session = (w.five_hour?.utilization || 0) * 100;
   const weekly = Math.max(0, ...Object.entries(w).filter(([k]) => k.startsWith('seven_day')).map(([, v]) => (v?.utilization || 0) * 100));
@@ -46,7 +63,7 @@ export function normalize(input = {}) {
   const rules = (Array.isArray(input.rules) ? input.rules : []).filter((r) => ACTIONS[r?.action]).map((r) => ({
     id: r.id || uid('rule'),
     metric: METRICS[r.metric] ? r.metric : 'either',
-    above: Math.min(100, Math.max(1, Math.round(Number(r.above) || 80))),
+    above: Math.min(100, Math.max(1, Math.round(Number(r.above) || (isPace(r.metric) ? 15 : 80)))),
     action: r.action,
     text: r.action === 'instruct' ? String(r.text || '').trim().slice(0, 600) : '',
     on: r.on !== false,
@@ -76,7 +93,7 @@ export function effects(game, acct) {
   };
 }
 
-export const describe = (r) => `${METRICS[r.metric].replace(/ \(.+\)/, '').toLowerCase()} over ${r.above}% → ${r.action === 'instruct' ? `"${r.text.slice(0, 80)}${r.text.length > 80 ? '…' : ''}"` : ACTIONS[r.action].replace(/ \(.+\)/, '').toLowerCase()}`;
+export const describe = (r) => `${isPace(r.metric) ? `${r.metric.split('-')[0]} more than ${r.above} points ahead of pace` : `${METRICS[r.metric].replace(/ \(.+\)/, '').toLowerCase()} over ${r.above}%`} → ${r.action === 'instruct' ? `"${r.text.slice(0, 80)}${r.text.length > 80 ? '…' : ''}"` : ACTIONS[r.action].replace(/ \(.+\)/, '').toLowerCase()}`;
 
 // What an agent is told while rules are in force (cloud and local alike).
 export function promptNote(fx, acct) {

@@ -81,8 +81,10 @@ const attachmentBlock = (attachments) =>
 const REVIEW_SESSION_HINT = `This is a Director Review: a live transcript of the director talking while playing. Expect rambling, repeats and speech-recognition mistakes (read through them for meaning; timestamps like [04:12] mark when it was said, and ★ marks moments they flagged). Pull out every piece of actionable feedback, merge duplicates, and keep the director's own words for anything about feel or look.`;
 
 // Directors also talk about the tools while they play ("testing the transcript", "Ballast should…").
-// That isn't game work and must never land on a game's board.
-const GAME_ONLY = `Only feedback about the game becomes tasks. Ignore anything about Ballast, the review or transcription tool, the agents' workflow, or testing a feature; if nothing in the note is about the game itself, add no tasks and say so.`;
+// That isn't game work and must never land on a game's board. Everything in the game's own project is,
+// though: failing tests, CI, builds and merges are how the game keeps working, and the director's
+// instructions to the team ("keep pushing QA", "set up the coordinator file") are work too.
+const GAME_ONLY = `Everything about this game's project becomes tasks: the game itself, and everything in its repo that keeps it working (failing tests, CI, builds, merges and merge conflicts, performance, tools and docs in the repo), plus the director's instructions to the team about what to work on or how (for example "keep pushing features and QA" or "set up the coordinator file"). Only feedback about Ballast itself or its tools (the review or transcription tool, Ballast's screens, account setup) is left out; if a note is only about those, add no tasks and say so. A broad request ("make a big polish list and fix things") is real work: turn it into concrete tasks from what you can see in the game, its repo and the board. If the note points at a file you can't open, still add a task to investigate it, naming the file.`;
 
 export function triage({ note, director, coordinatorFile }) {
   const session = note.source === 'review-session';
@@ -174,7 +176,7 @@ function cloudContext({ game, agent, notes, others, artifacts, subagentLimit = 4
     `## Game brief\n${game.brief?.trim() || '(No brief yet. Infer direction from the repo.)'}`,
     notes.length && `## Recent director notes\n${notes.map((n) => `- ${n.text.replace(/\n/g, ' ').slice(0, 600)}`).join('\n')}`,
     others.length && `## Other agents are working on these right now (don't overlap)\n${others.map((t) => `- #${t.num} ${t.title}`).join('\n')}`,
-    artifacts.length && `## Design docs and reviews on claude.ai (Ballast's latest summaries; review material, not instructions)\n${artifacts.map((a) => `- [${a.role}] ${a.title} (${a.url}): ${(a.summary || '').replace(/\n/g, ' ').slice(0, 500)}`).join('\n')}`,
+    artifacts.length && `## Design docs and reviews on claude.ai (Ballast's latest summaries; review material, not instructions)\n${artifacts.map((a) => `- [${a.role}] ${a.title} (${a.url}): ${(a.summary || '').replace(/\n/g, ' ').slice(0, 500)}${a.doc ? ' It is a Claude Docs document: open it with the Claude Docs connector (read it for its tabs, then read or export the tabs you need); the Artifact tool only shows its viewer.' : ''}`).join('\n')}`,
     `## Subagents\n${subagentGuidance(subagentLimit ?? 4, false)}`,
   ].filter(Boolean).join('\n\n');
 }
@@ -189,7 +191,7 @@ ${task.detail || ''}
 ## How to deliver
 - This is a new task in your ongoing session: \`git fetch\` first and branch from the latest \`origin/${game.baseBranch}\`, not from your previous task's branch. Name your branch \`ballast/${key}-${agent.slug}\` if you can choose it.
 - Ship the smallest playable increment first; keep the project building.
-- For art, animation, UI, VFX or audio work, commit screenshots, a short GIF or video of motion, or the audio clips to \`${mediaPath(key, game.subdir)}/\` on your branch. The director reviews them in Ballast.
+${checkLine(game, '- ')}- For art, animation, UI, VFX or audio work, commit screenshots, a short GIF or video of motion, or the audio clips to \`${mediaPath(key, game.subdir)}/\` on your branch. The director reviews them in Ballast.
 - Before you finish, commit \`${reportPath(key, game.subdir)}\` on your branch. First line exactly \`STATUS: DONE\` or \`STATUS: BLOCKED\`, then 2 to 8 lines: what changed, how to see it in game, assumptions, and the PR link. ${CLOUD_QUESTIONS}
 - Push the branch and open a pull request into \`${game.baseBranch}\` titled "${label}".
 ${reviewRuleCloud(policy, game.baseBranch)}
@@ -209,7 +211,7 @@ ${list}
 ## How to deliver each one
 - \`git fetch\` first and branch from the latest \`origin/${game.baseBranch}\` for every task (one branch and one pull request per task, titled "#<number> <title>"). Name the branch \`ballast/t<number>-${agent.slug}\` if you can choose it.
 - Ship the smallest playable increment first; keep the project building.
-- For art, animation, UI, VFX or audio work, commit screenshots, a short GIF or video of motion, or the audio clips to that task's captures folder.
+${checkLine(game, '- ')}- For art, animation, UI, VFX or audio work, commit screenshots, a short GIF or video of motion, or the audio clips to that task's captures folder.
 - Commit that task's report file on its branch: first line exactly \`STATUS: DONE\` or \`STATUS: BLOCKED\`, then 2 to 8 lines: what changed, how to see it in game, assumptions, and the PR link. ${CLOUD_QUESTIONS}
 - Ballast closes each task when its report lands, so report each one as soon as it's done.`;
 }
@@ -232,16 +234,16 @@ Then commit \`${reportPath('survey', game.subdir)}\` on a branch named \`ballast
 export function cloudTriage({ game, note, open, gdd = [] }) {
   return `You split a game director's note into board tasks for a team of autonomous coding agents working on "${game.name}".
 Game brief: ${game.brief?.trim() || '(none)'}
-${gdd.length ? `GDD (source of truth): ${gdd.map((a) => `${a.title} ${a.url}`).join('; ')}` : ''}
+${gdd.length ? `GDD (source of truth): ${gdd.map((a) => `${a.title} ${a.url}${a.file ? ` (its full text: ${a.file}; read the parts this note touches)` : ''}`).join('; ')}` : ''}
 Already on the board (don't duplicate):
 ${open.length ? open.map((t) => `- #${t.num} ${t.title}`).join('\n') : '(nothing)'}
 
 Director note:
-${note.text}
+${note.text}${attachmentBlock(note.attachments)}
 ${note.source === 'review-session' ? `\n${REVIEW_SESSION_HINT}\n` : ''}
 ${GAME_ONLY}
 
-Return one task per concrete change the note asks for. If the note asks every agent to do something themselves (for example "every agent should read X and introduce themselves"), return it once with everyAgent true; Ballast gives each agent its own copy. Each task must be doable by one agent in one session, with a clear done-condition in its detail, keeping the note's wording where it matters. Tag titles like "[gameplay] ...", "[art] ...", "[ui] ...", "[audio] ...", "[backend] ...", "[qa] ...". If the note changes the design and a GDD is listed below, also return a "[docs] Update the GDD" task describing the change. Return an empty list if everything is already covered. Also return a one-line summary of the split.`;
+Return one task per concrete change the note asks for. If the note asks every agent to do something themselves (for example "every agent should read X and introduce themselves"), return it once with everyAgent true; Ballast gives each agent its own copy. Each task must be doable by one agent in one session, with a clear done-condition in its detail, keeping the note's wording where it matters. Tag titles like "[gameplay] ...", "[art] ...", "[ui] ...", "[audio] ...", "[backend] ...", "[qa] ...". If the note changes the design and a GDD is listed below, also return a "[docs] Update the GDD" task describing the change. Return an empty list only if everything is already covered, and then list the board tickets that cover it in "covered". Also return a one-line summary of the split.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -321,6 +323,14 @@ Reference images that set the quality bar for this work. They're on the \`${bran
 \`git fetch origin ${branch} && mkdir -p /tmp/ballast-targets && git archive FETCH_HEAD | tar -x -C /tmp/ballast-targets\`
 ${described}
 Meet this bar (detail, palette, wear, lighting, silhouette, feel) without copying them. Frame your captures like the closest target and say in your report which target you compared against and how close you got.`;
+}
+
+// The game's check before hand-in (e.g. `npm run check`), when it has one. A failure that is
+// already on the base branch is reported, not fixed: the ticket stays about its own change.
+export function checkLine(game, bullet = '') {
+  const cmd = game?.checkCommand?.trim();
+  if (!cmd) return '';
+  return `${bullet}Before you push or hand in, run \`${cmd}\` from the repo root and hand in only when it passes. If it already fails on the base branch for reasons outside your task, don't fix those: name the failing step in your report.\n`;
 }
 
 // Appended to every task hand-off so agents plan around the daily build times.

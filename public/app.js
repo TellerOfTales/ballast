@@ -224,6 +224,7 @@ function acctRow(a) {
   const status = !a.loggedIn ? 'error' : a.limited ? 'limited' : a.running ? 'running' : 'idle';
   const today = todayTokens(a.id);
   const sub = a.signedInAs ? `Paused: signed in as ${a.signedInAs}`
+    : needsRepair(a) ? 'Signed out: its agents are paused'
     : !a.loggedIn ? 'Not logged in'
     : a.limited ? `Out of usage until ${clock(a.limitedUntil)}`
     : [a.email, a.plan, today?.tokens ? `${fmtTokens(today.tokens)} tokens today` : ''].filter(Boolean).join(' · ') || 'Logged in';
@@ -231,13 +232,13 @@ function acctRow(a) {
     <div class="row">
       <span class="dot ${status}"></span>
       <span class="aname">${esc(a.name)}${a.isDefault ? ' <span class="hint" style="display:inline">(this PC)</span>' : ''}</span>
-      ${!a.loggedIn ? `<button class="primary small" data-act="acct-login" data-id="${a.id}">Log in</button>` : ''}
+      ${needsRepair(a) ? `<button class="primary small" data-act="acct-repair" data-id="${a.id}" title="${esc(a.authBroken?.error || 'Signed out')}">Repair sign-in</button>` : !a.loggedIn ? `<button class="primary small" data-act="acct-login" data-id="${a.id}">Log in</button>` : ''}
       <span class="actions">
         <button class="icon-btn" data-act="acct-refresh" data-id="${a.id}" title="Re-check login">⟳</button>
         <button class="icon-btn" data-act="acct-edit" data-id="${a.id}" title="Edit">✎</button>
       </span>
     </div>
-    <div class="sub${a.signedInAs ? ' warn-text' : ''}">${esc(sub)}${a.running ? ` · ${a.running} running` : ''}</div>
+    <div class="sub${a.signedInAs || needsRepair(a) ? ' warn-text' : ''}">${esc(sub)}${a.running ? ` · ${a.running} running` : ''}</div>
     ${a.signedInAs ? `<div class="row" style="gap:4px;margin:4px 0 2px"><button class="primary small" data-act="acct-detach" data-id="${a.id}">Give it its own login</button></div>` : ''}
     ${windowsOf(a).slice(0, 2).map((w) => meter(w)).join('')}
   </div>`;
@@ -253,7 +254,9 @@ const policyOf = (g, d) => {
   const mode = g?.review?.[d] || S.st.settings.review?.[d] || 'after';
   return mode === 'gate' && g?.isolation === 'shared' ? 'after' : mode;
 };
-const openQuestions = (gid) => (S.st.inbox || []).filter((q) => q.status === 'open' && (!gid || q.gameId === gid));
+// An archived game's open items stay out of the Inbox (they come back if it's restored).
+const liveGame = (id) => statusOf((S.st.games || []).find((g) => g.id === id) || {}) !== 'archived';
+const openQuestions = (gid) => (S.st.inbox || []).filter((q) => q.status === 'open' && (gid ? q.gameId === gid : liveGame(q.gameId)));
 const isDept = (tab) => S.st?.disciplines?.some((d) => d.id === tab);
 
 function renderHead() {
@@ -294,6 +297,8 @@ function renderHead() {
       ? `<a class="pill queued" href="https://github.com/${esc(g.github)}${g.subdir ? `/tree/${esc(g.baseBranch)}/${esc(g.subdir)}` : ''}" target="_blank" rel="noopener" title="Agents run as Claude cloud sessions and open pull requests into ${esc(g.baseBranch)}">cloud · ${esc(g.github)}${g.subdir ? `/${esc(g.subdir)}` : ''}</a>`
       : `<span class="pill" title="${g.isolation === 'worktree' ? `Each agent has its own git worktree; finished work lands on ${esc(g.integrationBranch)}` : 'All agents edit the same folder'}">${g.isolation === 'worktree' ? 'worktrees' : 'shared tree'}</span>`}
     ${g.cloudError ? `<span class="pill error" title="${esc(g.cloudError)}">GitHub unreachable</span>` : ''}
+    ${activeFocuses(g).map((f) => `<button class="pill fx-pill" data-act="tab" data-tab="board" title="${esc(f.text || f.title)}">★ ${esc(f.title)}</button>`).join('')}
+    ${S.st.accounts.filter((a) => needsRepair(a) && agentsOf(g.id).some((x) => x.accountId === a.id)).map((a) => `<button class="pill error" data-act="acct-repair" data-id="${a.id}" title="${esc(a.authBroken?.error || 'Signed out')}">${esc(a.name)} signed out · Repair sign-in</button>`).join('')}
     ${(() => {
       const unlinked = agents.filter((a) => a.status === 'unlinked').length;
       return unlinked ? `<button class="primary small" data-act="cloud-connect-all" title="Nothing can start until each cloud agent has a session">Connect ${unlinked} cloud session${unlinked > 1 ? 's' : ''}</button>` : '';
@@ -315,7 +320,7 @@ function renderHead() {
     })()}
     <span class="dots" title="${agents.map((a) => `${a.name}: ${a.status}`).join('\n')}">${agents.map((a) => `<span class="dot ${a.status}"></span>`).join('')}</span>
     <label class="switch" title="When on, idle agents keep claiming open board tasks on their own"><input type="checkbox" id="autopilot" ${g.autopilot ? 'checked' : ''}><i></i>Autopilot</label>
-    <button class="ghost small" data-act="wake" title="Hand open board tasks to idle agents now">Wake idle</button>`;
+    <button class="ghost small" data-act="wake" title="Hand open board tasks to idle agents now">Wake idle</button>${awayPill()}`;
 }
 
 function renderTabs() {
@@ -332,9 +337,14 @@ function renderTabs() {
     ['feed', 'Feed', ''],
     ...S.st.disciplines.map((d) => [d.id, d.label, policyOf(g, d.id) === 'skip' ? '' : pendingIn(d.id) || '']),
     ['agents', 'Agents', agents.length ? `${running}/${agents.length}` : ''],
+    ['gdd', 'GDD', (g.gdd?.drafts || []).filter((x) => x.status === 'review').length || ''],
     ['roadmap', 'Roadmap', ''],
+    ['sections', 'Sections', S.st.roadmaps?.[g.id]?.features?.filter((f) => f.gate >= 0 && f.level >= f.gate).length || ''],
+    ['loops', 'Gameplay Loop', ''],
     ['board', 'Board', open || ''],
     ['builds', 'Builds', ''],
+    ['perf', 'Performance', ''],
+    ['budget', 'Budget', ''],
     ['artifacts', 'Artifacts', arts || ''],
     ['settings', 'Settings', ''],
   ];
@@ -405,8 +415,26 @@ function buildShell() {
     case 'roadmap':
       v.innerHTML = '<div class="scroll pad roadmap" style="flex:1" id="roadmap"></div>';
       break;
+    case 'gdd':
+      v.innerHTML = '<div class="scroll pad" style="flex:1" id="gddtab"></div>';
+      delete GDDV.data[g.id];
+      delete GDDV.sig[g.id];
+      renderGdd();
+      break;
+    case 'sections':
+      v.innerHTML = '<div class="scroll pad" style="flex:1" id="sections"></div>';
+      renderSections();
+      break;
+    case 'loops':
+      v.innerHTML = '<div class="scroll pad loops" style="flex:1" id="loops"></div>';
+      delete LOOPS.data[g.id]; // fresh each time the tab opens
+      renderLoops();
+      break;
     case 'board':
       v.innerHTML = `<div class="board-wrap">
+        ${gddBar(g)}
+        <div id="focus-bar"></div>
+        <div id="jungle-bar"></div>
         <form class="task-form" id="task-form">
           <input name="title" placeholder="New task, e.g. [gameplay] Coyote time on jumps" autocomplete="off">
           <input name="detail" placeholder="Detail / done-condition (optional)" autocomplete="off">
@@ -426,6 +454,16 @@ function buildShell() {
       break;
     case 'builds':
       v.innerHTML = '<div class="scroll pad" style="flex:1" id="builds"></div>';
+      break;
+    case 'perf':
+      v.innerHTML = '<div class="scroll pad perf" style="flex:1" id="perf"></div>';
+      delete PERF.data[g.id]; // fresh runs each time the tab opens
+      renderPerf();
+      break;
+    case 'budget':
+      v.innerHTML = '<div class="scroll pad perf" style="flex:1" id="budget"></div>';
+      delete BUDGET.data[g.id]; // fresh figures each time the tab opens
+      renderBudget();
       break;
     case 'artifacts':
       v.innerHTML = `<div class="scroll" style="flex:1">
@@ -472,6 +510,8 @@ function renderLive() {
     }
     case 'board': renderBoard(); break;
     case 'roadmap': renderRoadmap(); break;
+    case 'sections': renderSections(); break;
+    case 'gdd': renderGdd(); break;
     case 'builds': renderBuilds(); break;
     case 'artifacts': renderArtifacts(); renderCloudArtifacts(); break;
   }
@@ -715,12 +755,27 @@ function sendAnswerToTeam(askId) {
   });
 }
 
+// While the director is away: who, until when (set in Settings).
+function awayPill() {
+  const a = S.st.settings.away;
+  if (!a?.from) return '';
+  const day = (d) => new Date(`${d}T12:00`);
+  const now = new Date();
+  if (now < day(a.from).setHours(0, 0, 0, 0) || now > day(a.to).setHours(23, 59, 59, 999)) return '';
+  const label = { sick: '🤒 Off sick', vacation: '🏖 On vacation', away: 'Away' }[a.reason] || 'Away';
+  return `<span class="pill limited" title="Agents leave work that needs you on the board and do review-free work. Change it in Settings.">${label} until ${esc(day(a.to).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }))}</span>`;
+}
+
 function feedEntry(e) {
   const when = `<span class="when">${clock(e.ts)}</span>`;
   if (e.kind === 'system') return `<div class="entry system"><div class="body">${esc(e.text)} · ${clock(e.ts)}</div></div>`;
   if (e.kind === 'video') {
     return `<div class="entry video-entry" data-video="${esc(e.videoId)}"><div class="head"><span class="avatar" style="background:var(--accent)">★</span><span class="who">${esc(e.from)}</span><span class="pill queued vid-stage">🎬 reviewing the video…</span>${when}</div>
       <div class="body">${e.text ? `<div class="md">${md(e.text)}</div>` : ''}${attachmentsHtml(e.attachments)}<div class="hint vid-progress">Your note goes to the team with Claude's timestamped review as soon as it's done.</div></div></div>`;
+  }
+  if (e.kind === 'report') {
+    return `<div class="entry report"><div class="head"><span class="avatar" style="background:var(--brand-green)">☀</span><span class="who">${esc(e.from || 'Daily update')}</span><span class="pill success">for you</span>${when}</div>
+      <div class="body"><div class="md">${md(e.text)}</div></div></div>`;
   }
   if (e.kind === 'ask') {
     return `<div class="entry ask"><div class="head"><span class="avatar" style="background:var(--accent)">★</span><span class="who">${esc(e.from)}</span><span class="pill">asked ${esc(e.to || 'Claude')}</span>${when}</div>
@@ -754,6 +809,7 @@ function feedEntry(e) {
   if (e.kind === 'task' || e.kind === 'error') body = `<div class="md">${md(e.text)}</div>`;
   if (e.kind === 'artifact' && e.artifactId) body = `<div class="art-ref"><div class="md" style="flex:1">${md(e.text)}</div><button class="btn small" data-act="art-open" data-id="${e.artifactId}">Open</button></div>`;
   if (e.kind === 'question') body += `<div style="margin-top:8px"><button class="btn small" data-act="q-answer" data-id="${e.questionId}">Answer</button></div>`;
+  if (e.kind === 'note' && e.num && !e.to) body += `<div class="note-acts"><button class="ghost small" data-act="note-check" data-num="${e.num}" title="Does this feedback confirm any blocked ticket, or send it back? New notes are checked by themselves.">Check blocked tickets</button></div>`;
   if (e.kind === 'build') body +=`<div style="margin-top:8px"><button class="btn small" data-act="build-log" data-id="${e.buildId}">View log</button></div>`;
   return `<div class="entry ${e.kind}">
     <div class="head">${av}<span class="who">${esc(e.from || (e.kind === 'build' ? 'Build' : 'Ballast'))}</span>${label}${when}</div>
@@ -775,7 +831,7 @@ function appendFeed(entry) {
 
 function statusPill(a) {
   if (a.status === 'running') return `<span class="pill running">running <span data-since="${a.startedAt}"></span></span>`;
-  if (a.status === 'queued') return `<span class="pill queued">queued ${a.queue}</span>`;
+  if (a.status === 'queued') return `<span class="pill queued" title="${esc(a.waiting ? `Waiting to ${a.waiting.what}. It waits for ${a.waiting.why}.` : `${a.queue} queued`)}">queued${a.waiting ? `: ${esc(a.waiting.short)}` : ` ${a.queue}`}</span>`;
   if (a.status === 'unlinked') return '<span class="pill limited" title="Connect a cloud session before it can take work">needs session</span>';
   if (a.status === 'capped') return `<span class="pill limited" title="This game's usage cap or a stop rule is holding its ${a.queue} queued item(s) until the account's limits reset (game Settings)">held by usage rules</span>`;
   return `<span class="pill ${a.status}">${a.status}</span>`;
@@ -1040,16 +1096,90 @@ async function threadPropose(taskId, root, btn) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// GDD re-evaluation (Board tab): pull the latest GDD, read the repo, add what's missing. On demand or scheduled.
+
+const GDD_SCHEDULES = { off: 'Off', hourly: 'Every hour', '6h': 'Every 6 hours', daily: 'Every day', weekly: 'Every week' };
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const gddPagesOf = (g) => (S.st.cloudArtifacts || []).filter((c) => c.gameId === g.id && (c.role === 'gdd' || /\bgdd\b|game design doc/i.test(c.title || '')));
+
+function gddBar(g) {
+  const r = g.gddReview || { every: 'off', at: '09:00', day: 1, onlyOnChange: true };
+  const opt = (v, cur, label) => `<option value="${esc(v)}"${String(v) === String(cur) ? ' selected' : ''}>${esc(label)}</option>`;
+  return `<div class="gdd-bar" id="gdd-bar">
+    <div class="row" style="gap:10px;flex-wrap:wrap">
+      <button type="button" class="primary small" data-act="gdd-review" id="gdd-run">Re-evaluate against the GDD &amp; update tasks</button>
+      <span class="hint grow" id="gdd-status" style="margin:0"></span>
+    </div>
+    <div class="row gdd-sched" style="gap:8px;flex-wrap:wrap">
+      <span class="hint" style="margin:0">Run it</span>
+      <select class="mini" data-gdd="every">${Object.entries(GDD_SCHEDULES).map(([k, l]) => opt(k, r.every, l)).join('')}</select>
+      <select class="mini" data-gdd="day" ${r.every === 'weekly' ? '' : 'hidden'}>${WEEKDAYS.map((d, i) => opt(i, r.day ?? 1, `on ${d}`)).join('')}</select>
+      <input class="mini" type="time" data-gdd="at" value="${esc(r.at || '09:00')}" ${r.every === 'daily' || r.every === 'weekly' ? '' : 'hidden'}>
+      <select class="mini" data-gdd="model" title="Model for the re-evaluation">${opt('', r.model || '', 'Sonnet (default)')}${opt('opus', r.model || '', 'Opus')}${opt('haiku', r.model || '', 'Haiku')}</select>
+      <label class="check" style="margin:0" ${r.every === 'off' ? 'hidden' : ''} data-gdd-skip><input type="checkbox" data-gdd="onlyOnChange" ${r.onlyOnChange !== false ? 'checked' : ''}><span class="hint" style="margin:0">Skip scheduled runs when the GDD hasn't changed</span></label>
+    </div>
+  </div>`;
+}
+
+// The status line, refreshed with the board.
+function renderGddStatus(g) {
+  const el = $('#gdd-status');
+  if (!el) return;
+  const r = g.gddReview || {};
+  const pages = gddPagesOf(g);
+  const when = (t) => new Date(t).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' });
+  const parts = [];
+  if (r.status === 'running') parts.push('<b>Re-evaluating:</b> pulling the latest GDD, reading the repo…');
+  else if (r.status === 'error') parts.push(`<span class="gdd-err">✗ ${esc(r.error || 'The last run failed.')}</span>`);
+  else if (r.last) {
+    const l = r.last;
+    parts.push(l.skipped
+      ? `Last check ${esc(ago(l.at))}: GDD unchanged, skipped`
+      : `Last run ${esc(ago(l.at))}: ${l.added?.length ? `added ${l.added.map((n) => `#${n}`).join(', ')}` : 'no new tasks'}${l.gddChanged ? ' · the GDD had changed' : ''}${l.outdated?.length ? ` · ${l.outdated.length} ticket${l.outdated.length > 1 ? 's' : ''} may not match the GDD (see the feed)` : ''}`);
+  } else parts.push(pages.length ? `GDD: ${esc(pages.map((p) => p.title).join(', '))}, plus GDD files in the repo` : 'No claude.ai GDD page is tracked for this game; GDD and design files in the repo are used.');
+  if (r.warning && r.status !== 'running') parts.push(`<span class="gdd-err">${esc(r.warning)}</span>`);
+  if (r.every && r.every !== 'off' && r.nextAt && r.status !== 'running') parts.push(`next ${esc(when(r.nextAt))}`);
+  el.innerHTML = parts.join(' · ');
+  const btn = $('#gdd-run');
+  if (btn) { btn.disabled = r.status === 'running'; btn.textContent = r.status === 'running' ? 'Re-evaluating…' : 'Re-evaluate against the GDD & update tasks'; }
+}
+
+document.addEventListener('change', async (e) => {
+  const t = e.target;
+  if (!t.dataset?.gdd || !t.closest('#gdd-bar')) return;
+  const bar = t.closest('#gdd-bar');
+  const val = (k) => $(`[data-gdd="${k}"]`, bar);
+  if (t.dataset.gdd === 'every') {
+    val('day').hidden = t.value !== 'weekly';
+    val('at').hidden = !['daily', 'weekly'].includes(t.value);
+    $('[data-gdd-skip]', bar).hidden = t.value === 'off';
+  }
+  try {
+    await api('PATCH', `/api/games/${S.gameId}/gdd-review`, { every: val('every').value, at: val('at').value || '09:00', day: Number(val('day').value), onlyOnChange: val('onlyOnChange').checked, model: val('model').value });
+    toast(val('every').value === 'off' ? 'GDD re-evaluation: on demand only' : `GDD re-evaluation scheduled: ${GDD_SCHEDULES[val('every').value].toLowerCase()}`);
+  } catch (err) { fail(err); }
+});
+
 function renderBoard() {
   const el = $('#board');
   if (!el) return;
+  const game = S.st.games.find((x) => x.id === S.gameId);
+  if (game) renderGddStatus(game);
+  const jb = $('#jungle-bar');
+  if (jb && game) jb.innerHTML = jungleBar(game);
+  const fb = $('#focus-bar');
+  if (fb && game && !fb.contains(document.activeElement)) fb.innerHTML = focusBar(game);
   const tasks = tasksOf(S.gameId);
   const name = (id) => agentOf(id)?.name || 'removed agent';
   const cols = [['open', 'Open'], ['claimed', 'In progress'], ['review', 'Awaiting approval'], ['blocked', 'Blocked'], ['done', 'Done']];
+  const { shown: doneShown, archived } = boardArchive(tasks);
   el.innerHTML = cols.map(([status, label]) => {
     let list = tasks.filter((t) => t.status === status);
-    list = status === 'done' ? list.sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0)).slice(0, 40) : list.sort((a, b) => (b.priority ?? 1) - (a.priority ?? 1) || a.num - b.num);
-    return `<div class="col"><h5>${label} <span>${tasks.filter((t) => t.status === status).length}</span></h5>${list.map((t) => {
+    list = status === 'done' ? doneShown : list.sort((a, b) => (b.priority ?? 1) - (a.priority ?? 1) || a.num - b.num);
+    const count = status === 'done' ? doneShown.length : list.length;
+    const extra = status === 'done' && archived.length ? `<a href="#" class="col-archive" data-act="board-archive" title="Older done tickets and cancelled ones">Archive ${archived.length}</a>` : '';
+    return `<div class="col"><h5>${label} <span>${count}</span>${extra}</h5>${list.map((t) => {
       const meta = status === 'claimed' ? `${esc(name(t.claimedBy))} · ${ago(t.claimedAt)}`
         : status === 'done' ? `${esc(name(t.doneBy))} · ${ago(t.doneAt)}`
         : `${t.assignee ? `for ${esc(name(t.assignee))} · ` : ''}from ${esc(t.createdBy || '?')}${t.noteNum ? ` · note #${t.noteNum}` : ''}`;
@@ -1063,6 +1193,8 @@ function renderBoard() {
         status !== 'blocked' && `<button class="ghost small" data-act="thread-open" data-id="${t.id}" title="Talk this ticket through with Claude">${talk}</button>`,
         status !== 'open' && `<button class="ghost small" data-act="task-status" data-id="${t.id}" data-status="open">Reopen</button>`,
         status !== 'done' && `<button class="ghost small" data-act="task-status" data-id="${t.id}" data-status="done">Done</button>`,
+        status !== 'done' && `<button class="ghost small" data-act="task-cancel" data-id="${t.id}" title="Close it without doing it; it goes to the board archive">Cancel</button>`,
+        ownerActs(game, t, status),
         `<button class="ghost small" data-act="task-edit" data-id="${t.id}">Edit</button>`,
         `<button class="ghost small" data-act="task-delete" data-id="${t.id}">Delete</button>`,
       ].filter(Boolean).join('');
@@ -1071,7 +1203,7 @@ function renderBoard() {
           <button class="icon-btn" data-act="task-prio" data-id="${t.id}" data-dir="up" ${p >= 3 ? 'disabled' : ''} title="Promote${p < 3 ? ` to ${PRIO_LABEL[p + 1]}` : ''}">▲</button>
           <button class="icon-btn" data-act="task-prio" data-id="${t.id}" data-dir="down" ${p <= 0 ? 'disabled' : ''} title="Demote${p > 0 ? ` to ${PRIO_LABEL[p - 1]}` : ''}">▼</button></span>`;
       return `<div class="task prio-${p}">
-        <div class="task-top"><div class="grow"><span class="num">#${t.num}</span>${p !== 1 && status !== 'done' ? `<span class="prio-badge p${p}">${PRIO_LABEL[p]}</span>` : ''}<span class="title">${esc(t.title)}</span></div>${moves}</div>
+        <div class="task-top"><div class="grow"><span class="num">#${t.num}</span>${p !== 1 && status !== 'done' ? `<span class="prio-badge p${p}">${PRIO_LABEL[p]}</span>` : ''}<span class="title">${esc(t.title)}</span>${focusPill(game, t)}${ownerPill(game, t)}</div>${moves}</div>
         <div class="meta">${meta}${t.note && status === 'open' ? ` · ${esc(t.note)}` : ''}</div>
         ${t.detail && status !== 'done' ? `<div class="detail">${esc(t.detail)}</div>` : ''}
         ${t.summary ? `<div class="summary">${esc(t.summary)}</div>` : ''}
@@ -1079,11 +1211,55 @@ function renderBoard() {
         ${status === 'blocked' && t.triage?.status === 'running' ? '<div class="hint" style="margin:4px 0 0">Self-triaging: can an agent still do this, or does it need a person?</div>' : ''}
         ${status === 'blocked' && t.triage?.verdict === 'stuck' ? '<div class="hint" style="margin:4px 0 0;color:var(--accent)">Blocked again after retries, with no person-only cause found. Talk it through.</div>' : ''}
         ${t.triage?.verdict === 'retry' && status !== 'blocked' && t.triage.why ? `<div class="hint" style="margin:4px 0 0">↻ Self-triaged: ${esc(t.triage.why.slice(0, 160))}</div>` : ''}
+        ${t.feedbackCheck && status === 'blocked' && t.feedbackCheck.verdict === 'waiting' ? `<div class="hint fb-check">⏸ Checked against note #${t.feedbackCheck.note}: ${esc(t.feedbackCheck.evidence.slice(0, 220))}</div>` : ''}
+        ${t.feedbackCheck?.verdict === 'reopen' && status === 'open' ? `<div class="hint fb-check">↩ Reopened by note #${t.feedbackCheck.note}: ${esc(t.feedbackCheck.evidence.slice(0, 220))}</div>` : ''}
         ${t.blockReason && status === 'blocked' ? `<div class="blocked">${esc(t.blockReason)}</div>` : ''}
         <div class="acts">${acts}</div>
       </div>`;
     }).join('')}</div>`;
   }).join('');
+}
+
+// The Done column keeps the latest 50; older done tickets and cancelled ones live in the archive.
+const DONE_SHOWN = 50;
+function boardArchive(tasks) {
+  const done = tasks.filter((t) => t.status === 'done').sort((a, b) => (b.doneAt || b.updatedAt || 0) - (a.doneAt || a.updatedAt || 0));
+  const kept = done.filter((t) => !t.cancelled);
+  const shown = kept.slice(0, DONE_SHOWN);
+  return { shown, archived: done.filter((t) => !shown.includes(t)) };
+}
+
+function archiveModal() {
+  const g = game();
+  const name = (id) => agentOf(id)?.name || '';
+  const rows = () => boardArchive(tasksOf(g.id)).archived;
+  const item = (t) => `<div class="arch-row" data-id="${t.id}">
+      <div class="row" style="gap:8px"><span class="num">#${t.num}</span><span class="grow">${esc(t.title)}</span>
+        <span class="pill${t.cancelled ? ' limited' : ' success'}">${t.cancelled ? 'cancelled' : 'done'}</span>
+        <span class="hint" style="margin:0;white-space:nowrap">${t.doneAt ? ago(t.doneAt) : ''}${t.doneBy && name(t.doneBy) ? ` · ${esc(name(t.doneBy))}` : ''}</span>
+        <button class="ghost small" data-act="archive-reopen" data-id="${t.id}">Reopen</button></div>
+      ${t.summary ? `<details><summary class="hint">What happened</summary><div class="summary">${esc(t.summary)}</div></details>` : ''}
+    </div>`;
+  modal({
+    title: `Board archive · ${g.name}`,
+    wide: true,
+    body: `<p class="hint" style="margin-top:0">Done tickets older than the latest ${DONE_SHOWN}, and every cancelled ticket. Agents can still see them when they search the board.</p>
+      <div class="row" style="gap:8px;margin-bottom:10px"><input name="q" placeholder="Search by number, title or summary" class="grow">
+        <select name="kind" class="mini"><option value="">Done and cancelled</option><option value="done">Done</option><option value="cancelled">Cancelled</option></select></div>
+      <div class="arch-list"></div>`,
+    onMount: (root) => {
+      const draw = () => {
+        const q = $('[name=q]', root).value.trim().toLowerCase().replace(/^#/, '');
+        const kind = $('[name=kind]', root).value;
+        const list = rows().filter((t) => (!kind || (kind === 'cancelled') === !!t.cancelled)
+          && (!q || String(t.num) === q || t.title.toLowerCase().includes(q) || (t.summary || '').toLowerCase().includes(q)));
+        $('.arch-list', root).innerHTML = list.length ? list.slice(0, 300).map(item).join('') + (list.length > 300 ? `<p class="hint">${list.length - 300} more: search to narrow it down.</p>` : '') : '<p class="hint">Nothing matches.</p>';
+      };
+      $('[name=q]', root).oninput = draw;
+      $('[name=kind]', root).onchange = draw;
+      draw();
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1116,10 +1292,1459 @@ function renderBuilds() {
 }
 
 // ---------------------------------------------------------------------------
+// Performance: profiler runs from playtests, how they trend across test builds, and each run over time
+
+const PERF = { data: {}, sel: {}, loading: {} }; // per game: runs, selections
+const SERIES = ['#3987e5', '#d95926']; // categorical slots 1-2, validated against the dark panel
+const LOOK_NORMAL_FIELDS = ['t', 'fps', 'simMs', 'renderMs', 'draws', 'drawn', 'cpuMs', 'gpuMs', 'scale'];
+const pfmt = (v, unit = '') => {
+  if (v == null || !Number.isFinite(v)) return '–';
+  const a = Math.abs(v);
+  const n = a >= 1000 ? Math.round(v).toLocaleString() : a >= 100 ? String(Math.round(v)) : a >= 10 ? String(Math.round(v * 10) / 10) : String(Math.round(v * 100) / 100);
+  return unit === '%' ? `${n}%` : unit === 'ms' || unit === 'fps' ? `${n} ${unit}` : n;
+};
+const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+const budgetTag = (ref, unit) => (ref != null ? `<span class="pf-budget"><i></i>budget ${pfmt(ref, unit)}</span>` : '');
+const runTick = (r) => `${new Date(r.at).toLocaleDateString([], { month: 'short', day: 'numeric' })} ${new Date(r.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }).replace(/s?([AP])M/i, (m, x) => x.toLowerCase())}`;
+const runDay = (r) => new Date(r.at).toLocaleDateString([], { month: 'short', day: 'numeric' });
+const runName = (r) => `${runDay(r)} ${new Date(r.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}${r.label ? ` · ${r.label}` : ''}`;
+const niceMax = (v) => { if (!(v > 0)) return 1; const p = 10 ** Math.floor(Math.log10(v)); return [1, 2, 2.5, 5, 10].map((m) => m * p).find((m) => m >= v); };
+const mmssP = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+
+async function loadPerf(gid = S.gameId) {
+  PERF.loading[gid] = true;
+  try { PERF.data[gid] = await api('GET', `/api/games/${gid}/perf`); } catch (err) { fail(err); PERF.data[gid] = []; }
+  PERF.loading[gid] = false;
+  if (S.tab === 'perf' && S.gameId === gid) renderPerf();
+}
+
+// +1 when higher is better (frame rate), -1 when lower is (ms, draw calls), read off the budgets.
+function perfDirection(runs, name) {
+  let up = 0;
+  for (const r of runs) for (const b of r.budgets) if (b.name === name && b.limit != null && b.value !== b.limit) up += (b.value > b.limit) === b.pass ? 1 : -1;
+  return up ? Math.sign(up) : /fps|rate/i.test(name) ? 1 : -1;
+}
+
+// Inside budget both times, a change is just a change; it only reads as better or worse when a budget is at stake.
+function deltaHtml(cur, prev, dir, unit, neutral = false) {
+  if (cur == null || prev == null) return '';
+  const d = cur - prev;
+  if (Math.abs(d) < 1e-9) return '<span class="pf-delta">no change</span>';
+  const good = Math.sign(d) === dir;
+  if (neutral) return `<span class="pf-delta"><i class="pf-arrow">${d > 0 ? '▲' : '▼'}</i> ${pfmt(Math.abs(d), unit)}</span>`;
+  return `<span class="pf-delta"><i class="pf-arrow ${good ? 'good' : 'bad'}">${d > 0 ? '▲' : '▼'}</i> ${pfmt(Math.abs(d), unit)} ${good ? 'better' : 'worse'}</span>`;
+}
+
+// One axis per chart: gridlines, y labels and an optional budget line.
+function chartFrame(w, h, ymax, ref, unit) {
+  const m = { l: 40, r: 12, t: 12, b: 22 };
+  const y = (v) => m.t + (h - m.t - m.b) * (1 - v / ymax);
+  const grid = [0, 0.5, 1].map((f) => `<line class="pf-gridline" x1="${m.l}" x2="${w - m.r}" y1="${y(ymax * f)}" y2="${y(ymax * f)}"/><text class="pf-ax" x="${m.l - 6}" y="${y(ymax * f) + 4}" text-anchor="end">${pfmt(ymax * f, unit === '%' ? '%' : '')}</text>`).join('');
+  const budget = ref != null ? `<line class="pf-ref" x1="${m.l}" x2="${w - m.r}" y1="${y(ref)}" y2="${y(ref)}"/>` : '';
+  return { m, y, grid, budget };
+}
+
+function trendCard(runs, name) {
+  const pts = runs.map((r, i) => ({ r, i, b: r.budgets.find((x) => x.name === name) })).filter((p) => p.b);
+  const last = pts[pts.length - 1];
+  const prev = pts[pts.length - 2];
+  const unit = last.b.unit;
+  const dir = perfDirection(runs, name);
+  const w = 300, h = 130;
+  const ymax = niceMax(Math.max(...pts.map((p) => p.b.value), ...pts.map((p) => p.b.limit ?? 0)) * 1.08);
+  const f = chartFrame(w, h, ymax, last.b.limit, unit);
+  const x = (i) => (runs.length < 2 ? (f.m.l + w - f.m.r) / 2 : f.m.l + 10 + ((w - f.m.l - f.m.r - 20) * i) / (runs.length - 1));
+  const line = pts.length > 1 ? `<polyline class="pf-line" stroke="${SERIES[0]}" points="${pts.map((p) => `${x(p.i)},${f.y(p.b.value)}`).join(' ')}"/>` : '';
+  const dots = pts.map((p) => {
+    const tip = `${runName(p.r)}${p.r.noteNum ? ` (note #${p.r.noteNum})` : ''}\n${name}: ${pfmt(p.b.value, unit)}${p.b.limit != null ? ` · budget ${pfmt(p.b.limit, unit)}` : ''}\n${p.b.pass ? '✓ within budget' : '✗ over budget'}`;
+    return `<circle class="pf-dot ${p.b.pass ? 'pass' : 'fail'}" cx="${x(p.i)}" cy="${f.y(p.b.value)}" r="4.5"/><circle class="pf-hit" cx="${x(p.i)}" cy="${f.y(p.b.value)}" r="13" data-tip="${esc(tip)}"/>`;
+  }).join('');
+  const xi = runs.length <= 3 ? runs.map((_, i) => i) : [0, runs.length - 1];
+  const xl = xi.map((i) => `<text class="pf-ax" x="${x(i)}" y="${h - 6}" text-anchor="${i === 0 && runs.length > 1 ? 'start' : i === runs.length - 1 && runs.length > 1 ? 'end' : 'middle'}">${esc(runTick(runs[i]))}</text>`).join('');
+  const agg = unit === 'max' ? 'peak' : unit === 'mean' ? 'average' : '';
+  return `<div class="card pf-trend">
+    <div class="pf-trend-head"><b>${esc(cap(name))}</b>${agg ? `<span class="hint" style="margin:0">${agg}</span>` : ''}${budgetTag(last.b.limit, unit)}</div>
+    <div class="pf-big"><span>${pfmt(last.b.value, unit)}</span><span class="pf-status ${last.b.pass ? 'pass' : 'fail'}">${last.b.pass ? '✓ in budget' : '✗ over budget'}</span></div>
+    <div class="pf-sub">${prev ? `${deltaHtml(last.b.value, prev.b.value, dir, unit, last.b.pass && prev.b.pass)} <span class="hint" style="margin:0">vs the run before</span>` : '<span class="hint" style="margin:0">One run so far</span>'}</div>
+    <svg viewBox="0 0 ${w} ${h}" class="pf-svg" role="img" aria-label="${esc(name)} across runs">${f.grid}${f.budget}${line}${dots}${xl}</svg>
+  </div>`;
+}
+
+// The charts for one run, over the length of the round.
+function runCharts(r) {
+  const F = r.samples.fields;
+  const col = (n) => F.indexOf(n);
+  const lim = (n) => r.budgets.find((b) => b.name === n)?.limit ?? null;
+  const known = F.length >= 6 && F.every((f, i) => LOOK_NORMAL_FIELDS[i] === f);
+  const charts = known ? [
+    { title: 'Frame rate', unit: 'fps', series: [['fps', 'Frame rate']], ref: lim('frame rate') },
+    { title: 'Frame time', unit: 'ms', series: [['cpuMs', 'CPU'], ['gpuMs', 'GPU']], ref: lim('frame CPU') ?? lim('frame GPU') },
+    { title: 'Draw calls', unit: '', series: [['draws', 'Draw calls']], ref: lim('draw calls') },
+    { title: 'Townsfolk drawn', unit: '', series: [['drawn', 'Townsfolk drawn']], ref: null },
+    { title: 'Render scale', unit: '%', series: [['scale', 'Render scale']], ref: null, scale: 100, ymax: 100 },
+    { title: 'Crowd CPU', unit: 'ms', series: [['simMs', 'Sim'], ['renderMs', 'Draw']], ref: null },
+  ] : F.filter((f) => f !== 't').map((f) => ({ title: f, unit: '', series: [[f, f]], ref: null }));
+  const ti = col('t');
+  const rows = r.samples.rows;
+  const T = rows.map((row, i) => (ti >= 0 && row[ti] != null ? row[ti] : i));
+  const tmax = Math.max(1, ...T);
+  return charts.map((c, ci) => {
+    const ss = c.series.map(([f, label], si) => ({ label, i: col(f), color: SERIES[si] })).filter((s) => s.i >= 0 && rows.some((row) => row[s.i] != null));
+    if (!ss.length) return '';
+    const k = c.scale || 1;
+    const w = 640, h = 140;
+    const ymax = c.ymax || niceMax(Math.max(...ss.flatMap((s) => rows.map((row) => (row[s.i] ?? 0) * k)), c.ref ?? 0) * 1.08);
+    const f = chartFrame(w, h, ymax, c.ref, c.unit);
+    const x = (v) => f.m.l + ((w - f.m.l - f.m.r) * v) / tmax;
+    const lines = ss.map((s) => {
+      const pts = rows.map((row, i) => (row[s.i] == null ? null : `${x(T[i])},${f.y(row[s.i] * k)}`)).filter(Boolean);
+      let lastI = rows.length - 1;
+      while (lastI > 0 && rows[lastI][s.i] == null) lastI--;
+      const label = ss.length > 1 ? `<text class="pf-direct" x="${w - f.m.r - 2}" y="${f.y(rows[lastI][s.i] * k) - 6}" text-anchor="end">${esc(s.label)}</text>` : '';
+      return `<polyline class="pf-line" stroke="${s.color}" points="${pts.join(' ')}"/>${label}`;
+    }).join('');
+    const xl = [0, tmax / 2, tmax].map((v, i) => `<text class="pf-ax" x="${x(v)}" y="${h - 6}" text-anchor="${['start', 'middle', 'end'][i]}">${mmssP(v)}</text>`).join('');
+    const legend = ss.length > 1 ? `<span class="pf-legend">${ss.map((s) => `<span><i style="background:${s.color}"></i>${esc(s.label)}</span>`).join('')}</span>` : '';
+    return `<div class="pf-run-chart">
+      <div class="pf-trend-head"><b>${esc(cap(c.title))}</b>${legend}${budgetTag(c.ref, c.unit)}</div>
+      <svg viewBox="0 0 ${w} ${h}" class="pf-svg pf-time" data-run="${esc(r.id)}" data-x0="${f.m.l}" data-x1="${w - f.m.r}" data-tmax="${tmax}" data-w="${w}">
+        ${f.grid}${f.budget}${lines}${xl}<line class="pf-xh" x1="0" x2="0" y1="${f.m.t}" y2="${h - f.m.b}" visibility="hidden"/>
+        <rect class="pf-overlay" x="${f.m.l}" y="0" width="${w - f.m.l - f.m.r}" height="${h}"/>
+      </svg></div>`;
+  }).join('');
+}
+
+// Hovering a run chart shows that moment across every chart of the run.
+function perfHover(e) {
+  const tip = $('#pf-tip');
+  const hit = e.target.closest?.('[data-tip]');
+  if (hit) { showTip(tip, hit.dataset.tip, e); return; }
+  const svg = e.target.closest?.('svg.pf-time');
+  if (!svg) { tip?.classList.add('hidden'); $$('.pf-xh').forEach((l) => l.setAttribute('visibility', 'hidden')); return; }
+  const r = (PERF.data[S.gameId] || []).find((x) => x.id === svg.dataset.run);
+  if (!r) return;
+  const box = svg.getBoundingClientRect();
+  const vx = ((e.clientX - box.left) / box.width) * Number(svg.dataset.w);
+  const x0 = Number(svg.dataset.x0), x1 = Number(svg.dataset.x1), tmax = Number(svg.dataset.tmax);
+  const tAt = Math.max(0, Math.min(tmax, ((vx - x0) / (x1 - x0)) * tmax));
+  const F = r.samples.fields;
+  const ti = F.indexOf('t');
+  const T = r.samples.rows.map((row, i) => (ti >= 0 && row[ti] != null ? row[ti] : i));
+  let best = 0;
+  T.forEach((t, i) => { if (Math.abs(t - tAt) < Math.abs(T[best] - tAt)) best = i; });
+  const px = x0 + ((x1 - x0) * T[best]) / tmax;
+  $$('svg.pf-time .pf-xh').forEach((l) => { l.setAttribute('x1', px); l.setAttribute('x2', px); l.setAttribute('visibility', 'visible'); });
+  const row = r.samples.rows[best];
+  const names = { fps: 'Frame rate', cpuMs: 'CPU', gpuMs: 'GPU', draws: 'Draw calls', drawn: 'Townsfolk drawn', scale: 'Render scale', simMs: 'Crowd sim', renderMs: 'Crowd draw' };
+  const units = { fps: 'fps', cpuMs: 'ms', gpuMs: 'ms', simMs: 'ms', renderMs: 'ms' };
+  const lines = F.map((f, i) => (f === 't' || row[i] == null ? null : `${names[f] || f}: ${f === 'scale' ? `${Math.round(row[i] * 100)}%` : pfmt(row[i], units[f] || '')}`)).filter(Boolean);
+  showTip(tip, `At ${mmssP(T[best])}\n${lines.join('\n')}`, e);
+}
+
+function showTip(tip, text, e) {
+  if (!tip) return;
+  tip.textContent = text;
+  tip.classList.remove('hidden');
+  const pad = 14;
+  tip.style.left = `${Math.min(window.innerWidth - tip.offsetWidth - 8, e.clientX + pad)}px`;
+  tip.style.top = `${Math.max(8, e.clientY - tip.offsetHeight - pad)}px`;
+}
+
+function renderPerf() {
+  const el = $('#perf');
+  if (!el) return;
+  const gid = S.gameId;
+  const all = PERF.data[gid];
+  if (!all) { el.innerHTML = '<p class="hint">Loading profiler runs…</p>'; if (!PERF.loading[gid]) loadPerf(gid); return; }
+  const add = '<label class="btn small pf-add">Add a profiler run<input type="file" accept=".json,application/json" multiple hidden data-perf-add></label>';
+  if (!all.length) {
+    el.innerHTML = `<div class="card"><div class="row"><h2 class="grow" style="margin:0">Performance</h2>${add}</div>
+      <p>Every profiler run from a playtest shows up here: how frame rate, CPU and GPU time, draw calls and the rest move from one test build to the next, and what each run looked like minute by minute.</p>
+      <p class="hint">Attach the profiler's JSON to a note in the Feed (the team gets it too), or add it here. Ballast reads any JSON with a <code>budgets</code> list of <code>{ name, value, limit, unit, pass }</code>, plus <code>samples</code> over time if it has them.</p></div>`;
+    return;
+  }
+  const runs = all.filter((r) => !r.hidden);
+  const sel = PERF.sel[gid] ||= {};
+  const ids = runs.map((r) => r.id);
+  if (!ids.includes(sel.run)) sel.run = ids[ids.length - 1];
+  if (!ids.includes(sel.b)) sel.b = ids[ids.length - 1];
+  if (!ids.includes(sel.a) || sel.a === sel.b) sel.a = ids[Math.max(0, ids.indexOf(sel.b) - 1)];
+  const latest = runs[runs.length - 1];
+  // What's over budget in the latest run comes first, the rest in the profiler's own order.
+  const names = [...new Set(runs.flatMap((r) => r.budgets.map((b) => b.name)))];
+  const failing = (n) => latest?.budgets.find((b) => b.name === n)?.pass === false;
+  const ordered = [...names.filter(failing), ...names.filter((n) => !failing(n))];
+  const opt = (id) => runs.map((r) => `<option value="${esc(r.id)}"${r.id === id ? ' selected' : ''}>${esc(runName(r))}${r.noteNum ? ` · note #${r.noteNum}` : ''}</option>`).join('');
+  const A = runs.find((r) => r.id === sel.a), B = runs.find((r) => r.id === sel.b), R = runs.find((r) => r.id === sel.run);
+  const landed = A && B && A !== B ? all.filter((r) => r.at > Math.min(A.at, B.at) && r.at <= Math.max(A.at, B.at)).flatMap((r) => r.landed) : [];
+  const cmpRows = A && B && A !== B ? ordered.map((n) => {
+    const a = A.budgets.find((b) => b.name === n), b = B.budgets.find((x) => x.name === n);
+    const unit = (b || a).unit;
+    return `<tr><td>${esc(cap(n))}</td><td>${pfmt(a?.value, unit)}</td><td>${pfmt(b?.value, unit)}</td><td>${deltaHtml(b?.value, a?.value, perfDirection(runs, n), unit, !!(a?.pass && b?.pass)) || '–'}</td><td>${pfmt((b || a).limit, unit)}</td><td>${b ? `<span class="pf-status ${b.pass ? 'pass' : 'fail'}">${b.pass ? '✓ in' : '✗ over'}</span>` : '–'}</td></tr>`;
+  }).join('') : '';
+  el.innerHTML = `
+    <div class="row pf-top"><h2 class="grow" style="margin:0">Performance</h2><span class="hint" style="margin:0">${runs.length} run${runs.length === 1 ? '' : 's'}${all.length > runs.length ? ` · ${all.length - runs.length} hidden` : ''}${latest ? ` · latest ${esc(ago(latest.at))}` : ''}</span>${add}</div>
+
+    <h3 class="pf-h">How we're trending <span class="hint">each dot is a test run, oldest to newest; anything over budget comes first</span></h3>
+    ${runs.length ? `<div class="pf-cards">${ordered.map((n) => trendCard(runs, n)).join('')}</div>` : '<p class="hint">Every run is hidden. Tick one under All runs.</p>'}
+
+    <h3 class="pf-h">Compare two runs</h3>
+    ${runs.length < 2 ? '<p class="hint">Needs a second run.</p>' : `<div class="card">
+      <div class="row" style="gap:8px;flex-wrap:wrap"><select class="mini" data-perf-sel="a">${opt(sel.a)}</select><span class="hint" style="margin:0">→</span><select class="mini" data-perf-sel="b">${opt(sel.b)}</select></div>
+      <div class="pf-table-wrap"><table class="pf-table"><thead><tr><th>Measure</th><th>Before</th><th>After</th><th>Change</th><th>Budget</th><th>After</th></tr></thead><tbody>${cmpRows}</tbody></table></div>
+      ${landed.length ? `<details class="pf-landed"><summary>${landed.length} ticket${landed.length === 1 ? '' : 's'} landed between these runs</summary><ul>${landed.map((t) => `<li>#${t.num} ${esc(t.title)}</li>`).join('')}</ul></details>` : ''}
+    </div>`}
+
+    <h3 class="pf-h">One run over time</h3>
+    ${R ? `<div class="card">
+      <div class="row" style="gap:8px;flex-wrap:wrap"><select class="mini" data-perf-sel="run">${opt(sel.run)}</select>
+        <span class="hint grow" style="margin:0">${esc([R.summary, R.frameSummary].filter(Boolean).join(' · '))}${R.noteNum ? ` · from note #${R.noteNum}` : ''}</span><a class="hint" style="margin:0" href="${esc(R.url)}" target="_blank">JSON</a></div>
+      ${R.samples.rows.length ? `<div class="pf-run">${runCharts(R)}</div>` : '<p class="hint">This run has no samples over time.</p>'}
+    </div>` : ''}
+
+    <h3 class="pf-h">All runs</h3>
+    <div class="card"><div class="pf-table-wrap"><table class="pf-table pf-runs"><thead><tr><th>When</th><th>Label</th><th>From</th><th>Length</th><th>Result</th><th>Over budget</th><th>Show</th></tr></thead><tbody>
+      ${[...all].reverse().map((r) => {
+        const over = r.budgets.filter((b) => !b.pass);
+        return `<tr class="${r.hidden ? 'pf-hidden' : ''}"><td>${esc(runName({ ...r, label: '' }))}</td>
+          <td><input class="mini pf-label" data-perf-label="${esc(r.id)}" value="${esc(r.label)}" placeholder="e.g. after #344"></td>
+          <td>${r.noteNum ? `note #${r.noteNum}` : '<span class="hint" style="margin:0">added here</span>'}</td>
+          <td>${r.seconds != null ? mmssP(r.seconds) : '–'}</td><td>${esc(r.state || '')}</td>
+          <td>${over.length ? esc(over.map((b) => b.name).join(', ')) : '<span class="pf-status pass">✓ none</span>'}</td>
+          <td><input type="checkbox" data-perf-hide="${esc(r.id)}"${r.hidden ? '' : ' checked'} title="Leave it out of the charts (a broken run, another device)"></td></tr>`;
+      }).join('')}
+    </tbody></table></div><p class="hint">Untick a run to leave it out of the charts, for example one where walls didn't render and the numbers look better than they are.</p></div>
+    <div id="pf-tip" class="pf-tip hidden"></div>`;
+}
+
+document.addEventListener('mousemove', (e) => {
+  if (S.tab === 'perf' && $('#perf')?.contains(e.target)) perfHover(e);
+  else $('#pf-tip')?.classList.add('hidden');
+});
+document.addEventListener('change', async (e) => {
+  const t = e.target;
+  if (!t.closest?.('#perf')) return;
+  const gid = S.gameId;
+  try {
+    if (t.dataset.perfSel) { PERF.sel[gid][t.dataset.perfSel] = t.value; renderPerf(); }
+    else if (t.dataset.perfLabel !== undefined) { await api('PATCH', `/api/games/${gid}/perf/${encodeURIComponent(t.dataset.perfLabel)}`, { label: t.value }); loadPerf(gid); }
+    else if (t.dataset.perfHide !== undefined) { await api('PATCH', `/api/games/${gid}/perf/${encodeURIComponent(t.dataset.perfHide)}`, { hidden: !t.checked }); loadPerf(gid); }
+    else if (t.dataset.perfAdd !== undefined) {
+      const before = (PERF.data[gid] || []).length;
+      for (const file of t.files) await sendFile(`/api/games/${gid}/upload`, file, () => {}).done;
+      await loadPerf(gid);
+      const added = (PERF.data[gid] || []).length - before;
+      toast(added ? `Added ${added} run${added > 1 ? 's' : ''}` : 'That file isn\'t a profiler run Ballast can read: it needs a "budgets" list.', !added);
+    }
+  } catch (err) { fail(err); }
+});
+
+// ---------------------------------------------------------------------------
+// Gameplay Loop: each loop's stage tests, a live model (sliders → graphs, computed here as they move),
+// what playtests and reviews say about it, a conversation per loop that can add sliders and graphs,
+// and Lock In Changes, which turns the tuning and decisions into board tasks (see src/loops.mjs).
+
+const LOOPS = { data: {}, loading: {}, open: new Set(), dragging: false, stale: false, timers: {}, reload: null, pts: {} };
+const LP_COLORS = ['var(--blue)', 'var(--accent)', 'var(--violet)', 'var(--green)'];
+const LP_SCORE = ['missing', 'weak', 'holds', 'strong'];
+const LP_DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+const lpNum = (v, step) => {
+  if (v == null || !Number.isFinite(v)) return '–';
+  if (step) { const own = (String(v).split('.')[1] || '').length; const d = Math.min(6, Math.max(own, -Math.floor(Math.log10(step) + 1e-9), 0)); return Number(v.toFixed(d)).toLocaleString(undefined, { maximumFractionDigits: d }); }
+  const a = Math.abs(v);
+  return a >= 1000 ? Math.round(v).toLocaleString() : a >= 10 ? String(Math.round(v * 10) / 10) : String(Math.round(v * 1000) / 1000);
+};
+const lpText = (s) => esc(s).replace(/`([^`]+)`/g, '<code>$1</code>');
+const lpLoop = (lid) => (LOOPS.data[S.gameId]?.loops || []).find((l) => l.id === lid);
+const lpChanged = (p) => p.value !== p.base && !(p.locked && p.locked.value === p.value);
+
+async function loadLoops(gid = S.gameId) {
+  LOOPS.loading[gid] = true;
+  try { LOOPS.data[gid] = await api('GET', `/api/games/${gid}/loops`); } catch (err) { fail(err); LOOPS.data[gid] = null; }
+  LOOPS.loading[gid] = false;
+  if (S.tab === 'loops' && S.gameId === gid) renderLoops();
+}
+
+// Server says something changed (an audit, an answer, a lock-in): reload, but never mid-drag.
+function loopsChanged(gid) {
+  if (S.tab !== 'loops' || S.gameId !== gid) { delete LOOPS.data[gid]; return; }
+  if (LOOPS.dragging) { LOOPS.stale = true; return; }
+  clearTimeout(LOOPS.reload);
+  LOOPS.reload = setTimeout(() => loadLoops(gid), 250);
+}
+
+function lpSchedule(d) {
+  const every = d.every || 'off';
+  return `<div class="lp-sched">
+    <label class="hint" style="margin:0">Audit</label>
+    <select class="mini" data-lp-sched="every">${Object.entries(d.schedules).map(([k, v]) => `<option value="${k}"${k === every ? ' selected' : ''}>${esc(v)}</option>`).join('')}</select>
+    ${every === 'daily' || every === 'weekly' ? `${every === 'weekly' ? `<select class="mini" data-lp-sched="day">${LP_DAYS.map((n, i) => `<option value="${i}"${i === (d.day ?? 1) ? ' selected' : ''}>${n}</option>`).join('')}</select>` : ''}<input class="mini" type="time" data-lp-sched="at" value="${esc(d.at || '09:00')}">` : ''}
+    <select class="mini" data-lp-sched="model" title="Model for the audit">${[['', `Default (${d.defaultModel})`], ['opus', 'Opus'], ['sonnet', 'Sonnet'], ['fable', 'Fable']].map(([k, v]) => `<option value="${k}"${k === (d.model || '') ? ' selected' : ''}>${v}</option>`).join('')}</select>
+    ${d.nextAt && every !== 'off' ? `<span class="hint" style="margin:0">next ${esc(new Date(d.nextAt).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }))}</span>` : ''}
+  </div>`;
+}
+
+function renderLoops() {
+  const el = $('#loops');
+  if (!el) return;
+  const gid = S.gameId;
+  const d = LOOPS.data[gid];
+  if (!d) { el.innerHTML = '<p class="hint">Reading the loops…</p>'; if (!LOOPS.loading[gid]) loadLoops(gid); return; }
+  // Keep what's being typed, and where the focus is, across re-renders.
+  const drafts = Object.fromEntries($$('[data-lp-keep]', el).map((x) => [x.dataset.lpKeep, x.value]));
+  const focus = document.activeElement?.dataset?.lpKeep || document.activeElement?.dataset?.lpNum;
+  const scroll = el.scrollTop;
+  const live = d.loops.filter((l) => !l.retired);
+  const status = d.running ? `<span class="pill running">Auditing… ${esc(ago(d.startedAt))}</span>`
+    : d.status === 'error' ? `<span class="pill error" title="${esc(d.error)}">Last audit failed</span>`
+      : d.lastRunAt ? `<span class="hint" style="margin:0">Audited ${esc(ago(d.lastRunAt))}${d.lastModel ? ` · ${esc(d.lastModel)}` : ''}</span>` : '';
+  el.innerHTML = `
+    <div class="row pf-top"><h2 class="grow" style="margin:0">Gameplay Loop</h2>${status}
+      <button class="primary small" data-lp="audit"${d.running ? ' disabled' : ''}>${d.lastRunAt ? 'Audit again' : 'Audit the loops'}</button></div>
+    <p class="hint">A loop is a readable question with an uncertain answer, asked at several time scales, where every answer changes what the player knows or wants. Each loop is scored on six tests, modelled from the code so you can tune it here, and checked against playtests and your reviews. <b>Lock In Changes</b> turns your tuning and decisions into board tasks.</p>
+    ${lpSchedule(d)}
+    ${d.status === 'error' && d.error ? `<div class="card lp-err">${esc(d.error)}</div>` : ''}
+    ${live.length ? lpOverview(d) : `<div class="card"><p style="margin:0">No audit yet. <b>Audit the loops</b> reads the GDD, the code, your playtest notes and reviews, and finds the game's loops across moment, encounter, session and meta time scales. It takes a few minutes.</p></div>`}
+    <div id="lp-lockbar">${lpLockBar(d)}</div>
+    ${d.loops.map((l) => lpSection(d, l)).join('')}`;
+  for (const [k, v] of Object.entries(drafts)) { const x = $(`[data-lp-keep="${CSS.escape(k)}"]`, el); if (x) x.value = v; }
+  if (focus) $(`[data-lp-keep="${CSS.escape(focus)}"], [data-lp-num="${CSS.escape(focus)}"]`, el)?.focus();
+  el.scrollTop = scroll;
+  for (const l of d.loops) lpDraw(l);
+  for (const t of $$('.lp-thread', el)) t.scrollTop = t.scrollHeight;
+}
+
+const LP_VERDICT = { coherent: ['success', 'The loop holds together'], strained: ['warn', 'The loop is strained'], broken: ['error', 'The loop is broken'] };
+const LP_KIND = { playtest: 'Play it', tune: 'Tune', design: 'Design', park: 'Park' };
+const LP_PRIORITY = { now: 'Now', next: 'Next', later: 'Later' };
+
+function lpChain(chain) {
+  return String(chain || '').split(/\s*(?:→|->)\s*/).filter(Boolean).map((step) => {
+    const m = step.match(/\(\s*weak(?:\s*[:,-]\s*([^)]*))?\)/i);
+    const text = step.replace(/\s*\(\s*weak[^)]*\)\s*/i, ' ').trim();
+    return m ? `<span class="lp-step weak" title="Weak link${m[1] ? `: ${esc(m[1])}` : ''}">${esc(text)}${m[1] ? `<small>${esc(m[1])}</small>` : ''}</span>` : `<span class="lp-step">${esc(text)}</span>`;
+  }).join('<span class="lp-to">→</span>');
+}
+
+function lpAction(d, a, i) {
+  const loop = d.loops.find((l) => l.id === a.loopId);
+  const st = a.state;
+  const btns = st ? `<span class="hint" style="margin:0">${st === 'queued' ? 'Queued for Lock In' : st === 'locked' ? `On the board: ${(a.tasks || []).map((t) => `#${t}${d.tasks[t] ? ` (${esc(d.tasks[t].status)})` : ''}`).join(', ') || 'locked in'}` : st === 'done' ? 'Done' : 'Set aside'}</span>${st === 'locked' ? '' : `<a href="#" class="lp-x" data-lp="act" data-do="restore" data-action="${esc(a.id)}">undo</a>`}`
+    : `${a.values?.length ? `<button class="ghost small" data-lp="act-try" data-action="${esc(a.id)}">Try on the sliders</button>` : ''}
+       ${a.kind === 'playtest' ? `<button class="ghost small" data-lp="act" data-do="done" data-action="${esc(a.id)}">I played it</button>` : ''}
+       <button class="${a.kind === 'playtest' ? 'ghost' : 'primary'} small" data-lp="act" data-do="adopt" data-action="${esc(a.id)}" title="Queue it for Lock In Changes, which turns it into board tasks">${a.kind === 'playtest' ? 'Have the team prep it' : a.kind === 'park' ? 'Queue: park it' : 'Queue for Lock In'}</button>
+       <a href="#" class="lp-x" data-lp="act" data-do="dismiss" data-action="${esc(a.id)}" title="Set it aside">✕</a>`;
+  return `<li class="lp-act${st ? ` is-${st}` : ''}">
+    <span class="lp-n">${i + 1}</span>
+    <div class="grow">
+      <div class="row" style="gap:6px;flex-wrap:wrap"><span class="lp-prio p-${a.priority}">${LP_PRIORITY[a.priority]}</span><span class="lp-kind">${LP_KIND[a.kind]}</span><b>${esc(a.title)}</b></div>
+      <div class="lp-actwhy">${lpText(a.why)}${loop ? ` <a href="#" class="lp-loopref" data-lp="goto" data-loop="${esc(loop.id)}">${esc(loop.name)}</a>` : ''}</div>
+    </div>
+    <div class="lp-actbtns">${btns}</div>
+  </li>`;
+}
+
+function lpOverview(d) {
+  const live = d.loops.filter((l) => !l.retired);
+  const c = d.coherence;
+  const verdict = c && LP_VERDICT[c.verdict];
+  const name = (id) => d.loops.find((l) => l.id === id)?.name || '';
+  const weakest = (l) => { const m = Math.min(...l.stages.map((s) => s.score)); return l.stages.filter((s) => s.score === m).map((s) => d.stages.find((x) => x.id === s.stage)?.name).join(', '); };
+  const f = d.focus;
+  return `
+    ${c ? `<div class="card lp-verdict v-${esc(c.verdict)}">
+      <div class="row" style="gap:10px;align-items:flex-start"><span class="pill ${verdict[0]}">${verdict[1]}</span><b class="grow lp-headline">${lpText(c.headline)}</b></div>
+      ${c.chain ? `<div class="lp-chainrow"><span class="hint" style="margin:0">The loop today</span><div class="lp-chain">${lpChain(c.chain)}</div></div>` : ''}
+      ${c.breaks?.length ? `<div class="lp-breaks">${c.breaks.map((b) => `<div class="lp-break"><b>${lpText(b.problem)}</b><span>${lpText(b.fix)}</span>${b.loopId ? `<a href="#" class="lp-loopref" data-lp="goto" data-loop="${esc(b.loopId)}">${esc(name(b.loopId))}</a>` : ''}</div>`).join('')}</div>` : ''}
+      ${c.changes ? `<p class="hint" style="margin:10px 0 0"><b>Recent mechanic changes:</b> ${lpText(c.changes)}</p>` : ''}
+    </div>` : live.length ? `<div class="card lp-summary"><p style="margin:0 0 8px">${lpText(d.summary)}</p><button class="primary small" data-lp="digest"${d.digesting ? ' disabled' : ''}>${d.digesting ? 'Rewriting…' : 'Rewrite as a verdict and actions'}</button> <span class="hint" style="margin:0;display:inline">Quick: Sonnet, from what this audit already found.</span></div>` : ''}
+
+    ${d.actions?.length ? `<div class="card"><h4 class="sub-h" style="margin-top:0">What to do</h4><p class="hint lp-sub">Ranked across all loops. Queued items become board tasks when you press Lock In Changes.</p><ol class="lp-acts">${d.actions.map((a, i) => lpAction(d, a, i)).join('')}</ol></div>` : ''}
+
+    <div class="card"><h4 class="sub-h" style="margin-top:0">Loops</h4><p class="hint lp-sub">Open one to see its tests, tune it, or ask about it.</p>
+      <table class="lp-table"><thead><tr><th>Loop</th><th>Time scale</th><th>Health</th><th>Weakest test</th></tr></thead><tbody>
+      ${live.map((l) => `<tr data-lp="goto" data-loop="${esc(l.id)}"><td><b>${esc(l.name)}</b>${l.core ? ' <span class="pill success">core</span>' : ''}<div class="hint" style="margin:0">${lpText(l.question)}</div></td><td>${esc(l.scale)}</td><td><span class="lp-hbar"><span style="width:${l.health || 0}%"></span></span> ${l.health ?? '–'}%</td><td>${esc(weakest(l))}</td></tr>`).join('')}
+      </tbody></table>
+      ${d.core ? `<details class="lp-coredet"><summary class="hint">The core skill, skill curve and retention</summary><dl class="lp-core"><dt>Skill</dt><dd>${lpText(d.core.skill)}</dd><dt>Skill curve</dt><dd>${lpText(d.core.skillCurve)}</dd><dt>Retention</dt><dd>${lpText(d.core.retention)}</dd>${d.core.drift ? `<dt>Coherence risk</dt><dd>${lpText(d.core.drift)}</dd>` : ''}</dl></details>` : ''}
+    </div>
+
+    ${f ? `<details class="card lp-focusdet"><summary><b>Ticket focus</b> <span class="hint" style="margin:0;display:inline">· ${f.onLoop ?? '–'}% of non-groundwork tickets fed a loop · ${f.support.length} groundwork · ${f.off.length} fed no loop</span></summary>
+      <p class="hint lp-sub" style="margin-top:8px">Changing mechanics is expected. This only shows where effort went, so systems that feed no loop are easy to spot.</p>
+      ${lpFocusBars(d)}${lpHistory(d)}
+      ${f.off.length ? `<h4 class="sub-h">Fed no loop</h4><ul class="lp-off">${f.off.map((o) => `<li><b>#${o.num}</b> ${esc(d.tasks[o.num]?.title || o.title)} <span class="hint" style="margin:0;display:inline">· ${esc(d.tasks[o.num]?.status || o.status)} · ${esc(o.why)}</span></li>`).join('')}</ul>` : ''}
+    </details>` : ''}`;
+}
+
+function lpFocusBars(d) {
+  const f = d.focus;
+  const live = d.loops.filter((l) => !l.retired);
+  const counts = live.map((l) => ({ l, n: (f.byLoop.find((b) => b.loopId === l.id)?.nums || []).length }));
+  const max = Math.max(1, ...counts.map((x) => x.n), f.support.length, f.off.length);
+  const bar = (label, n, cls) => `<div class="lp-fbar"><span class="lp-flabel">${label}</span><span class="lp-ftrack"><span class="lp-ffill ${cls}" style="width:${(n / max) * 100}%"></span></span><b>${n}</b></div>`;
+  return counts.map(({ l, n }) => bar(esc(l.name), n, l.core ? 'core' : '')).join('') + bar('Groundwork', f.support.length, 'support') + bar('No loop', f.off.length, 'off');
+}
+
+// On-loop share and each loop's health across audits.
+function lpHistory(d) {
+  const h = (d.history || []).filter((x) => x.onLoop != null);
+  if (h.length < 2) return '<p class="hint" style="margin:8px 0 0">The trend shows here from the second audit on.</p>';
+  const w = 360, ht = 90, m = { l: 28, r: 8, t: 8, b: 18 };
+  const x = (i) => m.l + (i / (h.length - 1)) * (w - m.l - m.r);
+  const y = (v) => m.t + (1 - v / 100) * (ht - m.t - m.b);
+  const line = (key, color, dash = '') => `<path d="${h.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p[key] ?? 0).toFixed(1)}`).join('')}" fill="none" stroke="${color}" stroke-width="2"${dash ? ` stroke-dasharray="${dash}"` : ''}/>`;
+  return `<svg viewBox="0 0 ${w} ${ht}" class="lp-trend" role="img" aria-label="Share of work on the loops across audits">
+    ${[0, 50, 100].map((v) => `<line x1="${m.l}" x2="${w - m.r}" y1="${y(v)}" y2="${y(v)}" class="lp-grid"/><text x="${m.l - 4}" y="${y(v) + 3}" class="lp-tick" text-anchor="end">${v}%</text>`).join('')}
+    ${line('onLoop', 'var(--blue)')}${line('core', 'var(--accent)', '4 3')}
+    ${h.map((p, i) => `<circle cx="${x(i)}" cy="${y(p.onLoop)}" r="3" fill="var(--blue)"><title>${new Date(p.at).toLocaleDateString()}: ${p.onLoop}% on a loop, ${p.core}% core</title></circle>`).join('')}
+  </svg><div class="lp-legend"><span><i style="background:var(--blue)"></i>on a loop</span><span><i class="dash" style="border-color:var(--accent)"></i>core loops</span></div>`;
+}
+
+function lpLockBar(d) {
+  const pend = (d.loops || []).map((l) => ({ l, p: l.params.filter(lpChanged).length, n: (l.pending || []).length })).filter((x) => x.p || x.n);
+  const params = pend.reduce((s, x) => s + x.p, 0);
+  const notes = pend.reduce((s, x) => s + x.n, 0);
+  const lk = d.lock || {};
+  if (lk.status === 'running') return '<div class="lp-lock running"><span class="pill running">Locking in</span><span class="grow">Turning your changes into board tasks…</span></div>';
+  const last = lk.status === 'done' ? `Last locked in ${esc(ago(lk.at))}: ${lk.tasks.map((t) => `#${t.num}`).join(', ') || 'nothing new'}.` : lk.status === 'error' ? `<span style="color:var(--red)">Lock-in failed: ${esc(lk.error)}</span>` : '';
+  if (!params && !notes) return last ? `<div class="lp-lock idle"><span class="hint grow" style="margin:0">${last}</span></div>` : '';
+  const parts = [params && `${params} slider change${params > 1 ? 's' : ''}`, notes && `${notes} decided change${notes > 1 ? 's' : ''}`].filter(Boolean).join(' and ');
+  return `<div class="lp-lock"><span class="grow"><b>${parts}</b> across ${pend.map((x) => esc(x.l.name)).join(', ')}, not on the board yet.${last ? ` <span class="hint" style="margin:0;display:inline">${last}</span>` : ''}</span>
+    <button class="primary" data-lp="lock">Lock In Changes</button></div>`;
+}
+
+function lpSection(d, l) {
+  const open = LOOPS.open.has(l.id);
+  const stages = d.stages.map((s) => {
+    const x = l.stages.find((y) => y.stage === s.id) || { score: 0, basis: 'assumption', finding: '' };
+    return `<div class="lp-stage s${x.score}" title="${esc(s.test)}">
+      <div class="row" style="gap:6px"><b class="grow">${esc(s.name)}</b><span class="lp-score">${'●'.repeat(x.score)}${'○'.repeat(3 - x.score)}</span></div>
+      <span class="lp-basis">${LP_SCORE[x.score]} · ${esc(x.basis)}</span>
+      <p>${lpText(x.finding)}</p>${x.fix ? `<p class="lp-fix">${lpText(x.fix)}</p>` : ''}</div>`;
+  }).join('');
+  const weakest = Math.min(...l.stages.map((s) => s.score));
+  const asking = d.asking.includes(l.id);
+  return `<section class="card lp-loop${l.retired ? ' retired' : ''}" id="lp-${esc(l.id)}" data-loop="${esc(l.id)}">
+    <div class="lp-head" data-lp="toggle" data-loop="${esc(l.id)}">
+      <span class="lp-caret">${open ? '▾' : '▸'}</span>
+      <div class="grow"><div class="row" style="gap:8px;flex-wrap:wrap"><h3 style="margin:0">${esc(l.name)}</h3><span class="pill">${esc(l.scale)}</span>${l.core ? '<span class="pill success">core</span>' : ''}${l.retired ? '<span class="pill">no longer found by the audit</span>' : ''}</div>
+        <div class="hint" style="margin:2px 0 0"><b>Skill:</b> ${lpText(l.skill)} · <b>Question:</b> ${lpText(l.question)}</div></div>
+      <div class="lp-health" title="Mean of the six stage scores"><b>${l.health ?? '–'}%</b><span class="lp-hbar"><span style="width:${l.health || 0}%"></span></span></div>
+    </div>
+    ${open ? `
+    ${l.description ? `<p class="lp-desc">${lpText(l.description)}</p>` : ''}
+    <div class="lp-stages">${stages}</div>
+    ${weakest <= 1 ? `<p class="hint">Weakest: ${l.stages.filter((s) => s.score === weakest).map((s) => esc(d.stages.find((x) => x.id === s.stage).name.toLowerCase())).join(', ')}. That's usually where the loop leaks.</p>` : ''}
+    <div class="lp-model">
+      <div class="lp-tune">
+        <div class="row"><h4 class="sub-h grow" style="margin:0">Tune</h4>${l.params.some((p) => p.value !== p.base) ? `<a href="#" data-lp="reset-loop" data-loop="${esc(l.id)}">Back to the code's values</a>` : ''}</div>
+        ${l.params.map((p) => lpSlider(l, p)).join('') || '<p class="hint">No tunable numbers found yet. Ask below for the ones you want.</p>'}
+        <div class="lp-tiles" data-lp-tiles="${esc(l.id)}">${lpTiles(l)}</div>
+      </div>
+      <div class="lp-charts">${l.charts.map((c) => `<div class="lp-chart" data-chart="${esc(l.id)}|${esc(c.id)}">
+          <div class="row" style="gap:6px"><b class="grow">${esc(c.title)}</b><a href="#" class="hint lp-x" data-lp="rm-chart" data-loop="${esc(l.id)}" data-chart="${esc(c.id)}" title="Remove this graph">✕</a></div>
+          <div class="lp-plot" data-plot="${esc(l.id)}|${esc(c.id)}"></div>
+          ${c.why ? `<p class="hint lp-why">${lpText(c.why)}</p>` : ''}</div>`).join('') || '<p class="hint">No graphs yet. Ask below for the one you want.</p>'}</div>
+    </div>
+    ${l.playtest?.length ? `<h4 class="sub-h">What playtests and reviews say</h4><div class="lp-evid">${l.playtest.map((p) => `<div><span class="lp-src">${esc(p.source)}</span><p><b>Says:</b> ${lpText(p.says)}</p><p><b>Reads as:</b> ${lpText(p.interpretation)}</p>${p.implication ? `<p><b>So:</b> ${lpText(p.implication)}</p>` : ''}</div>`).join('')}</div>` : ''}
+    ${l.iterate?.length ? `<h4 class="sub-h">Next iterations</h4><ul class="lp-iter">${l.iterate.map((x, i) => `<li><b>${esc(x.title)}</b> <span class="hint" style="margin:0;display:inline">${lpText(x.why)}</span>
+        <span class="lp-iter-acts">${x.values?.length ? `<button class="ghost small" data-lp="try" data-loop="${esc(l.id)}" data-idx="${i}" title="${esc(x.values.map((v) => `${l.params.find((p) => p.key === v.key)?.label || v.key} → ${v.value}`).join(', '))}">Try it on the sliders</button>` : ''}<button class="ghost small" data-lp="adopt" data-loop="${esc(l.id)}" data-idx="${i}">Add to changes</button></span></li>`).join('')}</ul>` : ''}
+    <h4 class="sub-h">Changes to lock in</h4>
+    ${(l.pending || []).length ? `<ul class="lp-pending">${l.pending.map((n) => `<li>${lpText(n.text)} <span class="hint" style="margin:0;display:inline">· ${n.from === 'chat' ? 'from the conversation' : n.from === 'action' ? 'from the audit' : n.from === 'suggestion' ? 'from a suggestion' : 'yours'}</span> <a href="#" class="lp-x" data-lp="drop-change" data-loop="${esc(l.id)}" data-change="${esc(n.id)}" title="Drop it">✕</a></li>`).join('')}</ul>` : ''}
+    <form class="lp-addchange" data-lp-form="change" data-loop="${esc(l.id)}"><input data-lp-keep="chg-${esc(l.id)}" placeholder="A design change for this loop, e.g. Show the wind before the swing, not after" autocomplete="off"><button class="ghost small">Add</button></form>
+    ${(l.locked || []).length ? `<details class="lp-locked"><summary class="hint">Locked in before (${l.locked.length})</summary><ul>${l.locked.slice().reverse().map((n) => `<li>${lpText(n.text)} → ${n.tasks.map((t) => `#${t}${d.tasks[t] ? ` (${esc(d.tasks[t].status)})` : ''}`).join(', ') || 'no task'}</li>`).join('')}</ul></details>` : ''}
+    <h4 class="sub-h">Ask about this loop</h4><p class="hint lp-sub">Answers can add sliders and graphs, or move them.</p>
+    <div class="lp-thread">${(l.chat || []).map(lpMsg).join('') || '<p class="hint" style="margin:0">e.g. "How does the hole length change how many shots a new player needs?" or "Show me how often a mid player nearly wins a duel."</p>'}</div>
+    <form class="lp-ask" data-lp-form="ask" data-loop="${esc(l.id)}"><textarea rows="2" data-lp-keep="ask-${esc(l.id)}" placeholder="Ask about ${esc(l.name)}…"${asking ? ' disabled' : ''}></textarea><button class="primary small"${asking ? ' disabled' : ''}>${asking ? 'Thinking…' : 'Ask'}</button></form>` : ''}
+  </section>`;
+}
+
+function lpMsg(m) {
+  if (m.role === 'director') return `<div class="lp-msg me"><p>${lpText(m.text).replace(/\n/g, '<br>')}</p></div>`;
+  if (m.status === 'thinking') return '<div class="lp-msg"><p class="hint" style="margin:0">Reading the code and working it out…</p></div>';
+  return `<div class="lp-msg${m.status === 'error' ? ' err' : ''}">${m.status === 'error' ? `<p>${esc(m.text)}</p>` : md(m.text)}${m.did?.length ? `<p class="lp-did">${esc(m.did.join(' · '))}</p>` : ''}</div>`;
+}
+
+function lpSlider(l, p) {
+  const changed = p.value !== p.base;
+  const id = `${l.id}|${p.key}`;
+  const pos = ((p.base - p.min) / (p.max - p.min || 1)) * 100;
+  return `<div class="lp-param${changed ? ' changed' : ''}">
+    <div class="row" style="gap:6px"><label class="grow" for="lp-r-${esc(id)}">${esc(p.label)}</label>
+      <input class="mini lp-numin" type="number" step="${p.step}" min="${p.min}" max="${p.max}" value="${p.value}" data-lp-num="${esc(id)}">${p.unit ? `<span class="hint" style="margin:0">${esc(p.unit)}</span>` : ''}
+      ${changed ? `<a href="#" class="lp-x" data-lp="reset-param" data-loop="${esc(l.id)}" data-key="${esc(p.key)}" title="Back to the code's value">↺</a>` : ''}</div>
+    <div class="lp-range"><input type="range" id="lp-r-${esc(id)}" min="${p.min}" max="${p.max}" step="${p.step}" value="${p.value}" data-lp-range="${esc(id)}"><span class="lp-basemark" style="left:${pos}%" title="In the code: ${lpNum(p.base, p.step)}"></span></div>
+    <div class="lp-pmeta"><span>code: ${lpNum(p.base, p.step)}${changed ? ` → <b>${lpNum(p.value, p.step)}</b>` : ''}</span>${p.locked ? `<span class="pill success" title="Locked in ${esc(new Date(p.locked.at).toLocaleString())}">locked → ${p.locked.tasks.map((t) => `#${t}`).join(', ') || lpNum(p.locked.value, p.step)}</span>` : ''}${p.source ? `<code title="${esc(p.source)}">${esc(p.source.split(/[\\/]/).pop())}</code>` : ''}</div>
+    ${p.affects ? `<div class="hint lp-affects">${lpText(p.affects)}</div>` : ''}
+  </div>`;
+}
+
+function lpTiles(l) {
+  const base = LoopMath.scope(l.params, 'base');
+  const draft = LoopMath.scope(l.params, 'draft');
+  return (l.tiles || []).map((t) => {
+    const b = LoopMath.value(t.expr, base);
+    const v = LoopMath.value(t.expr, draft);
+    const has = t.targetMin != null || t.targetMax != null;
+    const ok = v != null && (t.targetMin == null || v >= t.targetMin) && (t.targetMax == null || v <= t.targetMax);
+    return `<div class="lp-tile${has ? (ok ? ' ok' : ' out') : ''}" title="${esc(t.why || '')}${has ? `\nTarget: ${t.targetMin ?? '…'} to ${t.targetMax ?? '…'}` : ''}">
+      <span class="hint" style="margin:0">${esc(t.label)}</span><b>${lpNum(v)}${t.unit ? ` <small>${esc(t.unit)}</small>` : ''}</b>
+      <span class="hint" style="margin:0">${b !== v ? `code: ${lpNum(b)} · ` : ''}${has ? `${ok ? '✓' : '✗'} target ${t.targetMin ?? '…'}–${t.targetMax ?? '…'}` : ''}</span></div>`;
+  }).join('');
+}
+
+// One graph: the director's values solid, the code's values dashed (only where they differ).
+function lpChartSvg(l, c) {
+  const W = 480, H = 220, m = { l: 46, r: 12, t: 12, b: 36 };
+  const base = LoopMath.scope(l.params, 'base');
+  const draft = LoopMath.scope(l.params, 'draft');
+  const uses = new Set(c.series.flatMap((s) => { try { return LoopMath.compile(s.expr).uses; } catch { return []; } }));
+  const changed = l.params.some((p) => p.value !== p.base && uses.has(p.key));
+  const lines = c.series.map((s, i) => ({ s, color: LP_COLORS[i % 4], draft: LoopMath.sample(s.expr, draft, c.xMin, c.xMax), base: changed ? LoopMath.sample(s.expr, base, c.xMin, c.xMax) : null }));
+  const ys = lines.flatMap((x) => [...x.draft, ...(x.base || [])].map((p) => p[1]).filter((v) => v != null));
+  let y0 = c.yMin ?? Math.min(0, ...ys), y1 = c.yMax ?? Math.max(...ys, c.bandTo ?? -Infinity);
+  if (!ys.length) return '<p class="hint">This formula gives no numbers at these values.</p>';
+  if (c.yMin == null && Math.min(...ys) > 0 && Math.min(...ys) > (y1 - Math.min(...ys)) * 2) y0 = Math.min(...ys) * 0.9;
+  if (!(y1 > y0)) y1 = y0 + 1;
+  if (c.yMax == null) y1 += (y1 - y0) * 0.06;
+  const X = (v) => m.l + ((v - c.xMin) / (c.xMax - c.xMin)) * (W - m.l - m.r);
+  const Y = (v) => m.t + (1 - (Math.min(y1, Math.max(y0, v)) - y0) / (y1 - y0)) * (H - m.t - m.b);
+  const path = (pts) => { let d = '', pen = false; for (const [x, y] of pts) { if (y == null) { pen = false; continue; } d += `${pen ? 'L' : 'M'}${X(x).toFixed(1)},${Y(y).toFixed(1)}`; pen = true; } return d; };
+  const ticks = (a, b, n) => Array.from({ length: n + 1 }, (_, i) => a + ((b - a) * i) / n);
+  LOOPS.pts[`${l.id}|${c.id}`] = { lines, X, Y, m, W, H, c };
+  return `<svg viewBox="0 0 ${W} ${H}" class="lp-svg" role="img" aria-label="${esc(c.title)}">
+    ${c.bandFrom != null ? `<rect x="${m.l}" width="${W - m.l - m.r}" y="${Y(c.bandTo)}" height="${Math.max(0, Y(c.bandFrom) - Y(c.bandTo))}" class="lp-band"/><text x="${W - m.r - 4}" y="${Y(c.bandTo) + 12}" text-anchor="end" class="lp-bandlabel">${esc(c.bandLabel || '')}</text>` : ''}
+    ${ticks(y0, y1, 4).map((v) => `<line x1="${m.l}" x2="${W - m.r}" y1="${Y(v)}" y2="${Y(v)}" class="lp-grid"/><text x="${m.l - 6}" y="${Y(v) + 3}" text-anchor="end" class="lp-tick">${lpNum(v)}</text>`).join('')}
+    ${ticks(c.xMin, c.xMax, 5).map((v) => `<text x="${X(v)}" y="${H - m.b + 14}" text-anchor="middle" class="lp-tick">${lpNum(v)}</text>`).join('')}
+    <text x="${(m.l + W - m.r) / 2}" y="${H - 4}" text-anchor="middle" class="lp-axis">${esc(c.xLabel)}</text>
+    <text transform="translate(11 ${(m.t + H - m.b) / 2}) rotate(-90)" text-anchor="middle" class="lp-axis">${esc(c.yLabel)}</text>
+    ${lines.map((x) => (x.base ? `<path d="${path(x.base)}" fill="none" stroke="${x.color}" stroke-width="1.5" stroke-dasharray="5 4" opacity=".55"/>` : '')).join('')}
+    ${lines.map((x) => `<path d="${path(x.draft)}" fill="none" stroke="${x.color}" stroke-width="2" stroke-linejoin="round"/>`).join('')}
+    <g class="lp-hover" style="display:none"><line class="lp-cross" y1="${m.t}" y2="${H - m.b}"/>${lines.map((x) => `<circle r="4" fill="${x.color}" stroke="var(--panel)" stroke-width="2"/>`).join('')}</g>
+    <rect x="${m.l}" y="${m.t}" width="${W - m.l - m.r}" height="${H - m.t - m.b}" fill="transparent" class="lp-hit"/>
+  </svg>
+  <div class="lp-legend">${lines.map((x) => `<span><i style="background:${x.color}"></i>${esc(x.s.label)}</span>`).join('')}${changed ? '<span><i class="dash" style="border-color:var(--muted)"></i>the code today</span>' : ''}</div>
+  <div class="lp-tip" hidden></div>`;
+}
+
+function lpDraw(l) {
+  for (const c of l.charts) { const box = $(`[data-plot="${CSS.escape(`${l.id}|${c.id}`)}"]`); if (box) box.innerHTML = lpChartSvg(l, c); }
+  const tiles = $(`[data-lp-tiles="${CSS.escape(l.id)}"]`);
+  if (tiles) tiles.innerHTML = lpTiles(l);
+}
+
+// A slider moved: graphs and numbers follow at once; the value is saved when the slider is let go.
+function lpSet(id, value, { save = false } = {}) {
+  const [lid, key] = id.split('|');
+  const l = lpLoop(lid);
+  const p = l?.params.find((x) => x.key === key);
+  if (!p || !Number.isFinite(value)) return;
+  p.value = Math.min(p.max, Math.max(p.min, value));
+  const num = $(`[data-lp-num="${CSS.escape(id)}"]`);
+  if (num && document.activeElement !== num) num.value = p.value;
+  const rng = $(`[data-lp-range="${CSS.escape(id)}"]`);
+  if (rng && document.activeElement !== rng) rng.value = p.value;
+  const row = rng?.closest('.lp-param');
+  if (row) {
+    row.classList.toggle('changed', p.value !== p.base);
+    const meta = $('.lp-pmeta span', row);
+    if (meta) meta.innerHTML = `code: ${lpNum(p.base, p.step)}${p.value !== p.base ? ` → <b>${lpNum(p.value, p.step)}</b>` : ''}`;
+  }
+  lpDraw(l);
+  $('#lp-lockbar').innerHTML = lpLockBar(LOOPS.data[S.gameId]);
+  if (save) lpSave(lid);
+}
+
+function lpSave(lid) {
+  const gid = S.gameId;
+  clearTimeout(LOOPS.timers[lid]);
+  LOOPS.timers[lid] = setTimeout(async () => {
+    const l = lpLoop(lid);
+    if (!l) return;
+    try { await api('PATCH', `/api/games/${gid}/loops/${encodeURIComponent(lid)}/params`, { values: Object.fromEntries(l.params.map((p) => [p.key, p.value])) }); } catch (err) { fail(err); }
+  }, 350);
+}
+
+function lpHover(e) {
+  const svg = e.target.closest('.lp-svg');
+  const box = svg?.closest('.lp-plot');
+  if (!box) return;
+  const k = box.dataset.plot;
+  const g = LOOPS.pts[k];
+  const hov = $('.lp-hover', svg);
+  const tip = $('.lp-tip', box);
+  if (!g || e.type === 'mouseleave') { if (hov) hov.style.display = 'none'; if (tip) tip.hidden = true; return; }
+  const r = svg.getBoundingClientRect();
+  const px = ((e.clientX - r.left) / r.width) * g.W;
+  const n = g.lines[0].draft.length - 1;
+  const i = Math.round(Math.min(1, Math.max(0, (px - g.m.l) / (g.W - g.m.l - g.m.r))) * n);
+  const xv = g.lines[0].draft[i][0];
+  hov.style.display = '';
+  const cross = $('.lp-cross', hov);
+  cross.setAttribute('x1', g.X(xv)); cross.setAttribute('x2', g.X(xv));
+  $$('circle', hov).forEach((dot, j) => { const y = g.lines[j].draft[i][1]; dot.style.display = y == null ? 'none' : ''; if (y != null) { dot.setAttribute('cx', g.X(xv)); dot.setAttribute('cy', g.Y(y)); } });
+  tip.hidden = false;
+  tip.innerHTML = `<b>${esc(g.c.xLabel)}: ${lpNum(xv)}</b>${g.lines.map((x) => `<div><i style="background:${x.color}"></i>${esc(x.s.label)}: <b>${lpNum(x.draft[i][1])}</b>${x.base && x.base[i][1] !== x.draft[i][1] ? ` <span class="hint" style="margin:0;display:inline">(code ${lpNum(x.base[i][1])})</span>` : ''}</div>`).join('')}`;
+  const left = ((g.X(xv) / g.W) * box.clientWidth);
+  tip.style.left = `${Math.min(box.clientWidth - tip.offsetWidth - 4, Math.max(4, left + 12))}px`;
+}
+
+document.addEventListener('input', (e) => {
+  const t = e.target;
+  if (t.dataset?.lpRange) { LOOPS.dragging = true; lpSet(t.dataset.lpRange, Number(t.value)); }
+  else if (t.dataset?.lpNum && t.value !== '') lpSet(t.dataset.lpNum, Number(t.value));
+});
+document.addEventListener('change', (e) => {
+  const t = e.target;
+  if (t.dataset?.lpRange || t.dataset?.lpNum) {
+    lpSet(t.dataset.lpRange || t.dataset.lpNum, Number(t.value), { save: true });
+    LOOPS.dragging = false;
+    if (LOOPS.stale) { LOOPS.stale = false; loopsChanged(S.gameId); }
+  }
+  if (t.dataset?.lpSched) {
+    const v = t.dataset.lpSched === 'day' ? Number(t.value) : t.value;
+    api('PATCH', `/api/games/${S.gameId}/loops/schedule`, { [t.dataset.lpSched]: v }).then((d) => { LOOPS.data[S.gameId] = d; renderLoops(); }).catch(fail);
+  }
+});
+document.addEventListener('pointerup', () => { if (LOOPS.dragging) setTimeout(() => { LOOPS.dragging = false; if (LOOPS.stale) { LOOPS.stale = false; loopsChanged(S.gameId); } }, 50); });
+document.addEventListener('mousemove', (e) => { if (S.tab === 'loops' && e.target.closest?.('.lp-svg')) lpHover(e); });
+document.addEventListener('mouseout', (e) => { if (S.tab === 'loops' && e.target.classList?.contains('lp-hit') && !e.relatedTarget?.closest?.('.lp-svg')) lpHover({ ...e, type: 'mouseleave', target: e.target }); });
+
+document.addEventListener('click', async (e) => {
+  const el = e.target.closest('[data-lp]');
+  if (!el || !$('#loops')?.contains(el)) return;
+  if (el.dataset.lp === 'toggle' && e.target.closest('a, button, input')) return;
+  if (el.dataset.lp === 'goto' && el.tagName === 'TR' && e.target.closest('a, button')) return;
+  e.preventDefault();
+  const gid = S.gameId;
+  const lid = el.dataset.loop;
+  const base = `/api/games/${gid}/loops`;
+  try {
+    switch (el.dataset.lp) {
+      case 'audit': LOOPS.data[gid] = await api('POST', `${base}/audit`); renderLoops(); toast('Auditing the loops. It takes a few minutes; the result also goes to the Feed.'); break;
+      case 'lock': await api('POST', `${base}/lock`); toast('Locking in: the tasks land on the board in a minute.'); break;
+      case 'toggle': LOOPS.open.has(lid) ? LOOPS.open.delete(lid) : LOOPS.open.add(lid); renderLoops(); break;
+      case 'goto': LOOPS.open.add(lid); renderLoops(); $(`#lp-${CSS.escape(lid)}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); break;
+      case 'digest': LOOPS.data[gid].digesting = true; renderLoops(); try { LOOPS.data[gid] = await api('POST', `${base}/digest`); } finally { if (LOOPS.data[gid]) delete LOOPS.data[gid].digesting; renderLoops(); } break;
+      case 'act': await api('POST', `${base}/actions/${encodeURIComponent(el.dataset.action)}`, { do: el.dataset.do }); break;
+      case 'act-try': {
+        const a = LOOPS.data[gid].actions.find((x) => x.id === el.dataset.action);
+        const l = lpLoop(a.loopId);
+        for (const v of a.values || []) { const p = l?.params.find((x) => x.key === v.key); if (p) p.value = Math.min(p.max, Math.max(p.min, v.value)); }
+        LOOPS.open.add(a.loopId); renderLoops(); lpSave(a.loopId);
+        $(`#lp-${CSS.escape(a.loopId)} .lp-model`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        toast('Sliders moved: the solid lines are the change, the dashed ones the code today.');
+        break;
+      }
+      case 'reset-param': { const p = lpLoop(lid)?.params.find((x) => x.key === el.dataset.key); if (p) { lpSet(`${lid}|${p.key}`, p.base, { save: true }); renderLoops(); } break; }
+      case 'reset-loop': await api('PATCH', `${base}/${encodeURIComponent(lid)}/params`, { reset: true }); for (const p of lpLoop(lid).params) p.value = p.base; renderLoops(); break;
+      case 'try': {
+        const l = lpLoop(lid);
+        for (const v of l.iterate[Number(el.dataset.idx)].values || []) { const p = l.params.find((x) => x.key === v.key); if (p) p.value = Math.min(p.max, Math.max(p.min, v.value)); }
+        renderLoops(); lpSave(lid); toast('Sliders moved: compare the solid lines with the dashed ones (the code today).');
+        break;
+      }
+      case 'adopt': { const x = lpLoop(lid).iterate[Number(el.dataset.idx)]; await api('POST', `${base}/${encodeURIComponent(lid)}/changes`, { text: `${x.title}: ${x.why}` }); break; }
+      case 'drop-change': await api('DELETE', `${base}/${encodeURIComponent(lid)}/changes/${encodeURIComponent(el.dataset.change)}`); break;
+      case 'rm-chart': await api('DELETE', `${base}/${encodeURIComponent(lid)}/charts/${encodeURIComponent(el.dataset.chart)}`); break;
+    }
+  } catch (err) { fail(err); }
+});
+
+document.addEventListener('submit', async (e) => {
+  const f = e.target.closest('[data-lp-form]');
+  if (!f) return;
+  e.preventDefault();
+  const field = $('input, textarea', f);
+  const text = field.value.trim();
+  if (!text) return;
+  const lid = f.dataset.loop;
+  field.value = ''; // before the request: the reply's re-render would otherwise keep the text
+  try {
+    if (f.dataset.lpForm === 'ask') await api('POST', `/api/games/${S.gameId}/loops/${encodeURIComponent(lid)}/chat`, { text });
+    else await api('POST', `/api/games/${S.gameId}/loops/${encodeURIComponent(lid)}/changes`, { text });
+  } catch (err) {
+    const again = $(`[data-lp-keep="${CSS.escape(field.dataset.lpKeep)}"]`);
+    if (again && !again.value) again.value = text;
+    fail(err);
+  }
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey && e.target.matches?.('.lp-ask textarea')) { e.preventDefault(); e.target.form.requestSubmit(); }
+});
+
+// ---------------------------------------------------------------------------
+// Work split with Jungle Studio, strict Jungle Engine mode, repo work, and spend per project
+// (src/worksplit.mjs, /api/token-totals).
+
+const SPLIT_ROWS = [['gameplay', 'Gameplay'], ['backend', 'Backend and tech'], ['art', 'Art'], ['audio', 'Audio'], ['other', 'Untagged']];
+const needsRepair = (a) => !!(a.authBroken || (!a.loggedIn && a.email && !a.signedInAs));
+const taskOwner = (g, t) => (t.repoWide ? 'ballast' : t.owner === 'jungle' || t.owner === 'ballast' ? t.owner : g?.split?.[t.discipline || 'other'] === 'jungle' ? 'jungle' : 'ballast');
+const splitOn = (g) => SPLIT_ROWS.some(([k]) => g?.split?.[k] === 'jungle');
+const repoKeyOf = (g) => { const gh = typeof g?.github === 'string' ? g.github : g?.github?.repo || g?.jungle?.repo; return (gh || g?.repoPath || '').toLowerCase().replace(/\\/g, '/').replace(/\.git$/, '') || null; };
+
+function jungleSettings(g) {
+  const sel = (k) => g.split?.[k] === 'jungle';
+  return `<h3>Jungle Engine and Jungle Studio</h3>
+    <p class="hint" style="margin-top:-4px">Split the work with Jungle Studio, and set how closely Ballast keeps to Jungle Engine's way of doing things.</p>
+    <div class="field"><span class="field-label">Who does what</span>
+      <div class="split-grid">${SPLIT_ROWS.map(([k, label]) => `<label class="split-row"><span>${label}</span><select name="split_${k}"><option value="ballast">Ballast</option><option value="jungle"${sel(k) ? ' selected' : ''}>Jungle Studio</option></select></label>`).join('')}</div>
+      <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap"><button type="button" class="ghost small" data-act="split-preset" data-preset="code">Programming in Jungle Studio, art and audio in Ballast</button><button type="button" class="ghost small" data-act="split-preset" data-preset="none">Everything in Ballast</button></div>
+      <small>Tickets for Jungle Studio stay on the board, marked, but no Ballast agent takes them. The Board tab gives you a brief to paste into Jungle Studio, and you mark them done when Jungle Studio has done them. Ballast's agents are told not to write that department's code beyond what their own work needs to load.</small></div>
+    <div class="two">
+      <label class="field"><span>Engine rules</span><select name="jungleMode"><option value="guided">Guided: follow the engine's docs, change what the work needs</option><option value="strict"${g.jungleMode === 'strict' ? ' selected' : ''}>Strict: the engine's way only, inside the game's folder</option></select>
+        <small>Strict is for games set up with Jungle. Agents change only ${g.subdir ? `<code>${esc(g.subdir)}/</code>` : 'the game\'s own files'}, use the engine's documented APIs and Game Pack conventions, and ask you instead of building around the engine. Every finished pull request is checked; files changed outside the folder come back as a ticket to move or revert them. Repo work is exempt.</small></label>
+      <label class="field"><span>Also allowed in strict mode</span><textarea name="jungleAllow" rows="3" placeholder="One path per line, e.g. apps/client/src/room.worker.ts">${esc((g.jungleAllow || []).join('\n'))}</textarea><small>Files or folders outside the game's folder that agents may still change.</small></label>
+    </div>`;
+}
+
+function jungleBar(g) {
+  const mine = tasksOf(g.id).filter((t) => ['open', 'blocked'].includes(t.status) && taskOwner(g, t) === 'jungle');
+  const strict = g.jungleMode === 'strict' ? `<span class="pill js-strict" title="Agents stay inside ${esc(g.subdir || 'the game folder')} and work the engine's way; finished PRs are checked">Jungle strict</span>` : '';
+  if (!splitOn(g) && !mine.length) return strict ? `<div class="js-bar">${strict}</div>` : '';
+  const who = SPLIT_ROWS.filter(([k]) => g.split?.[k] === 'jungle').map(([, l]) => l.toLowerCase()).join(', ');
+  return `<div class="js-bar">${strict}<span class="pill js-pill">Jungle Studio</span>
+    <span class="grow">${who ? `Jungle Studio does ${esc(who)} on this game. ` : ''}<b>${mine.length}</b> ticket${mine.length === 1 ? '' : 's'} waiting for it.</span>
+    ${mine.length ? `<button class="ghost small" data-act="jungle-brief" data-id="${g.id}" title="Copy every Jungle Studio ticket as one brief">Copy brief for Jungle Studio</button>` : ''}</div>`;
+}
+
+function ownerPill(g, t) {
+  if (t.repoWide) return '<span class="pill js-repo" title="Repo-wide maintenance: any game\'s agents in this repo can take it">repo-wide</span>';
+  return ['open', 'blocked', 'claimed'].includes(t.status) && taskOwner(g, t) === 'jungle' ? '<span class="pill js-pill">Jungle Studio</span>' : '';
+}
+
+function ownerActs(g, t, status) {
+  if (status === 'done' || t.repoWide) return '';
+  if (taskOwner(g, t) === 'jungle') return `<button class="primary small" data-act="task-owner" data-id="${t.id}" data-owner="done-in-jungle">Done in Jungle Studio</button><button class="ghost small" data-act="task-owner" data-id="${t.id}" data-owner="ballast" title="Let Ballast's agents do this one">Ballast does it</button>`;
+  return splitOn(g) && status === 'open' ? `<button class="ghost small" data-act="task-owner" data-id="${t.id}" data-owner="jungle">Send to Jungle Studio</button>` : '';
+}
+
+// --- Repo work (Studio)
+
+function repoList() {
+  const map = new Map();
+  for (const g of S.st.games.filter((x) => statusOf(x) !== 'archived')) {
+    const k = repoKeyOf(g);
+    if (!k) continue;
+    if (!map.has(k)) map.set(k, { key: k, games: [] });
+    map.get(k).games.push(g);
+  }
+  return [...map.values()].sort((a, b) => b.games.length - a.games.length);
+}
+
+function repoWorkForm() {
+  const repos = repoList();
+  if (!repos.length) return '<p class="hint">No games with a repo yet.</p>';
+  return `<form class="card" id="st-repo-form">
+    <div class="row" style="gap:8px;flex-wrap:wrap"><label class="hint" style="margin:0">Repo</label><select name="repo">${repos.map((r) => `<option value="${esc(r.key)}">${esc(r.key)} · ${esc(r.games.map((g) => g.name).join(', '))}</option>`).join('')}</select></div>
+    <textarea name="text" rows="3" placeholder="e.g. Unblock and resolve all the PR merge issues in the repo" style="margin-top:8px"></textarea>
+    <div class="row" style="margin-top:8px"><span class="hint grow" style="margin:0">Becomes a high-priority [repo] ticket that any of the repo's game agents can take. It may touch any folder, so strict mode doesn't apply to it.</span><button class="primary small">Send</button></div>
+  </form>`;
+}
+
+function renderRepoWork() {
+  const el = $('#st-repo-list');
+  if (!el) return;
+  const list = S.st.tasks.filter((t) => t.repoWide).sort((a, b) => b.createdAt - a.createdAt).slice(0, 20);
+  el.innerHTML = list.length ? `<div class="card"><table class="tbl"><thead><tr><th>Ticket</th><th>Status</th><th>On the board of</th><th>Who</th></tr></thead><tbody>
+    ${list.map((t) => `<tr><td><b>#${t.num}</b> ${esc(t.title.replace(/^\[repo\]\s*/i, ''))}${t.pr ? ` <a href="${esc(t.pr)}" target="_blank" rel="noopener">PR</a>` : ''}</td><td><span class="pill ${t.status === 'done' ? 'success' : t.status === 'blocked' ? 'error' : t.status === 'claimed' ? 'running' : ''}">${esc(t.status)}</span></td>
+      <td><span class="link" data-act="game" data-id="${t.gameId}">${esc(S.st.games.find((g) => g.id === t.gameId)?.name || '?')}</span></td><td>${esc(agentOf(t.claimedBy || t.doneBy)?.name || '–')}</td></tr>`).join('')}
+  </tbody></table></div>` : '';
+}
+
+document.addEventListener('submit', async (e) => {
+  if (e.target.id !== 'st-repo-form') return;
+  e.preventDefault();
+  const f = formData(e.target);
+  if (!f.text.trim()) return;
+  try {
+    const t = await api('POST', '/api/repo-work', { repo: f.repo, text: f.text });
+    e.target.text.value = '';
+    toast(`Added #${t.num} (repo-wide). The first free agent in the repo takes it.`);
+  } catch (err) { fail(err); }
+});
+
+// --- Spend per project
+
+const TOKENS = { data: null, at: 0, loading: false };
+const KIND_NAMES = { agent: 'local agent turns', ask: 'conversation mode', triage: 'note triage', unblock: 'blocked-ticket triage', ticket: 'ticket threads', 'gdd-review': 'GDD re-evaluation', 'level-audit': 'level audit', 'loop-audit': 'loop audit', 'loop-chat': 'loop questions', 'loop-lock': 'loop lock-in', 'loop-digest': 'loop rewrite', roadmap: 'roadmap breakdown', video: 'video reviews', 'jungle-docs': 'Jungle docs', audit: 'Bartle audit', sync: 'artifact sync', probe: 'limit checks', feedback: 'feedback checks', daily: 'daily update', settle: 'question settling' };
+const acctWeeks = (pct) => (pct == null ? '–' : pct >= 100 ? `${(pct / 100).toFixed(1)} account-weeks` : `${pct}% of an account-week`);
+const kindName = (k) => KIND_NAMES[k] || k.replace(/-/g, ' ');
+
+async function loadTokens(force = false) {
+  if (TOKENS.loading || (!force && TOKENS.data && Date.now() - TOKENS.at < 60e3)) return;
+  TOKENS.loading = true;
+  try { TOKENS.data = await api('GET', '/api/token-totals'); TOKENS.at = Date.now(); } catch (err) { console.error(err); }
+  TOKENS.loading = false;
+  if ($('#st-tokens')) $('#st-tokens').innerHTML = tokensTable();
+  if (S.tab === 'budget' && $('#bd-tokens')) $('#bd-tokens').outerHTML = tokensSection(S.gameId);
+}
+
+function tokensTable() {
+  const d = TOKENS.data;
+  if (!d) { loadTokens(); return '<p class="hint">Adding up…</p>'; }
+  loadTokens();
+  const rows = [...d.games.filter((g) => g.all || g.cloudPct), d.housekeeping].filter((g) => g.all || g.cloudPct);
+  const total = rows.reduce((n, g) => n + (g.all?.tokens || 0), 0);
+  const cost = rows.reduce((n, g) => n + (g.all?.cost || 0), 0);
+  return `<div class="pf-table-wrap"><table class="tbl tk-table"><thead><tr><th>Project</th><th>Tokens, all time</th><th>Input · output · cache</th><th>API-equivalent</th><th>Last 30 days</th><th title="Cloud sessions don't report tokens: estimated from account limit readings">Cloud agents (est.)</th><th>Biggest uses</th></tr></thead><tbody>
+    ${rows.map((g) => `<tr${g.status === 'archived' ? ' class="archived"' : ''}><td>${g.id === '_none' ? esc(g.name) : `<span class="link" data-act="game" data-id="${g.id}">${esc(g.name)}</span>`}${g.status === 'archived' ? ' <span class="pill archived">archived</span>' : ''}</td>
+      <td><b>${fmtTokens(g.all?.tokens || 0)}</b></td>
+      <td class="hint" style="margin:0">${g.all ? `${fmtTokens(g.all.input)} · ${fmtTokens(g.all.output)} · ${fmtTokens(g.all.cacheRead + g.all.cacheWrite)}` : '–'}</td>
+      <td>${g.all ? money(g.all.cost) : '–'}</td>
+      <td>${g.month ? `${fmtTokens(g.month.tokens)} · ${money(g.month.cost)}` : '–'}</td>
+      <td>${acctWeeks(g.cloudPct)}</td>
+      <td class="hint" style="margin:0">${g.kinds.slice(0, 3).map((k) => `${esc(kindName(k.kind))} ${fmtTokens(k.tokens)}`).join(' · ')}</td></tr>`).join('')}
+    <tr class="tk-total"><td><b>All projects</b></td><td><b>${fmtTokens(total)}</b></td><td></td><td><b>${money(cost)}</b></td><td></td><td></td><td></td></tr>
+  </tbody></table></div>
+  <p class="hint" style="margin:8px 0 0">Tokens are exact for every Claude run Ballast makes itself (triage, audits, conversation mode, reviews, local agent turns) since ${d.since ? esc(new Date(d.since).toLocaleDateString()) : 'it started recording'}. API-equivalent is what those tokens would cost on the API; on a subscription they come out of account limits instead. Cloud agent sessions don't report tokens to Ballast, so their work is estimated from account limit readings${d.cloudSince ? ` since ${esc(new Date(d.cloudSince).toLocaleDateString())}` : ''}, in account-weeks (one account's full weekly limit).</p>`;
+}
+
+function tokensSection(gid) {
+  const d = TOKENS.data;
+  if (!d) { loadTokens(); return '<div id="bd-tokens"><h3 class="pf-h">Token spend</h3><p class="hint">Adding up…</p></div>'; }
+  const g = d.games.find((x) => x.id === gid);
+  if (!g) return '<div id="bd-tokens"></div>';
+  return `<div id="bd-tokens"><h3 class="pf-h">Token spend <span class="hint">all time, every Claude run Ballast made for this game</span></h3>
+    <div class="bd-tiles">
+      ${tile('Tokens, all time', fmtTokens(g.all?.tokens || 0), g.all ? `${g.all.runs} runs since ${esc(new Date(g.since).toLocaleDateString())}` : 'none recorded')}
+      ${tile('API-equivalent', g.all ? money(g.all.cost) : '–', 'what these tokens would cost on the API')}
+      ${tile('Last 30 days', g.month ? fmtTokens(g.month.tokens) : '–', g.month ? money(g.month.cost) : '')}
+      ${tile('Cloud agents (est.)', acctWeeks(g.cloudPct), 'all time, from limit readings: cloud sessions don\'t report tokens')}
+    </div>
+    ${g.kinds.length ? `<div class="card"><div class="pf-table-wrap"><table class="pf-table"><thead><tr><th>What</th><th>Runs</th><th>Tokens</th><th>Input · output · cache</th><th>API-equivalent</th></tr></thead><tbody>
+      ${g.kinds.map((k) => `<tr><td>${esc(kindName(k.kind))}</td><td>${k.runs}</td><td>${fmtTokens(k.tokens)}</td><td>${fmtTokens(k.input)} · ${fmtTokens(k.output)} · ${fmtTokens(k.cacheRead + k.cacheWrite)}</td><td>${money(k.cost)}</td></tr>`).join('')}
+    </tbody></table></div></div>` : ''}</div>`;
+}
+
+// --- Director's Inbox: one column per project
+
+function inboxColumns(open, human) {
+  const games = S.st.games.filter((g) => statusOf(g) !== 'archived').sort((a, b) => (b.priority ?? 2) - (a.priority ?? 2) || a.name.localeCompare(b.name));
+  const cols = [...games.map((g) => ({ id: g.id, name: g.name })), { id: null, name: 'Studio' }]
+    .map((c) => ({ ...c, human: human.filter((i) => (i.gameId || null) === c.id), qs: open.filter((q) => (q.gameId || null) === c.id) }))
+    .filter((c) => c.human.length || c.qs.length);
+  return `<div class="ib-cols">${cols.map((c) => `<div class="ib-col">
+    <div class="ib-head">${c.id ? `<b class="link" data-act="game" data-id="${c.id}">${esc(c.name)}</b>` : `<b>${esc(c.name)}</b>`}
+      <span class="hint" style="margin:0">${[c.human.length && `${c.human.length} need${c.human.length === 1 ? 's' : ''} you`, c.qs.length && `${c.qs.length} question${c.qs.length === 1 ? '' : 's'}`].filter(Boolean).join(' · ')}</span></div>
+    ${c.human.map(interventionCard).join('')}${c.qs.map(questionCard).join('')}
+  </div>`).join('')}</div>`;
+}
+
+// ---------------------------------------------------------------------------
+// Sections: the GDD in sections, each held at a quality gate only the director passes, production
+// gate sets that move many gates at once, and department focus (src/gates.mjs).
+
+const SEC = { open: new Set() };
+const GATE_NAMES = ['Greybox', 'Functional', 'Polished', 'Ship'];
+const gateLabel = (n) => (n < 0 ? 'Hold' : `L${n} ${GATE_NAMES[n]}`);
+const FOCUS_DEPTS = [['gameplay', 'Gameplay'], ['art', 'Art'], ['audio', 'Audio'], ['backend', 'Backend']];
+
+function sectionHeld(g, r, t) {
+  if (t.repoWide || !r?.gates?.on) return null;
+  const f = t.featureId && r.features.find((x) => x.id === t.featureId);
+  if (f) {
+    if ((f.gate ?? -1) < 0) return 'section on hold';
+    if (t.level != null && t.level > f.gate) return `L${t.level} work, gate is L${f.gate}`;
+  }
+  const fx = r.gates.focus?.[t.discipline || 'other'];
+  if (fx?.mode === 'only' && fx.sections?.length && !fx.sections.includes(t.featureId)) return 'outside the department\'s focus';
+  return null;
+}
+
+function renderSections() {
+  const el = $('#sections');
+  if (!el) return;
+  if (el.contains(document.activeElement) && /TEXTAREA|SELECT|INPUT/.test(document.activeElement.tagName)) return; // don't disturb what you're editing
+  if ($('#scheme-form', el)?.contains(document.activeElement)) return;
+  const g = game();
+  const r = S.st.roadmaps?.[g.id];
+  if (!r?.features?.length) {
+    el.innerHTML = `<h2 style="margin-top:0">Sections</h2>
+      <p class="hint">Ballast reads the GDD and the code and splits the design into 8–25 sections, each with what Greybox, Functional, Polished and Ship mean for it. Then you set each section's gate. Choose how it's cut first.</p>
+      ${schemeCard(g, r)}
+      ${r?.error ? `<p style="color:var(--red)">${esc(r.error)}</p>` : ''}`;
+    return;
+  }
+  const tasks = tasksOf(g.id);
+  // Nothing this tab shows changed: leave the page alone (live updates come several times a second).
+  const view = JSON.stringify([r, g.gyms, [...SEC.open], tasks.map((t) => [t.id, t.status, t.level, t.featureId, t.priority, t.title])]);
+  if (el.dataset.view === view) return;
+  el.dataset.view = view;
+  const gs = r.gates || { on: false, sets: [], focus: {} };
+  const name = (id) => r.features.find((f) => f.id === id)?.name || '?';
+  el.innerHTML = `
+    <div class="row pf-top"><h2 class="grow" style="margin:0">Sections</h2>
+      ${gs.unlinked ? `<button class="ghost small" data-act="gates-sort"${gs.sorting ? ' disabled' : ''} title="Have Claude put open tickets without a section into the right one">${gs.sorting ? 'Sorting…' : `Sort ${gs.unlinked} ticket${gs.unlinked === 1 ? '' : 's'} into sections`}</button>` : ''}
+      <label class="check" style="margin:0"><input type="checkbox" data-gates-on ${gs.on ? 'checked' : ''}><span>Production gates</span></label></div>
+    <p class="hint">Each section is built up to its gate and no further. Tickets above a gate wait, and a section that meets its gate waits for you. Only you pass a gate${gs.on ? '' : ' <b>(gates are off: the roadmap\'s milestones drive the work)</b>'}. ${gs.held ? `<b>${gs.held}</b> ticket${gs.held === 1 ? ' is' : 's are'} waiting on a gate or a focus.` : ''}</p>
+
+    ${schemeCard(g, r)}
+    <div class="sec-top">
+      <div class="card"><div class="row"><h4 class="sub-h grow" style="margin:0">Production gate sets</h4><button class="ghost small" data-act="gateset-edit">+ New gate set</button></div>
+        <p class="hint lp-sub">A named set of section targets, e.g. "Vertical slice". Applying it moves every gate it lists at once.</p>
+        ${gs.sets.length ? `<ol class="gs-list">${gs.sets.map((s, i) => `<li class="${s.id === gs.activeSet ? 'active' : ''}">
+          <div class="grow"><b>${esc(s.name)}</b>${s.id === gs.activeSet ? ' <span class="pill success">applied</span>' : ''}
+            <div class="hint" style="margin:0">${s.met} of ${s.of} sections at target · ${Object.entries(s.targets).slice(0, 6).map(([id, v]) => `${esc(name(id))} ${v < 0 ? 'hold' : `L${v}`}`).join(', ')}${Object.keys(s.targets).length > 6 ? ', …' : ''}</div>${s.note ? `<div class="hint" style="margin:0">${esc(s.note)}</div>` : ''}</div>
+          <span class="gs-acts"><button class="${s.id !== gs.activeSet && (gs.sets.findIndex((x) => x.id === gs.activeSet) === i - 1 || (!gs.activeSet && i === 0)) ? 'primary' : 'ghost'} small" data-act="gateset-apply" data-id="${s.id}">Apply</button>
+            <button class="icon-btn" data-act="gateset-move" data-id="${s.id}" data-dir="up" ${i === 0 ? 'disabled' : ''} title="Earlier">▲</button><button class="icon-btn" data-act="gateset-move" data-id="${s.id}" data-dir="down" ${i === gs.sets.length - 1 ? 'disabled' : ''} title="Later">▼</button>
+            <button class="ghost small" data-act="gateset-edit" data-id="${s.id}">Edit</button><a href="#" class="lp-x" data-act="gateset-delete" data-id="${s.id}" title="Delete">✕</a></span></li>`).join('')}</ol>` : '<p class="hint">None yet. Start one from the gates you have now.</p>'}
+      </div>
+      <div class="card"><h4 class="sub-h" style="margin-top:0">Focus</h4><p class="hint lp-sub">Point a department at a few sections. <b>Only these</b> holds its other tickets; <b>These first</b> just orders them.</p>
+        ${FOCUS_DEPTS.map(([d, label]) => { const fx = gs.focus?.[d] || { mode: 'off', sections: [] }; return `<div class="focus-row">
+          <div class="row" style="gap:8px"><b style="min-width:76px">${label}</b><select class="mini" data-focus-mode="${d}">${[['off', 'No focus'], ['first', 'These first'], ['only', 'Only these']].map(([v, l]) => `<option value="${v}"${(fx.mode || 'off') === v ? ' selected' : ''}>${l}</option>`).join('')}</select></div>
+          ${fx.mode && fx.mode !== 'off' ? `<div class="chip-row">${r.features.map((f) => `<button type="button" class="chip-btn${fx.sections?.includes(f.id) ? ' on' : ''}" data-focus-dept="${d}" data-focus-id="${f.id}">${esc(f.name)}</button>`).join('')}</div>` : ''}</div>`; }).join('')}
+      </div>
+    </div>
+
+    <div class="sec-list">${r.features.map((f) => sectionCard(g, r, f, tasks)).join('')}</div>`;
+}
+
+function sectionCard(g, r, f, tasks) {
+  const gate = f.gate ?? -1;
+  const open = SEC.open.has(f.id);
+  const mine = tasks.filter((t) => t.featureId === f.id && t.status !== 'done');
+  const atGate = gate >= 0 && f.level >= gate;
+  const building = mine.filter((t) => !sectionHeld(g, r, t)).length;
+  const focusBy = FOCUS_DEPTS.filter(([d]) => r.gates?.focus?.[d]?.mode !== 'off' && r.gates?.focus?.[d]?.sections?.includes(f.id)).map(([, l]) => l);
+  const gb = gymBits(g, f);
+  const state = !r.gates?.on ? '' : gate < 0 ? '<span class="pill">on hold</span>'
+    : atGate ? `<span class="pill warn" title="It meets its gate. Iterate on it, or pass it to the next level.">at its gate · your call</span>`
+      : `<span class="pill running">building to L${gate}</span>`;
+  return `<div class="card sec-card${atGate && r.gates?.on ? ' at-gate' : ''}${gate < 0 ? ' held' : ''}">
+    <div class="sec-head">
+      <div class="grow" data-act="section-toggle" data-id="${f.id}" style="cursor:pointer"><span class="lp-caret">${open ? '▾' : '▸'}</span> <b>${esc(f.name)}</b> ${f.kind && f.kind !== 'feature' ? `<span class="pill">${esc(f.kind)}</span> ` : ''}<span class="pill">${esc(f.area)}</span>${f.core ? ' <span class="pill success">core</span>' : ''}${gb.pill ? ` ${gb.pill}` : ''}${focusBy.map((l) => ` <span class="pill js-repo">${l} focus</span>`).join('')}
+        <div class="hint" style="margin:2px 0 0 18px">Now ${f.level < 0 ? 'not started' : gateLabel(f.level)}${f.verified ? ' (verified)' : ''} · ${building} open${f.held ? ` · ${f.held} waiting` : ''}</div></div>
+      ${state}
+      <label class="sec-gate"><span class="hint" style="margin:0">Gate</span><select class="mini" data-gate="${f.id}">${[-1, 0, 1, 2, 3].map((n) => `<option value="${n}"${n === gate ? ' selected' : ''}>${gateLabel(n)}</option>`).join('')}</select></label>
+      ${r.gates?.on && atGate && gate < 3 ? `<button class="primary small" data-act="gate-pass" data-id="${f.id}" data-gate="${gate + 1}">Pass to L${gate + 1}</button>` : ''}
+    </div>
+    ${open ? `<div class="sec-body">
+      <p style="margin:6px 0">${esc(f.summary || '')}${f.gdd ? ` <span class="hint" style="display:inline">GDD: ${esc(f.gdd)}</span>` : ''}</p>
+      ${gb.body}
+      <div class="sec-levels">${[0, 1, 2, 3].map((n) => `<div class="sec-lvl${n === gate ? ' gate' : ''}${n <= f.level ? ' met' : ''}"><b>L${n} ${GATE_NAMES[n]}</b>${n === gate ? ' <span class="hint" style="display:inline">← gate</span>' : ''}<p>${esc(f.levels?.[n]?.done || '')}</p><span class="hint" style="margin:0">${f.doneCount?.[n] || 0} done · ${f.open?.[n] || 0} open</span></div>`).join('')}</div>
+      ${mine.length ? `<ul class="sec-tickets">${mine.sort((a, b) => (a.level ?? 9) - (b.level ?? 9) || a.num - b.num).map((t) => { const h = sectionHeld(g, r, t); return `<li class="${h ? 'held' : ''}"><span class="link" data-act="thread-open" data-id="${t.id}">#${t.num}</span> ${t.level != null ? `<span class="pill">L${t.level}</span> ` : ''}${esc(t.title)} <span class="hint" style="margin:0;display:inline">· ${esc(t.status)}${h ? ` · waiting: ${esc(h)}` : ''}</span></li>`; }).join('')}</ul>` : '<p class="hint">No open tickets in this section.</p>'}
+      <form class="sec-note" data-sec-note="${f.id}"><textarea name="text" rows="2" placeholder="A note about ${esc(f.name)} only: what to change, what felt off…"></textarea><button class="primary small">Send to the team</button></form>
+      <p class="hint" style="margin:4px 0 0">Its tickets land in this section, at or under its gate unless the note asks for the next level.</p>
+    </div>` : ''}
+  </div>`;
+}
+
+function gateSetModal(id) {
+  const g = game();
+  const r = S.st.roadmaps[g.id];
+  const s = r.gates.sets.find((x) => x.id === id) || { name: '', targets: Object.fromEntries(r.features.map((f) => [f.id, f.gate ?? -1])), note: '' };
+  modal({
+    title: id ? 'Edit gate set' : 'New production gate set',
+    wide: true,
+    body: `<label class="field"><span>Name</span><input name="name" value="${esc(s.name)}" placeholder="e.g. First playable, Vertical slice, Art pass 1"></label>
+      <label class="field"><span>Note (optional)</span><input name="note" value="${esc(s.note || '')}" placeholder="What this stage is for"></label>
+      <p class="hint">Target gate for each section. "Leave" keeps a section's gate as it is when the set is applied.</p>
+      <div class="gs-grid">${r.features.map((f) => `<label class="gs-row"><span>${esc(f.name)} <span class="hint" style="display:inline">now ${f.level < 0 ? '–' : `L${f.level}`}</span></span><select name="t_${f.id}"><option value="">Leave</option>${[-1, 0, 1, 2, 3].map((n) => `<option value="${n}"${s.targets[f.id] === n ? ' selected' : ''}>${gateLabel(n)}</option>`).join('')}</select></label>`).join('')}</div>`,
+    actions: [{ label: 'Cancel' }, {
+      label: 'Save', kind: 'primary',
+      onClick: async (root) => {
+        const f = formData(root);
+        const targets = Object.fromEntries(Object.entries(f).filter(([k]) => k.startsWith('t_')).map(([k, v]) => [k.slice(2), v]));
+        await api('PATCH', `/api/games/${g.id}/gates`, { saveSet: { id: id || null, name: f.name, note: f.note, targets } });
+      },
+    }],
+  });
+}
+
+document.addEventListener('change', async (e) => {
+  const t = e.target;
+  if (!$('#sections')?.contains(t)) return;
+  const gid = S.gameId;
+  try {
+    if (t.dataset.gate) { await api('PATCH', `/api/games/${gid}/gates`, { gate: { featureId: t.dataset.gate, gate: Number(t.value) } }); t.blur(); }
+    else if (t.dataset.focusMode) {
+      const cur = S.st.roadmaps[gid].gates.focus?.[t.dataset.focusMode] || { sections: [] };
+      await api('PATCH', `/api/games/${gid}/gates`, { focus: { dept: t.dataset.focusMode, mode: t.value, sections: cur.sections || [] } }); t.blur();
+    } else if (t.matches('[data-gates-on]')) await api('PATCH', `/api/games/${gid}/gates`, { on: t.checked });
+  } catch (err) { fail(err); }
+});
+document.addEventListener('click', async (e) => {
+  const chip = e.target.closest('[data-focus-dept]');
+  if (!chip || !$('#sections')?.contains(chip)) return;
+  const gid = S.gameId;
+  const d = chip.dataset.focusDept;
+  const cur = S.st.roadmaps[gid].gates.focus?.[d] || { mode: 'first', sections: [] };
+  const sections = cur.sections?.includes(chip.dataset.focusId) ? cur.sections.filter((x) => x !== chip.dataset.focusId) : [...(cur.sections || []), chip.dataset.focusId];
+  try { await api('PATCH', `/api/games/${gid}/gates`, { focus: { dept: d, mode: cur.mode || 'first', sections } }); } catch (err) { fail(err); }
+});
+document.addEventListener('submit', async (e) => {
+  const f = e.target.closest('[data-sec-note]');
+  if (!f) return;
+  e.preventDefault();
+  const text = f.text.value.trim();
+  if (!text) return;
+  f.text.value = '';
+  try { await api('POST', `/api/games/${S.gameId}/sections/${f.dataset.secNote}/note`, { text }); toast('Sent: triage puts its tickets in this section.'); } catch (err) { f.text.value = text; fail(err); }
+});
+
+// ---------------------------------------------------------------------------
+// Focus: what the director wants worked on right now, in their own words (src/focus.mjs).
+
+const focusesOf = (g) => S.st.focus?.[g.id]?.focuses || [];
+const activeFocuses = (g) => focusesOf(g).filter((f) => f.on && !f.expired);
+
+function focusBar(g) {
+  const fx = S.st.focus?.[g.id];
+  const list = focusesOf(g);
+  return `<div class="fx-bar">
+    <div class="row" style="gap:8px"><b>Focus</b><span class="hint grow" style="margin:0">${list.length ? 'What you want worked on right now. Matching tickets go first; with "Only", other work waits (urgent tickets still go).' : 'Write what you want worked on right now, in your own words. Claude matches the board to it, agents take that work first, and Plan adds what\'s missing.'}${fx?.matching ? ' <span class="pill queued">matching tickets…</span>' : ''}</span>
+      <button class="primary small" data-act="focus-edit">+ Write a focus</button></div>
+    ${list.map((f) => `<div class="fx-card${f.on && !f.expired ? '' : ' off'}">
+      <div class="row" style="gap:8px;flex-wrap:wrap"><span class="fx-star">★</span><b class="grow">${esc(f.title)}</b>
+        <span class="pill${f.mode === 'only' ? ' warn' : ''}">${f.mode === 'only' ? 'only this' : 'first'}</span>
+        ${f.expired ? '<span class="pill">ended</span>' : !f.on ? '<span class="pill">paused</span>' : f.until ? `<span class="hint" style="margin:0">until ${esc(new Date(f.until).toLocaleDateString())}</span>` : ''}
+        <span class="hint" style="margin:0">${f.counts.open} open · ${f.counts.working} in progress · ${f.counts.done} done${f.counts.blocked ? ` · ${f.counts.blocked} blocked` : ''}${f.counts.held ? ` · ${f.counts.held} above a gate` : ''}</span></div>
+      ${f.text ? `<div class="fx-text">${esc(f.text)}</div>` : ''}
+      ${f.planned ? `<div class="hint" style="margin:4px 0 0">Planned ${esc(ago(f.planned.at))}: ${esc(f.planned.summary)}${f.planned.added.length ? ` Added ${f.planned.added.map((n) => `#${n}`).join(', ')}.` : ''}</div>` : ''}
+      <div class="row" style="gap:6px;margin-top:6px">
+        <button class="ghost small" data-act="focus-plan" data-id="${f.id}"${f.planning ? ' disabled' : ''} title="Read the GDD and the code, and add the tickets this focus still needs">${f.planning ? 'Planning…' : 'Plan tickets for it'}</button>
+        <button class="ghost small" data-act="focus-match" data-id="${f.id}"${fx?.matching ? ' disabled' : ''} title="Match the board's tickets to your focuses again">Match tickets again</button>
+        <button class="ghost small" data-act="focus-edit" data-id="${f.id}">Edit</button>
+        <button class="ghost small" data-act="focus-toggle" data-id="${f.id}">${f.on ? 'Pause' : 'Resume'}</button>
+        <a href="#" class="lp-x" data-act="focus-remove" data-id="${f.id}" title="Remove this focus">✕</a></div>
+    </div>`).join('')}
+  </div>`;
+}
+
+const focusPill = (g, t) => (t.status !== 'done' && (t.focusIds || []).some((id) => activeFocuses(g).some((f) => f.id === id)) ? `<span class="pill fx-pill" title="Serves your focus: ${esc(activeFocuses(g).filter((f) => t.focusIds.includes(f.id)).map((f) => f.title).join(', '))}">★ focus</span>` : '');
+
+function focusModal(id) {
+  const g = game();
+  const f = focusesOf(g).find((x) => x.id === id) || { title: '', text: '', mode: 'first', until: null };
+  const until = f.until ? new Date(f.until).toISOString().slice(0, 10) : '';
+  modal({
+    title: id ? 'Edit focus' : 'What should the team focus on?',
+    wide: true,
+    body: `<label class="field"><span>Short title</span><input name="title" value="${esc(f.title)}" placeholder="e.g. The first 15 minutes read clearly"></label>
+      <label class="field"><span>Describe it</span><textarea name="text" rows="8" placeholder="What you want, why, and what done looks like. e.g. A new player can dig the first room, sign the first client and survive the first breach without reading anything. The HUD tells them what's happening. Polish only what they see in those 15 minutes.">${esc(f.text)}</textarea></label>
+      <div class="two">
+        <label class="field"><span>How strictly</span><select name="mode"><option value="first"${f.mode !== 'only' ? ' selected' : ''}>First: matching tickets go ahead of the rest</option><option value="only"${f.mode === 'only' ? ' selected' : ''}>Only: other work waits (urgent tickets still go)</option></select></label>
+        <label class="field"><span>Until (optional)</span><input type="date" name="until" value="${until}"><small>It switches itself off after this day.</small></label>
+      </div>
+      <p class="hint">Saving matches the board's tickets to it. <b>Plan tickets for it</b> then adds what's missing, within your section gates.</p>`,
+    actions: [{ label: 'Cancel' }, {
+      label: id ? 'Save' : 'Set this focus', kind: 'primary',
+      onClick: async (root) => { const v = formData(root); await api('PATCH', `/api/games/${g.id}/focus`, { save: { id: id || null, title: v.title, text: v.text, mode: v.mode, until: v.until || null } }); },
+    }],
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Workbench: how the GDD is cut into sections, gyms for systems, and art subjects with iteration
+// rounds (src/workbench.mjs, roadmap schemes).
+
+const SCHEME_LABELS = { systems: 'Systems', features: 'Features', content: 'Content', journey: 'Player journey' };
+
+function schemeCard(g, r) {
+  const sc = r?.scheme || { kind: 'systems', guide: '' };
+  const running = r?.status === 'running';
+  const has = r?.features?.length;
+  return `<details class="card scheme-card"${has ? '' : ' open'}><summary><b>How sections are cut</b> <span class="hint" style="margin:0;display:inline">· ${esc(SCHEME_LABELS[sc.kind] || 'Features')}${sc.guide ? ' · with your instructions' : ''}${has ? ` · ${r.features.length} sections` : ''}</span></summary>
+    <form id="scheme-form" class="scheme-form">
+      <div class="row" style="gap:8px;flex-wrap:wrap">${Object.entries(SCHEME_LABELS).map(([k, l]) => `<label class="check" style="margin:0"><input type="radio" name="scheme" value="${k}"${(sc.kind || 'features') === k ? ' checked' : ''}><span>${l}</span></label>`).join('')}</div>
+      <p class="hint" style="margin:6px 0">${'<b>Systems</b>: one section per system (its rules, numbers and feedback), with content inside the system it exercises. <b>Features</b>: what a player can do. <b>Content</b>: levels, characters, items. <b>Player journey</b>: first minutes through the ending.'}</p>
+      <textarea name="guide" rows="4" placeholder="Your own instructions, e.g. One section per system: digging, power, air, water, clients, threats, the board, research. Keep each threat track inside Threats. Art direction and UI are their own sections.">${esc(sc.guide || '')}</textarea>
+      <div class="row" style="gap:8px;margin-top:8px">${running ? '<span class="pill queued">Breaking down the GDD… (a few minutes)</span>' : `<button class="primary small" data-model="opus">${has ? 'Re-break the GDD this way' : 'Break the GDD into sections'}</button><button class="ghost small" data-model="sonnet">Faster (Sonnet)</button>`}
+        <span class="hint grow" style="margin:0">${has ? 'Sections with the same name keep their gate and tickets; tickets of sections that disappear go back to "no section" for Sort to place.' : ''}</span></div>
+    </form></details>`;
+}
+
+function gymBits(g, f) {
+  const gym = (g.gyms || []).find((x) => x.sectionId === f.id);
+  if (!gym) return { pill: '', body: `<div class="gym-box"><b>Gym</b> <span class="hint" style="margin:0;display:inline">A test scene that loads straight into ${esc(f.name)}, with its numbers as live controls.</span> <button class="ghost small" data-act="gym-ask" data-section="${f.id}">Ask for a gym</button></div>` };
+  const t = gym.taskId && tasksOf(g.id).find((x) => x.id === gym.taskId);
+  const pill = gym.status === 'ready' ? '<span class="pill success">gym ready</span>' : gym.status === 'failed' ? '<span class="pill error">gym failed</span>' : `<span class="pill queued">gym: building #${gym.taskNum}</span>`;
+  const open = gym.url ? `<a href="${esc(gym.url)}" target="_blank" rel="noopener">${esc(gym.open)}</a>` : esc(gym.open || '');
+  return {
+    pill,
+    body: `<div class="gym-box"><div class="row" style="gap:8px;flex-wrap:wrap"><b>Gym</b>${pill}${t ? `<span class="hint" style="margin:0">#${t.num} ${esc(t.status)}</span>` : ''}<span class="grow"></span>
+        <button class="ghost small" data-act="gym-ask" data-section="${f.id}" data-gym="${gym.id}">Ask for changes</button><a href="#" class="lp-x" data-act="gym-remove" data-id="${gym.id}" title="Forget this gym (the code stays)">✕</a></div>
+      ${gym.status === 'ready' ? `<div class="gym-open">Open it: <code>${open}</code> <a href="#" data-act="gym-copy" data-id="${gym.id}">copy</a></div>
+        <form class="sec-note" data-gym-note="${gym.id}"><textarea name="text" rows="2" placeholder="Playing the gym: what felt off, what to tune…"></textarea><button class="primary small">Send from the gym</button></form>
+        <p class="hint" style="margin:2px 0 0">Notes go to ${esc(f.name)}: its tickets land in this section.${gym.notes ? ` ${gym.notes} note${gym.notes === 1 ? '' : 's'} sent from it.` : ''}</p>` : gym.error ? `<p class="hint" style="color:var(--red);margin:4px 0 0">${esc(gym.error)}</p>` : '<p class="hint" style="margin:4px 0 0">Being built. It shows how to open it here when the ticket is done.</p>'}
+    </div>`,
+  };
+}
+
+function gymAskModal(sectionId, gymId) {
+  const g = game();
+  const f = S.st.roadmaps[g.id].features.find((x) => x.id === sectionId);
+  modal({
+    title: gymId ? `Change the ${f.name} gym` : `A gym for ${f.name}`,
+    body: `<p class="hint">${gymId ? 'What should change in the gym?' : `Ballast asks for a test scene that loads straight into ${esc(f.name)}, with its tuning numbers as live controls, readouts and a quick reset. Add what you want in it.`}</p>
+      <textarea name="ask" rows="6" placeholder="${gymId ? 'e.g. Add a preset for a late-game shelter with 40 rooms; show air per room on the readout.' : 'e.g. Start with a half-dug shelter and three clients waiting. Let me spawn a breach on demand. Sliders for dig speed, air per room and contract prices.'}"></textarea>`,
+    actions: [{ label: 'Cancel' }, { label: gymId ? 'Ask for the changes' : 'Ask for the gym', kind: 'primary', onClick: async (root) => { await api('POST', `/api/games/${g.id}/gyms`, { sectionId, gymId: gymId || null, ask: $('[name=ask]', root).value }); toast('On the board. The section shows how to open the gym when it\'s built.'); } }],
+  });
+}
+
+// --- Art subjects (Art tab)
+
+const SUBJECT_KIND_LABELS = { character: 'Character', creature: 'Creature', level: 'Level', environment: 'Environment', prop: 'Prop', ui: 'UI', vfx: 'Effect', other: 'Other' };
+
+function subjectsSection(g) {
+  const list = g.subjects || [];
+  return `<section><div class="section-head"><h3>Subjects</h3><span class="hint">A character, level, prop or effect developed round by round: each round's captures side by side, your notes going into the next</span><button class="ghost small" data-act="subject-edit">+ Subject</button></div>
+    ${list.length ? list.map((s) => subjectCard(g, s)).join('') : '<p class="hint">None yet. Add one to iterate on it: give it a brief and pick reference targets, then start round 1.</p>'}</section>`;
+}
+
+function subjectCard(g, s) {
+  const tasks = tasksOf(g.id);
+  const f = s.sectionId && S.st.roadmaps?.[g.id]?.features?.find((x) => x.id === s.sectionId);
+  const refs = (S.st.targets || []).filter((x) => (s.refs || []).includes(x.id));
+  const rounds = [...(s.rounds || [])].reverse();
+  const last = s.rounds?.at(-1);
+  const lastTask = last && tasks.find((t) => t.id === last.taskId);
+  const ready = !last || (lastTask && ['done', 'blocked'].includes(lastTask.status));
+  return `<div class="card subj-card${s.status === 'approved' ? ' approved' : ''}">
+    <div class="row" style="gap:8px;flex-wrap:wrap"><b class="grow" style="font-size:15px">${esc(s.name)}</b><span class="pill">${SUBJECT_KIND_LABELS[s.kind] || s.kind}</span>${f ? `<span class="pill">${esc(f.name)}</span>` : ''}
+      ${s.status === 'approved' ? '<span class="pill success">approved</span>' : s.status === 'paused' ? '<span class="pill">paused</span>' : ''}
+      <button class="ghost small" data-act="subject-edit" data-id="${s.id}">Edit</button></div>
+    ${s.brief ? `<div class="fx-text">${esc(s.brief)}</div>` : ''}
+    ${refs.length ? `<div class="caps" style="margin-top:6px">${refs.map(targetThumb).join('')}</div>` : ''}
+    ${rounds.map((r, i) => { const t = tasks.find((x) => x.id === r.taskId); const caps = S.st.artifacts.filter((a) => a.taskId === r.taskId && ['image', 'video'].includes(a.kind)); return `<div class="subj-round${i === 0 ? ' latest' : ''}">
+      <div class="row" style="gap:8px"><b>Round ${r.n}</b><span class="hint" style="margin:0">#${r.num} · ${t ? esc(t.status) : 'removed'}${t?.claimedBy && t.status === 'claimed' ? ` · ${esc(agentOf(t.claimedBy)?.name || '')}` : ''}</span>${r.approved ? '<span class="pill success">approved</span>' : ''}</div>
+      ${caps.length ? `<div class="caps">${caps.slice(0, 10).map(thumb).join('')}</div>` : t?.status === 'done' ? '<p class="hint" style="margin:4px 0">No captures came back with this round.</p>' : ''}
+      ${t?.summary && t.status === 'done' ? `<div class="hint" style="margin:4px 0 0">${esc(t.summary.slice(0, 400))}</div>` : ''}
+      ${r.notes && !(i === 0 && ready && s.status === 'active') ? `<div class="subj-notes"><b>Your notes:</b> ${esc(r.notes)}</div>` : ''}
+    </div>`; }).join('')}
+    ${s.status === 'approved' ? `<div class="row" style="margin-top:8px"><button class="ghost small" data-act="subject-round" data-id="${s.id}">Start another round</button></div>`
+      : !last ? `<div class="row" style="margin-top:8px"><button class="primary small" data-act="subject-round" data-id="${s.id}">Start round 1</button></div>`
+      : ready ? `<form class="subj-form" data-subject="${s.id}"><textarea name="notes" rows="3" placeholder="Notes on round ${last.n}: what to change, what to keep…">${esc(last.notes || '')}</textarea>
+          <div class="row" style="gap:6px"><button class="primary small" name="go" value="next">Round ${last.n + 1} with these notes</button><button class="ghost small" name="go" value="approve">Approve round ${last.n}</button><button class="ghost small" name="go" value="pause">Pause</button></div></form>`
+      : '<p class="hint" style="margin:8px 0 0">Round in progress. Give notes when it\'s done.</p>'}
+  </div>`;
+}
+
+function subjectModal(id) {
+  const g = game();
+  const s = (g.subjects || []).find((x) => x.id === id) || { name: '', kind: 'character', sectionId: '', brief: '', refs: [], links: '' };
+  const targets = (S.st.targets || []).filter((x) => x.gameId === g.id && x.discipline === 'art');
+  const secs = S.st.roadmaps?.[g.id]?.features || [];
+  modal({
+    title: id ? 'Edit subject' : 'New art subject',
+    wide: true,
+    body: `<div class="two"><label class="field"><span>Name</span><input name="name" value="${esc(s.name)}" placeholder="e.g. The Inspector, Hole 3, Shelter room tiles"></label>
+        <label class="field"><span>Kind</span><select name="kind">${Object.entries(SUBJECT_KIND_LABELS).map(([k, l]) => `<option value="${k}"${s.kind === k ? ' selected' : ''}>${l}</option>`).join('')}</select></label></div>
+      <label class="field"><span>Section (optional)</span><select name="sectionId"><option value="">None</option>${secs.map((f) => `<option value="${f.id}"${s.sectionId === f.id ? ' selected' : ''}>${esc(f.name)}</option>`).join('')}</select></label>
+      <label class="field"><span>Brief</span><textarea name="brief" rows="5" placeholder="Who or what it is, the feeling to hit, silhouette, palette, what must read at play distance…">${esc(s.brief)}</textarea></label>
+      <div class="field"><span class="field-label">Reference targets</span>${targets.length ? `<div class="subj-refs">${targets.map((x) => `<label class="check"><input type="checkbox" name="ref_${x.id}"${(s.refs || []).includes(x.id) ? ' checked' : ''}><span>${esc(x.title)}</span></label>`).join('')}</div>` : '<p class="hint" style="margin:0">No art quality targets yet. Add reference images under Quality targets on this tab, then pick them here.</p>'}</div>
+      <label class="field"><span>Other references (optional)</span><textarea name="links" rows="2" placeholder="Links, games, films, or words: 'chunky 1-bit outlines like…'">${esc(s.links || '')}</textarea></label>`,
+    actions: [
+      ...(id ? [{ label: 'Delete', onClick: async () => { await api('PATCH', `/api/games/${g.id}/subjects/${id}`, { remove: true }); } }] : []),
+      { label: 'Cancel' },
+      { label: id ? 'Save' : 'Add subject', kind: 'primary', onClick: async (root) => { const v = formData(root); await api('POST', `/api/games/${g.id}/subjects`, { id: id || null, name: v.name, kind: v.kind, sectionId: v.sectionId || null, brief: v.brief, links: v.links, refs: Object.keys(v).filter((k) => k.startsWith('ref_') && v[k]).map((k) => k.slice(4)) }); } },
+    ],
+  });
+}
+
+document.addEventListener('submit', async (e) => {
+  const gf = e.target.closest('[data-gym-note]');
+  const sf = e.target.closest('[data-subject]');
+  const sc = e.target.closest('#scheme-form');
+  if (!gf && !sf && !sc) return;
+  e.preventDefault();
+  const gid = S.gameId;
+  try {
+    if (gf) {
+      const text = gf.text.value.trim();
+      if (!text) return;
+      gf.text.value = '';
+      await api('POST', `/api/games/${gid}/gyms/${gf.dataset.gymNote}/note`, { text });
+      toast('Sent: its tickets land in this section.');
+    } else if (sf) {
+      const go = e.submitter?.value || 'next';
+      const notes = sf.notes.value.trim();
+      if (go === 'next') { await api('POST', `/api/games/${gid}/subjects/${sf.dataset.subject}/round`, { notes }); toast('Next round is on the board.'); }
+      else await api('PATCH', `/api/games/${gid}/subjects/${sf.dataset.subject}`, { notes, status: go === 'approve' ? 'approved' : 'paused' });
+    } else {
+      const f = formData(sc);
+      const model = e.submitter?.dataset.model || 'opus';
+      await api('POST', `/api/games/${gid}/roadmap`, { model, scheme: sc.querySelector('[name=scheme]:checked')?.value || 'systems', guide: f.guide });
+      toast('Breaking down the GDD your way… (a few minutes)');
+    }
+  } catch (err) { fail(err); }
+});
+
+// ---------------------------------------------------------------------------
+// GDD tab: versions kept in Ballast, feedback → drafted edits with clarifying questions → accept →
+// next version, written back where the GDD lives (src/gddedit.mjs).
+
+const GDDV = { data: {}, loading: {}, at: {}, sig: {} };
+
+async function loadGdd(gid = S.gameId) {
+  GDDV.loading[gid] = true;
+  try { GDDV.data[gid] = await api('GET', `/api/games/${gid}/gdd`); GDDV.at[gid] = Date.now(); } catch (err) { fail(err); }
+  GDDV.loading[gid] = false;
+  if (S.tab === 'gdd' && S.gameId === gid) { if (POINTER.down) POINTER.pending = true; else renderGdd(true); }
+}
+
+function renderGdd(fresh = false) {
+  const el = $('#gddtab');
+  if (!el) return;
+  if (!fresh && el.contains(document.activeElement) && /TEXTAREA|INPUT|SELECT/.test(document.activeElement.tagName)) return;
+  const g = game();
+  const d = GDDV.data[g.id];
+  const st = g.gdd || { versions: [], drafts: [] };
+  // Versions or drafts changed on the server: fetch the text and source again (once per change).
+  const sig = `${st.versions?.length}|${(st.drafts || []).map((x) => x.status).join(',')}`;
+  if (!d || GDDV.sig[g.id] !== sig) {
+    GDDV.sig[g.id] = sig;
+    if (!GDDV.loading[g.id]) loadGdd(g.id);
+    if (!d) { el.innerHTML = '<p class="hint">Reading the GDD…</p>'; return; }
+  }
+  // Nothing this tab shows changed: leave the page alone (live updates come several times a second).
+  const view = JSON.stringify([st, GDDV.at[g.id]]);
+  if (!fresh && el.dataset.view === view) return;
+  el.dataset.view = view;
+  const v = d.versions[0];
+  const drafts = (st.drafts || []).filter((x) => x.status !== 'discarded');
+  el.innerHTML = `
+    <div class="row pf-top"><h2 class="grow" style="margin:0">GDD</h2>
+      ${v ? `<span class="hint" style="margin:0">v${v.v} · ${esc(ago(v.at))} · ${v.words.toLocaleString()} words</span><button class="ghost small" data-act="gdd-download">Download v${v.v}</button>` : ''}
+      <button class="ghost small" data-act="gdd-import"${v ? ' title="Make a new version from where the GDD lives now"' : ''}>${v ? 'Import again' : 'Import the GDD'}</button>
+      <button class="ghost small" data-act="gdd-paste">Paste or upload</button></div>
+    <p class="hint">Lives in: ${esc(d.source.label)}. Write feedback on the design below. Claude drafts the exact edits and asks you about anything it can't decide well; you pick what to keep, and accepting saves the next version, writes it back there, and updates the board.</p>
+    ${!v ? `<div class="card"><p style="margin:0">No GDD in Ballast yet. <b>Import the GDD</b> takes it from ${esc(d.source.kind === 'ballast' ? 'the repo or claude.ai' : d.source.label)}; <b>Paste or upload</b> takes Markdown or text.</p></div>` : `
+    <form class="card gdd-ask" id="gdd-ask">
+      <textarea name="feedback" rows="4" placeholder="Feedback on the design, e.g. The first quarter is too punishing: the quota should start lower and climb with the chapter. Add a short tutorial chapter before Startup."></textarea>
+      <div class="row" style="gap:8px;margin-top:8px"><select class="mini" name="model"><option value="opus">Opus</option><option value="sonnet">Sonnet (faster)</option></select><span class="hint grow" style="margin:0">Notes in the Feed that change the design are drafted here too.</span><button class="primary small">Draft the changes</button></div>
+    </form>`}
+    ${drafts.map((x) => gddDraftCard(x)).join('')}
+    ${d.versions.length ? `<details class="card"><summary><b>Versions</b> <span class="hint" style="display:inline;margin:0">${d.versions.length}</span></summary><ul class="gdd-versions">${d.versions.map((x) => `<li><b>v${x.v}</b> <span class="hint" style="display:inline;margin:0">${esc(new Date(x.at).toLocaleString())} · ${esc(x.by || '')} · ${x.words.toLocaleString()} words</span><div>${esc(x.summary || '')}</div></li>`).join('')}</ul></details>` : ''}
+    ${d.current ? `<details class="card"><summary><b>Read v${v.v}</b></summary><div class="md gdd-read">${md(d.current.slice(0, 200000))}</div></details>` : ''}`;
+}
+
+function gddDraftCard(x) {
+  const pill = { thinking: '<span class="pill running">drafting…</span>', review: '<span class="pill warn">your call</span>', accepted: `<span class="pill success">saved as v${x.version}</span>`, error: '<span class="pill error">failed</span>' }[x.status] || '';
+  const wb = x.writeBack;
+  const taken = (x.edits || []).filter((e) => e.take).length;
+  return `<div class="card gdd-draft${x.status === 'review' ? ' open' : ''}" data-draft="${x.id}">
+    <div class="row" style="gap:8px"><b class="grow">${esc(gddClip(x.feedback, 160))}</b>${x.from ? `<span class="hint" style="margin:0">from ${esc(x.from)}</span>` : ''}${pill}<span class="hint" style="margin:0">${esc(ago(x.createdAt))}</span>
+      ${x.status !== 'accepted' && x.status !== 'thinking' ? `<a href="#" class="lp-x" data-act="gdd-discard" data-id="${x.id}" title="Discard this draft">✕</a>` : ''}</div>
+    ${x.status === 'thinking' ? '<p class="hint" style="margin:6px 0 0">Reading the GDD and the code…</p>' : ''}
+    ${x.status === 'error' ? `<p style="color:var(--red);margin:6px 0 0">${esc(x.error || '')}</p>` : ''}
+    ${x.summary && x.status !== 'thinking' ? `<p style="margin:6px 0">${esc(x.summary)}</p>` : ''}
+    ${x.status === 'review' ? `
+      ${x.questions.length ? `<div class="gdd-qs"><b>Questions</b>${x.questions.map((q) => `<div class="gdd-q"><div>${esc(q.question)}</div><div class="hint" style="margin:2px 0">${esc(q.why)}${q.assumption ? ` · Assumed for now: ${esc(q.assumption)}` : ''}</div>
+          ${q.options?.length ? `<div class="chip-row">${q.options.map((o) => `<button type="button" class="chip-btn" data-gdd-opt="${esc(q.id)}" data-val="${esc(o)}">${esc(o)}</button>`).join('')}</div>` : ''}
+          <input data-gdd-answer="${esc(q.id)}" value="${esc(q.answer || '')}" placeholder="Your answer"></div>`).join('')}</div>` : ''}
+      <div class="gdd-edits">${x.edits.map((e, i) => `<div class="gdd-edit${e.take ? '' : ' off'}">
+        <label class="check" style="margin:0"><input type="checkbox" data-gdd-take="${e.id}"${e.take ? ' checked' : ''}><span><b>${i + 1}. ${esc(e.section)}</b> <span class="pill">${e.op}</span>${e.found ? '' : ' <span class="pill error" title="The quoted passage isn\'t in the current GDD; accepting would skip it. Ask for a revision.">not found</span>'}</span></label>
+        <div class="hint" style="margin:2px 0 4px">${esc(e.why)}</div>
+        ${e.op !== 'insert' && e.find ? `<pre class="gdd-before">${esc(e.find.slice(0, 3000))}</pre>` : e.after ? `<div class="hint" style="margin:0">After: ${esc(gddClip(e.after, 160))}</div>` : ''}
+        ${e.op !== 'delete' ? `<pre class="gdd-after">${esc(e.text.slice(0, 4000))}</pre>` : ''}</div>`).join('') || '<p class="hint">No edits proposed: answer the questions first.</p>'}</div>
+      <form class="gdd-reply" data-gdd-reply="${x.id}"><textarea name="text" rows="2" placeholder="${x.questions.length ? 'Anything to add with your answers…' : 'Ask for a revision: what to change in these edits…'}"></textarea>
+        <div class="row" style="gap:6px;margin-top:6px"><button class="ghost small">${x.questions.length ? 'Send answers and revise' : 'Revise'}</button><span class="grow"></span>
+          <button type="button" class="primary small" data-act="gdd-accept" data-id="${x.id}"${taken ? '' : ' disabled'}>Accept ${taken} edit${taken === 1 ? '' : 's'} → new version</button></div></form>` : ''}
+    ${x.status === 'accepted' ? `<p class="hint" style="margin:4px 0 0">${x.missed?.length ? `${x.missed.length} edit(s) didn't match the text and were left out. ` : ''}${!wb ? '' : wb.kind === 'docs' ? (wb.status === 'running' ? 'Writing it to the Claude Docs doc…' : wb.status === 'done' ? `Written to the Claude Docs doc (${wb.applied} edits).` : `Claude Docs: ${esc(wb.status)}${wb.failed?.length ? `: ${esc(wb.failed.join('; '))}` : wb.error ? `: ${esc(wb.error)}` : ''}`) : wb.kind === 'artifact' ? 'The claude.ai page is read only: update it by hand, or move the GDD to Claude Docs.' : wb.ticket ? `Ticket #${wb.ticket} commits it to the repo.` : ''} The board is being re-checked against it.</p>` : ''}
+  </div>`;
+}
+const gddClip = (s, n) => { s = String(s || '').replace(/\s+/g, ' ').trim(); return s.length > n ? `${s.slice(0, n)}…` : s; };
+
+function gddPasteModal() {
+  const g = game();
+  modal({
+    title: 'Paste or upload the GDD',
+    wide: true,
+    body: `<p class="hint">Markdown or plain text. It becomes the next version in Ballast.</p>
+      <input type="file" accept=".md,.markdown,.txt" data-gdd-file>
+      <textarea name="text" rows="14" placeholder="# My game\n\n## Core loop\n…" style="margin-top:8px;width:100%"></textarea>`,
+    onMount: (root) => { $('[data-gdd-file]', root).onchange = async (e) => { const f = e.target.files[0]; if (f) { $('[name=text]', root).value = await f.text(); root.dataset.name = f.name; } }; },
+    actions: [{ label: 'Cancel' }, { label: 'Save as a version', kind: 'primary', onClick: async (root) => { await api('POST', `/api/games/${g.id}/gdd/import`, { text: $('[name=text]', root).value, name: root.dataset.name || '' }); await loadGdd(g.id); } }],
+  });
+}
+
+document.addEventListener('submit', async (e) => {
+  const ask = e.target.closest('#gdd-ask');
+  const rep = e.target.closest('[data-gdd-reply]');
+  if (!ask && !rep) return;
+  e.preventDefault();
+  const gid = S.gameId;
+  try {
+    if (ask) {
+      const f = formData(ask);
+      if (!f.feedback.trim()) return;
+      ask.feedback.value = '';
+      await api('POST', `/api/games/${gid}/gdd/drafts`, { feedback: f.feedback, model: f.model });
+      toast('Drafting: Claude reads the GDD and the code (a few minutes).');
+    } else {
+      const card = rep.closest('[data-draft]');
+      const answers = Object.fromEntries($$('[data-gdd-answer]', card).map((i) => [i.dataset.gddAnswer, i.value.trim()]).filter(([, v]) => v));
+      await api('POST', `/api/games/${gid}/gdd/drafts/${rep.dataset.gddReply}/reply`, { answers, text: rep.text.value });
+      toast('Revising the draft with your answers…');
+    }
+  } catch (err) { fail(err); }
+});
+document.addEventListener('change', async (e) => {
+  const t = e.target.closest?.('[data-gdd-take]');
+  if (!t) return;
+  const card = t.closest('[data-draft]');
+  try { await api('PATCH', `/api/games/${S.gameId}/gdd/drafts/${card.dataset.draft}`, { take: { [t.dataset.gddTake]: t.checked } }); } catch (err) { fail(err); }
+});
+document.addEventListener('click', (e) => {
+  const o = e.target.closest?.('[data-gdd-opt]');
+  if (!o) return;
+  const input = $(`[data-gdd-answer="${CSS.escape(o.dataset.gddOpt)}"]`, o.closest('.gdd-q'));
+  if (input) { input.value = o.dataset.val; input.focus(); }
+});
+
+// ---------------------------------------------------------------------------
+// Budget: pace per account, what tickets cost in account limits, work redone, time lost waiting,
+// and results against spend. Costs are estimates (see src/budget.mjs); % means % of one account's week.
+
+const BUDGET = { data: {}, days: {}, loading: {} };
+const bpct = (v, d = 1) => (v == null ? '–' : `${Math.round(v * 10 ** d) / 10 ** d}%`);
+const hrs = (h) => (h == null ? '–' : h < 1 ? `${Math.round(h * 60)}m` : h < 48 ? `${Math.round(h * 10) / 10}h` : `${Math.round(h / 24 * 10) / 10}d`);
+const untilP = (at) => { if (!at) return '?'; const m = Math.max(0, Math.round((at - Date.now()) / 60e3)); return m < 60 ? `${m}m` : m < 2880 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${Math.floor(m / 1440)}d ${Math.floor((m % 1440) / 60)}h`; };
+
+async function loadBudget(gid = S.gameId) {
+  BUDGET.loading[gid] = true;
+  try { BUDGET.data[gid] = await api('GET', `/api/games/${gid}/budget?days=${BUDGET.days[gid] || 14}`); } catch (err) { fail(err); BUDGET.data[gid] = null; }
+  BUDGET.loading[gid] = false;
+  if (S.tab === 'budget' && S.gameId === gid) renderBudget();
+}
+
+// Weekly use against time gone: the fill is what's used, the tick is where an even pace would be.
+function paceBar(w) {
+  if (!w) return '<div class="hint">No weekly reading yet.</div>';
+  return `<div class="bd-bar" role="img" aria-label="${Math.round(w.used)}% used, ${Math.round(w.elapsed ?? 0)}% of the week gone">
+    <div class="bd-fill" style="width:${Math.min(100, w.used)}%"></div>
+    ${w.elapsed != null ? `<div class="bd-tick" style="left:${w.elapsed}%" title="${Math.round(w.elapsed)}% of the week gone"></div>` : ''}
+  </div>
+  <div class="bd-bar-legend"><span>${Math.round(w.used)}% used</span><span>${w.elapsed != null ? `${Math.round(w.elapsed)}% of the week gone` : ''}</span></div>`;
+}
+
+function paceCard(a) {
+  const w = a.pace.weekly;
+  const s = a.pace.session;
+  const state = a.pace.expiring
+    ? `<span class="bd-state go">▶ Gets work first: ${bpct(a.pace.headroom, 0)} left, resets in ${untilP(w.resetsAt)}</span>`
+    : w?.ahead > 10 ? `<span class="bd-state hold">▲ ${Math.round(w.ahead)} points ahead of pace: usage rules slow it</span>`
+      : w?.ahead < -10 ? `<span class="bd-state">▼ ${Math.round(-w.ahead)} points behind pace</span>` : '<span class="bd-state">● On pace</span>';
+  return `<div class="card bd-acct">
+    <div class="pf-trend-head"><b>${esc(a.name)}</b><span class="hint" style="margin:0">${esc(a.agents.map((x) => x.name + (x.model ? ` (${x.model})` : '')).join(', '))}</span></div>
+    ${paceBar(w)}
+    <div class="bd-lines">
+      ${state}
+      <span>Weekly resets in ${untilP(w?.resetsAt)}${w?.leftAtReset >= 5 ? ` · <b>~${Math.round(w.leftAtReset)}% would go unused</b> at this rate` : w?.projected != null ? ' · on course to use it all' : ''}</span>
+      <span>Session ${bpct(s?.used, 0)} · resets in ${untilP(s?.resetsAt)}</span>
+      <span class="hint" style="margin:0">Idle ${hrs(a.idleHours)} with tickets waiting · ${bpct(a.offTicket, 0)} spent off-ticket (Ballast's own runs, or the account used by hand)</span>
+    </div>
+  </div>`;
+}
+
+const tile = (label, value, sub = '') => `<div class="card bd-tile"><span class="hint" style="margin:0">${label}</span><b>${value}</b>${sub ? `<span class="hint" style="margin:0">${sub}</span>` : ''}</div>`;
+const inlineBar = (v, max) => `<span class="bd-ibar"><i style="width:${max > 0 ? Math.min(100, Math.max(1, (100 * v) / max)) : 0}%"></i></span>`;
+
+function renderBudget() {
+  const el = $('#budget');
+  if (!el) return;
+  const gid = S.gameId;
+  const d = BUDGET.data[gid];
+  if (!d) { el.innerHTML = '<p class="hint">Reading account limits…</p>'; if (!BUDGET.loading[gid]) loadBudget(gid); return; }
+  const days = BUDGET.days[gid] || 14;
+  const maxDay = Math.max(0, ...d.perDay.map((x) => x.spend));
+  // One-off tags (a single expensive ticket) would flatten the rest, so the scale comes from tags with 3+ tickets.
+  const maxDisc = Math.max(0, ...d.disciplines.filter((x) => x.priced >= 3).map((x) => x.perTicket || 0));
+  const w = d.waiting;
+  el.innerHTML = `
+    <div class="row pf-top"><h2 class="grow" style="margin:0">Budget</h2>
+      <select class="mini" data-budget-days>${[7, 14, 30].map((n) => `<option value="${n}"${n === days ? ' selected' : ''}>Last ${n} days</option>`).join('')}</select></div>
+    <p class="hint">Costs are estimates: cloud sessions don't report tokens, so each rise in an account's weekly use is split across the tickets it had in hand. <b>%</b> means percent of one account's week. Readings since ${esc(new Date(d.since).toLocaleDateString([], { month: 'short', day: 'numeric' }))}.</p>
+
+    <h3 class="pf-h">Pace <span class="hint">the tick is where an even pace across the week would be; the account with the most to spend before its reset gets work first</span></h3>
+    <div class="bd-accts">${d.accounts.map(paceCard).join('') || '<p class="hint">No agents on this game yet.</p>'}</div>
+
+    <h3 class="pf-h">Spend</h3>
+    <div class="bd-tiles">
+      ${tile(`Spent, last ${days} days`, bpct(d.spend, 0), 'of one account\'s week')}
+      ${tile('Last 7 days', bpct(d.lastWeek, 0))}
+      ${tile('Tickets done', d.tickets.done, `${d.tickets.priced} with a cost estimate`)}
+      ${tile('Per ticket', bpct(d.tickets.median, 2), `median · mean ${bpct(d.tickets.mean, 2)}`)}
+    </div>
+    <div class="card"><table class="pf-table bd-days"><thead><tr><th>Day</th><th>Spent</th><th></th><th>Tickets done</th></tr></thead><tbody>
+      ${d.perDay.map((x) => `<tr><td>${esc(new Date(`${x.day}T12:00`).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }))}</td><td>${bpct(x.spend)}</td><td class="bd-barcell">${inlineBar(x.spend, maxDay)}</td><td>${x.done}</td></tr>`).join('')}
+    </tbody></table></div>
+
+    <h3 class="pf-h">Cost by discipline <span class="hint">by the ticket's [tag], tickets shipped in the period</span></h3>
+    <div class="card"><div class="pf-table-wrap"><table class="pf-table"><thead><tr><th>Discipline</th><th>Done</th><th>Spent</th><th>Per ticket</th><th></th></tr></thead><tbody>
+      ${d.disciplines.map((x) => `<tr><td>${esc(x.tag)}</td><td>${x.done}</td><td>${bpct(x.spend)}</td><td>${bpct(x.perTicket, 2)}</td><td class="bd-barcell">${inlineBar(x.perTicket || 0, maxDisc)}</td></tr>`).join('')}
+    </tbody></table></div>
+    ${d.tickets.top.length ? `<details class="pf-landed"><summary>Most expensive tickets</summary><ul>${d.tickets.top.map((t) => `<li>#${t.num} ${esc(t.title)} · ${bpct(t.cost, 2)}</li>`).join('')}</ul></details>` : ''}</div>
+
+    <h3 class="pf-h">Work redone or dropped</h3>
+    <div class="card"><div class="pf-table-wrap"><table class="pf-table"><thead><tr><th>What</th><th>Tickets</th><th>Their cost</th></tr></thead><tbody>
+      ${d.waste.map((x) => `<tr><td>${x.tickets.length ? `<details><summary>${esc(x.label)}</summary><ul class="bd-list">${x.tickets.map((t) => `<li>#${t.num} ${esc(t.title)} · ${bpct(t.cost, 2)}</li>`).join('')}</ul></details>` : esc(x.label)}</td><td>${x.count}${x.of ? ` of ${x.of}` : ''}</td><td>${x.spend == null ? '–' : bpct(x.spend)}</td></tr>`).join('')}
+    </tbody></table></div></div>
+
+    <h3 class="pf-h">Time lost waiting</h3>
+    <div class="bd-tiles">
+      ${tile('Human interventions', `${w.interventions.open} open`, w.interventions.open ? `oldest ${hrs(w.interventions.oldestHours)} · ${w.interventions.solved} solved, median ${hrs(w.interventions.medianHours)}` : `${w.interventions.solved} solved, median ${hrs(w.interventions.medianHours)}`)}
+      ${tile('Reviews', `${w.reviews.pending} pending`, `${w.reviews.pending ? `oldest ${hrs(w.reviews.oldestHours)} · ` : ''}median decision ${hrs(w.reviews.medianHours)}`)}
+      ${tile('Blocked tickets', `${w.blocked.now} now`, `${w.blocked.now ? `oldest ${hrs(w.blocked.oldestHours)} · ` : ''}${w.blocked.hours ? `${hrs(w.blocked.hours)} blocked in total` : 'time blocked is tracked from now on'}`)}
+      ${tile('Accounts idle', hrs(w.idleHours), 'behind pace, with tickets waiting')}
+    </div>
+
+    <h3 class="pf-h">Results against spend <span class="hint">each profiler run against the one before (Performance tab)</span></h3>
+    ${d.results.length ? `<div class="card"><div class="pf-table-wrap"><table class="pf-table"><thead><tr><th>Runs</th><th>Spent between</th><th>Tickets landed</th><th>Budgets met</th><th>Measures</th></tr></thead><tbody>
+      ${[...d.results].reverse().map((x) => {
+        const name = (r) => `${r.noteNum ? `note #${r.noteNum}` : esc(new Date(r.at).toLocaleDateString([], { month: 'short', day: 'numeric' }))}${r.label ? ` (${esc(r.label)})` : ''}`;
+        const met = x.passing.after - x.passing.before;
+        return `<tr><td>${name(x.from)} → ${name(x.to)}</td><td>${bpct(x.spend)}</td><td>${x.landed}</td>
+          <td>${x.passing.before} → <b>${x.passing.after}</b> of ${x.passing.of} ${met ? `<i class="pf-arrow ${met > 0 ? 'good' : 'bad'}">${met > 0 ? '▲' : '▼'}</i>` : ''}</td>
+          <td><span class="pf-delta good"><i class="pf-arrow good">▲</i> ${x.improved} better</span> · <span class="pf-delta bad"><i class="pf-arrow bad">▼</i> ${x.worse} worse</span></td></tr>`;
+      }).join('')}
+    </tbody></table></div></div>` : '<p class="hint">Needs two profiler runs on the Performance tab.</p>'}
+    <h3 class="pf-h">Prompt cache <span class="hint">Ballast's own Claude runs for this game and its housekeeping, last ${days} days; cloud sessions cache on claude.ai and aren't counted</span></h3>
+    ${d.cache?.runs ? `<div class="bd-tiles">
+      ${tile('Read from cache', `${d.cache.hit ?? '–'}%`, `of ${(Math.round((d.cache.read + d.cache.write + d.cache.fresh) / 1e5) / 10).toLocaleString()}M input tokens`)}
+      ${tile('Runs', d.cache.runs, `cache lifetime ${esc(d.cache.ttl === 'auto' ? 'set by Claude Code' : d.cache.ttl)}`)}
+    </div>
+    <div class="card"><div class="pf-table-wrap"><table class="pf-table"><thead><tr><th>Run</th><th>Runs</th><th>From cache</th><th>Written</th><th>Uncached</th><th></th></tr></thead><tbody>
+      ${d.cache.kinds.map((k) => `<tr><td>${esc(k.kind)}</td><td>${k.runs}</td><td>${k.hit ?? '–'}%</td><td>${(Math.round(k.write / 1e3)).toLocaleString()}k</td><td>${(Math.round(k.fresh / 1e3)).toLocaleString()}k</td><td class="bd-barcell">${inlineBar(k.hit || 0, 100)}</td></tr>`).join('')}
+    </tbody></table></div><p class="hint" style="margin:8px 0 0">A run kind that suddenly reads far less from the cache usually means something now changes the start of its prompt: a timestamp, a different tool list, or a model switch.</p></div>` : '<p class="hint">No runs on this PC in this period.</p>'}`;
+  el.insertAdjacentHTML('beforeend', tokensSection(gid));
+}
+
+document.addEventListener('change', (e) => {
+  if (!e.target.matches?.('[data-budget-days]')) return;
+  BUDGET.days[S.gameId] = Number(e.target.value);
+  delete BUDGET.data[S.gameId];
+  renderBudget();
+});
+
+// ---------------------------------------------------------------------------
 // Roadmap: GDD features × L0-L3 quality levels, milestones and forecasts
 
 const LV = (n) => S.st.levels?.[n] || { n, name: `L${n}` };
 const etaText = (m) => (m.reachedAt ? `reached ${new Date(m.reachedAt).toLocaleDateString()}` : m.remaining === 0 ? 'ready to close' : m.eta ? `≈ ${new Date(m.eta).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}` : 'no pace yet');
+
+// The last level audit, under the milestones header.
+function levelAuditCard(a) {
+  if (!a) return '';
+  if (a.status === 'error') return `<p class="hint" style="color:var(--red)">Level audit failed: ${esc(a.error || '')}</p>`;
+  if (!a.at) return '';
+  return `<div class="card audit-card"><div class="row" style="gap:8px"><b class="grow">Level audit ${esc(ago(a.at))}</b><span class="hint" style="margin:0">${esc(a.model || '')}${a.account ? ` on ${esc(a.account)}` : ''}</span></div>
+    <p style="margin:6px 0">${esc(a.summary || '')}</p>
+    <div class="hint" style="margin:0">The roadmap said ${esc(a.said || '?')} · verified ${esc(a.verified || '?')}${a.lowered ? ` · <b style="color:var(--accent)">${a.lowered} lowered</b>` : ''}${a.raised ? ` · ${a.raised} raised` : ''}${a.added ? ` · ${a.added} ticket${a.added > 1 ? 's' : ''} added` : ''}${a.reopened?.length ? ` · reopened ${esc(a.reopened.join(', '))}` : ''}</div></div>`;
+}
+
+// "✓ verified L0 (was L3)" on a feature row; the evidence is in its tooltip and the feature view.
+function verifiedTag(f) {
+  const v = f.verified;
+  if (!v) return '<span class="hint vtag" title="Not audited yet: this level comes from the breakdown\'s estimate and finished tickets">unverified</span>';
+  const n = v.level;
+  const since = f.level > n ? ` · L${f.level} from tickets since` : '';
+  const was = v.said != null && v.said !== n ? ` (was ${v.said < 0 ? 'not started' : `L${v.said}`})` : '';
+  const tip = v.by === 'director' ? 'Set by you' : `Level audit, ${v.confidence || ''} confidence\n${(v.evidence || []).join('\n')}${v.missing ? `\nMissing for the next level: ${v.missing}` : ''}`;
+  return `<span class="vtag ${v.said > n ? 'down' : ''}" title="${esc(tip)}">✓ ${v.by === 'director' ? 'set' : 'verified'} ${n < 0 ? 'not started' : `L${n}`}${was}${since}</span>`;
+}
 
 function renderRoadmap() {
   const el = $('#roadmap');
@@ -1160,12 +2785,14 @@ function renderRoadmap() {
     return `<tr><td><span class="link" data-act="feature-open" data-id="${f.id}"><b>${esc(f.name)}</b></span><div class="hint" style="margin:0">${esc(f.summary.slice(0, 110))}${f.summary.length > 110 ? '…' : ''}</div></td>
       <td><span class="pill">${esc(f.area)}</span></td>
       <td><label class="check" style="margin:0"><input type="checkbox" data-core="${f.id}" ${f.core ? 'checked' : ''}><span>core</span></label></td>
-      <td class="pips">${pips}<span class="hint" style="display:inline;margin-left:6px">${f.level >= 0 ? `L${f.level}` : 'not started'}${t != null && f.level < t ? ` → L${t}` : ''}</span></td></tr>`;
+      <td class="pips">${pips}<span class="hint" style="display:inline;margin-left:6px">${f.level >= 0 ? `L${f.level}` : 'not started'}${t != null && f.level < t ? ` → L${t}` : ''}</span>${verifiedTag(f)}</td></tr>`;
   }).join('');
   el.innerHTML = `<div class="row" style="margin-bottom:12px;gap:8px"><h3 class="grow" style="margin:0">Milestones</h3>
       ${r.status === 'running' ? '<span class="pill queued">re-reading the GDD…</span>' : `<button class="ghost small" data-act="roadmap-run" data-model="${esc(r.model || 'opus')}" title="Keeps your core flags and reached levels">Re-run breakdown</button>`}
-      <button class="ghost small" data-act="ms-add">+ Milestone</button></div>
+      <button class="ghost small" data-act="ms-add">+ Milestone</button>
+      ${r.audit?.status === 'running' ? `<span class="pill queued">auditing levels (${esc(r.audit.model || '')})… a few minutes</span>` : `<button class="primary small" data-act="roadmap-audit" data-model="opus" title="Pulls the latest GDD and repo and sets every feature's level from evidence: what a player can really do, your review verdicts and playtest notes, profiler runs. It can lower levels, and adds tickets for what's missing up to the current milestone.">Audit levels honestly</button><button class="ghost small" data-act="roadmap-audit" data-model="sonnet" title="Same audit on Sonnet: faster and lighter on usage, less thorough">Sonnet</button>`}</div>
     ${r.status === 'error' ? `<p class="hint" style="color:var(--red)">${esc(r.error)}</p>` : ''}
+    ${levelAuditCard(r.audit)}
     <div class="ms-grid">${ms}</div>
     <div class="row" style="margin:22px 0 8px"><h3 class="grow" style="margin:0">Features <span class="hint" style="display:inline">${r.features.length} from the GDD · filled = reached · striped = in progress · ring = ${activeMs ? esc(activeMs.name) : 'target'}</span></h3></div>
     <div class="card" style="overflow-x:auto"><table class="tbl" style="margin-top:0"><tbody>${rows}</tbody></table></div>
@@ -1183,6 +2810,9 @@ function featureModal(id) {
     title: f.name,
     wide: true,
     body: `<p class="hint" style="margin-top:0">${esc(f.summary)}${f.gdd ? ` · GDD: ${esc(f.gdd)}` : ''}</p>
+      ${f.verified ? `<div class="card audit-card" style="margin-bottom:10px"><b>${f.verified.by === 'director' ? 'Set by you' : `Level audit ${esc(ago(f.verified.at))}`}: ${f.verified.level < 0 ? 'not started' : `L${f.verified.level} ${esc(LV(f.verified.level).name)}`}</b>${f.verified.confidence ? ` <span class="hint" style="display:inline">${esc(f.verified.confidence)} confidence${f.verified.said != null && f.verified.said !== f.verified.level ? `, the roadmap had said L${f.verified.said}` : ''}</span>` : ''}
+        ${f.verified.evidence?.length ? `<ul class="bd-list">${f.verified.evidence.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+        ${f.verified.missing ? `<p class="hint" style="margin:6px 0 0">Missing for the next level: ${esc(f.verified.missing)}</p>` : ''}</div>` : ''}
       ${[0, 1, 2, 3].map((n) => `<div class="lv-block${f.level >= n ? ' on' : ''}"><div class="row"><i class="pip lv${n}${f.level >= n ? ' on' : ''}"></i><b>L${n} ${esc(LV(n).name)}</b>${f.level >= n ? '<span class="pill success">reached</span>' : ''}</div>
         <p>${esc(f.levels[n]?.done || '')}</p>
         ${tasks.filter((t) => t.level === n).map((t) => `<div class="hint" style="margin:2px 0">#${t.num} ${esc(t.title)} <span class="pill ${esc(t.status)}">${esc(t.status)}</span></div>`).join('') || (f.levels[n]?.tasks?.length && f.level < n ? `<div class="hint">Planned: ${f.levels[n].tasks.map((t) => esc(t.title)).join(' · ')}</div>` : '')}</div>`).join('')}
@@ -1308,6 +2938,8 @@ function studioShell() {
   const games = S.st.games.filter((g) => statusOf(g) !== 'archived');
   return `<div class="scroll pad studio" style="flex:1">
     <section><div class="section-head"><h3>Your output</h3><span class="hint">Finished work across every game, and what it costs you</span></div><div id="st-overview"></div></section>
+    <section><div class="section-head"><h3>Spend per project</h3><span class="hint">Total tokens each project has used, all time</span></div><div class="card" id="st-tokens"></div></section>
+    <section><div class="section-head"><h3>Repo work</h3><span class="hint">Maintenance across a repo rather than one game: merge conflicts, CI, dependencies</span></div>${repoWorkForm()}<div id="st-repo-list"></div></section>
     <section><div class="section-head"><h3>Daily digest</h3><span class="hint">At the start of your working day${S.st.settings.reportWebhook ? ', also sent to your webhook' : ''}</span><button class="ghost small" data-act="digest-now">Digest now</button></div><div id="st-digest"></div></section>
     <section><div class="section-head"><h3>Weekly report</h3><span class="hint" id="st-weekly-hint"></span><button class="ghost small" data-act="weekly-now">Write this week's report</button></div><div id="st-weekly"></div></section>
     <section><div class="section-head"><h3>Games</h3><span class="hint">In development, shipped and archived</span><button class="ghost small" data-act="new-game">+ New game</button></div><div class="game-grid" id="st-games"></div><div id="st-portfolio"></div></section>
@@ -1327,6 +2959,8 @@ function renderStudio() {
   if (!$('#st-accounts')) return;
   $('#st-accounts').innerHTML = S.st.accounts.map(accountCard).join('');
   $('#st-usage').innerHTML = usagePanel();
+  $('#st-tokens').innerHTML = tokensTable();
+  renderRepoWork();
   $('#st-reports').innerHTML = reportsPanel();
   const w = S.st.settings.workHours || {};
   const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -1693,6 +3327,8 @@ function accountCard(a) {
   return `<div class="card acct-card">
     <div class="row">${avatar(a.name, a.id)}<b class="grow">${esc(a.name)}</b><span class="pill ${state[0]}">${esc(state[1])}</span></div>
     <div class="hint" style="margin:2px 0 10px">${esc([a.email, a.plan, a.org].filter(Boolean).join(' · ') || (a.loggedIn ? '' : 'Log in from the sidebar'))}</div>
+    ${needsRepair(a) ? `<div class="acct-alert"><b>Signed out.</b> ${esc(a.name)}'s claude.ai sign-in ${a.authBroken ? `lapsed ${esc(ago(a.authBroken.at))} (${esc((a.authBroken.error || '').slice(0, 140))})` : 'is no longer valid'}, so its agents are paused instead of failing over and over.
+        <div class="row" style="gap:6px;margin-top:8px"><button class="primary small" data-act="acct-repair" data-id="${a.id}">Repair sign-in</button></div></div>` : ''}
     ${a.signedInAs ? `<div class="acct-alert"><b>Paused.</b> ${a.isDefault ? "This PC's Claude login" : 'Its login'} is now <b>${esc(a.signedInAs)}</b>, not ${esc(a.email)}, so its agents are waiting rather than spending the wrong account's usage.
         <div class="row" style="gap:6px;margin-top:8px">${a.isDefault ? `<button class="primary small" data-act="acct-detach" data-id="${a.id}">Give ${esc(a.name)} its own login</button>` : `<button class="primary small" data-act="acct-login" data-id="${a.id}">Sign in as ${esc(a.email)} again</button>`}
         <button class="ghost small" data-act="acct-accept" data-id="${a.id}">Use ${esc(a.signedInAs)} for ${esc(a.name)} from now on</button></div></div>`
@@ -1840,6 +3476,7 @@ function renderCloudArtifacts() {
         <button class="ghost small" data-act="cloud-edit" data-id="${c.id}">Edit</button></div>
       <div class="hint">updated ${esc(c.updated || '?')} · ${c.lastReadAt ? `read ${ago(c.lastReadAt)}` : 'waiting for first read'}${c.changedAt ? ` · last change seen ${ago(c.changedAt)}` : ''} · via ${esc(acctOf(c.accountId)?.name || '?')}</div>
       ${c.summary ? clamp(c.summary, md(c.summary)) : ''}
+      ${c.doc ? `<div class="hint" style="margin:4px 0 0">Claude Docs · ${c.doc.tabs.length} tabs · about ${c.doc.words.toLocaleString()} words, read ${esc(ago(c.doc.at))} through the Claude Docs connector</div>` : ''}${c.docError ? `<div class="hint" style="margin:4px 0 0;color:var(--red)">${esc(c.docError)}</div>` : ''}
       ${c.dataSummary ? `<details><summary class="hint" style="display:inline;cursor:pointer">Live data</summary><div class="md">${md(c.dataSummary)}</div></details>` : ''}
       ${open.length ? `<div class="threads">${open.map((t) => `<div class="thread">${t.messages.map((m) => `<div><b>${esc(m.author || '?')}</b> ${esc(m.text)}${m.at ? ` <span class="hint" style="display:inline">${esc(m.at)}</span>` : ''}</div>`).join('')}</div>`).join('')}</div>` : ''}
     </div>`;
@@ -2368,6 +4005,22 @@ function reviewCard(t, g) {
   </div>`;
 }
 
+// What happened to a closed question: your answer (and what else it settled), or the answer that settled it.
+function questionOutcome(q) {
+  const byId = (id) => (S.st.inbox || []).find((x) => x.id === id);
+  if (q.status !== 'answered') return '<div class="hint" style="margin-top:6px">Kept the assumption.</div>';
+  if (q.supersededBy) {
+    const p = byId(q.supersededBy);
+    return `<div class="q-settled"><div class="hint" style="margin:6px 0 2px">Settled by your answer to <b style="color:var(--text)">"${esc((p?.question || 'another question').slice(0, 140))}"</b>${q.settledWhy ? `: ${esc(q.settledWhy)}` : ''}</div>
+      <div class="hint" style="margin:0 0 6px">Sent to ${esc(q.agentName)}: ${esc(q.answer)}</div>
+      <button class="ghost small" data-act="q-reopen" data-id="${q.id}" title="If this wasn't really answered: reopen it, and the agent is told to disregard the answer">Reopen</button></div>`;
+  }
+  const also = (q.settled || []).map(byId).filter(Boolean);
+  return `<div class="hint" style="margin-top:6px">You answered: ${esc(q.answer)}</div>
+    ${q.settling ? '<div class="hint" style="margin-top:4px">Checking whether this also settles other open questions…</div>' : ''}
+    ${also.length ? `<div class="hint" style="margin-top:4px">Also closed ${also.length} other question${also.length > 1 ? 's' : ''}: ${also.map((x) => `<span title="${esc(x.settledWhy || '')}">"${esc(x.question.slice(0, 80))}"</span> <a href="#" data-act="q-reopen" data-id="${x.id}">reopen</a>`).join(' · ')}</div>` : ''}`;
+}
+
 function questionCard(q) {
   const g = S.st.games.find((x) => x.id === q.gameId);
   return `<div class="card question">
@@ -2376,10 +4029,12 @@ function questionCard(q) {
     ${q.context ? `<div class="q-context md">${md(q.context)}</div>` : ''}
     ${q.options?.length ? `<ul class="q-options">${q.options.map((o) => `<li>${esc(o)}</li>`).join('')}</ul>` : ''}
     ${(q.artifactIds || []).length ? `<div class="caps">${q.artifactIds.map((id) => S.st.artifacts.find((a) => a.id === id)).filter(Boolean).map(thumb).join('')}</div>` : ''}
-    ${q.assumption ? `<div class="assume">Going with: ${esc(q.assumption)}</div>` : ''}
-    ${q.status === 'open'
+    ${q.assumption && q.source !== 'dropped-note' ? `<div class="assume">Going with: ${esc(q.assumption)}</div>` : ''}
+    ${q.status === 'open' && q.source === 'dropped-note'
+      ? `<div class="row" style="margin-top:8px"><button class="primary small" data-act="q-addtask" data-id="${q.id}">Add as a task anyway</button><button class="ghost small" data-act="q-dismiss" data-id="${q.id}">Leave it off the board</button></div>`
+      : q.status === 'open'
       ? `<div class="row" style="margin-top:8px"><button class="primary small" data-act="q-answer" data-id="${q.id}">Answer</button><button class="ghost small" data-act="q-dismiss" data-id="${q.id}">Assumption is fine</button></div>`
-      : `<div class="hint" style="margin-top:6px">${q.status === 'answered' ? `You answered: ${esc(q.answer)}` : 'Kept the assumption.'}</div>`}
+      : questionOutcome(q)}
   </div>`;
 }
 
@@ -2387,6 +4042,7 @@ function renderDept(d) {
   const el = $('#dept');
   const g = game();
   if (!el || !g) return;
+  if (el.contains(document.activeElement) && /TEXTAREA|INPUT|SELECT/.test(document.activeElement.tagName)) return; // a note being typed
   const label = S.st.disciplines.find((x) => x.id === d)?.label || d;
   const mode = policyOf(g, d);
   const override = g.review?.[d];
@@ -2417,6 +4073,7 @@ function renderDept(d) {
   if (top) top.innerHTML = headHtml;
 
   el.innerHTML = `
+    ${d === 'art' ? subjectsSection(g) : ''}
     ${liveNotes.length ? `<section><div class="section-head"><h3>${esc(label)} notes</h3><span class="hint">${liveNotes.filter((n) => n.status === 'new').length} waiting · ${liveNotes.filter((n) => n.status === 'tasked').length} tasked</span></div>
       ${liveNotes.map(deptNoteCard).join('')}</section>` : ''}
 
@@ -2485,7 +4142,9 @@ function renderInbox() {
   const done = (S.st.inbox || []).filter((q) => q.status !== 'open').sort((a, b) => (b.answeredAt || 0) - (a.answeredAt || 0)).slice(0, 30);
   const human = openInterventions();
   const handled = (S.st.interventions || []).filter((i) => i.status !== 'open').sort((a, b) => (b.resolvedAt || 0) - (a.resolvedAt || 0));
-  el.innerHTML = `${human.length ? `<div class="section-head"><h3>🙋 Human intervention</h3><span class="hint">Blocked tickets that triaged themselves and need a person: ${human.length} request${human.length > 1 ? 's' : ''} holding ${human.reduce((n, i) => n + i.taskIds.length, 0)} ticket${human.reduce((n, i) => n + i.taskIds.length, 0) > 1 ? 's' : ''}</span></div>${human.map(interventionCard).join('')}<div class="section-head" style="margin-top:22px"><h3>Questions</h3></div>` : ''}
+  el.innerHTML = (open.length || human.length) ? `${inboxColumns(open, human)}
+    ${done.length ? `<details style="margin-top:18px"><summary class="hint" style="display:inline;cursor:pointer">Answered (${done.length})</summary>${done.map(questionCard).join('')}</details>` : ''}
+    ${handled.length ? `<details style="margin-top:10px"><summary class="hint" style="display:inline;cursor:pointer">Handled interventions (${handled.length})</summary>${handled.map(interventionCard).join('')}</details>` : ''}` : `${human.length ? `<div class="section-head"><h3>🙋 Human intervention</h3><span class="hint">Blocked tickets that triaged themselves and need a person: ${human.length} request${human.length > 1 ? 's' : ''} holding ${human.reduce((n, i) => n + i.taskIds.length, 0)} ticket${human.reduce((n, i) => n + i.taskIds.length, 0) > 1 ? 's' : ''}</span></div>${human.map(interventionCard).join('')}<div class="section-head" style="margin-top:22px"><h3>Questions</h3></div>` : ''}
     ${open.length ? open.map(questionCard).join('') : human.length ? '<p class="hint">No open questions.</p>' : '<div class="empty"><h2>Inbox zero</h2><p>When an agent has a question it adds it here, writes down what it is assuming, and keeps going. Your answer goes back to that agent. Blocked tickets that need a person show up here too, with exactly what to do.</p></div>'}
     ${done.length ? `<details style="margin-top:18px"><summary class="hint" style="display:inline;cursor:pointer">Answered (${done.length})</summary>${done.map(questionCard).join('')}</details>` : ''}
     ${handled.length ? `<details style="margin-top:10px"><summary class="hint" style="display:inline;cursor:pointer">Handled interventions (${handled.length})</summary>${handled.map(interventionCard).join('')}</details>` : ''}`;
@@ -2494,7 +4153,7 @@ function renderInbox() {
 // ---------------------------------------------------------------------------
 // Human Intervention: what a blocked ticket needs from a person (or a Cowork Claude they authorize)
 
-const openInterventions = (gid) => (S.st.interventions || []).filter((i) => i.status === 'open' && (!gid || i.gameId === gid));
+const openInterventions = (gid) => (S.st.interventions || []).filter((i) => i.status === 'open' && (gid ? i.gameId === gid : liveGame(i.gameId)));
 const KIND_LABEL = { access: 'Access or permissions', hardware: 'Hardware or a device', account: 'An account or service', payment: 'Payment', decision: 'Your decision', content: 'Content only you can make', other: 'Something else' };
 
 function coworkText(iv) {
@@ -2677,7 +4336,7 @@ function answerModal(id) {
       ${q.options?.length ? `<ul class="q-options">${q.options.map((o) => `<li>${esc(o)}</li>`).join('')}</ul>` : ''}
       ${q.assumption ? `<p class="hint">${esc(q.agentName)} is going with: ${esc(q.assumption)}</p>` : ''}
       <label class="field"><span>Your answer</span><textarea name="answer" rows="5"></textarea><small>Sent to ${esc(q.agentName)} as a message. It adjusts its work if your answer differs from its assumption.</small></label>`,
-    actions: [{ label: 'Cancel' }, { label: 'Send answer', kind: 'primary', onClick: (root) => api('POST', `/api/inbox/${id}/answer`, formData(root)) }],
+    actions: [{ label: 'Cancel' }, { label: 'Send answer', kind: 'primary', onClick: async (root) => { await api('POST', `/api/inbox/${id}/answer`, formData(root)); toast('Answer sent. Checking whether it also settles other open questions.'); } }],
   });
 }
 
@@ -2706,7 +4365,14 @@ function settingsForm(g) {
     </div>
     <div class="two">
       <label class="field"><span>Coordinator file</span><input name="coordinatorFile" value="${esc(g.coordinatorFile || '')}" placeholder="${g.subdir ? `${esc(g.subdir)}/coordinator.md` : 'coordinator.md'}"><small>Optional. The coordinating agent records each note's feedback and task breakdown here, in the repo.</small></label>
-      <label class="field"><span>Tasks per claim</span><select name="claimBatch">${[1, 2, 3, 4, 5].map((n) => opt(String(n), String(g.claimBatch || 1))).join('')}</select><small>How many tasks an agent takes at once (it works through them in order).</small></label>
+      <label class="field"><span>Tasks per claim</span><select name="claimBatch">${[1, 2, 3, 4, 5].map((n) => opt(String(n), String(g.claimBatch || 1))).join('')}</select><small>How many tasks an agent takes at once (it works through them in order). An account whose weekly limit resets within a day with budget left takes one more.</small></label>
+    </div>
+    <div class="two">
+      <label class="field"><span>Check before hand-in</span><input name="checkCommand" value="${esc(g.checkCommand || '')}" placeholder="e.g. npm run check"><small>Agents run this before they push or hand work in, and hand in only when it passes.</small></label>
+      <div class="field"><span class="field-label">Models by ticket type</span>
+        <div class="row" style="gap:6px"><span class="hint" style="margin:0;min-width:58px">Sonnet</span><input name="routeSonnet" value="${esc(routeTags(g, 'sonnet'))}" placeholder="e.g. docs, backend, qa"></div>
+        <div class="row" style="gap:6px;margin-top:6px"><span class="hint" style="margin:0;min-width:58px">Haiku</span><input name="routeHaiku" value="${esc(routeTags(g, 'haiku'))}" placeholder="ticket tags"></div>
+        <small>Tickets with these [tags] wait for an agent on that model (set an agent's model from Agents → Edit) and go to anyone when none can take them. ${agentsOf(g.id).some((a) => a.model) ? `On a set model now: ${esc(agentsOf(g.id).filter((a) => a.model).map((a) => `${a.name} (${a.model})`).join(', '))}.` : 'No agent has its own model yet, so nothing is routed.'}</small></div>
     </div>
     <div class="two">
       <label class="field"><span>Delegate chats per agent</span><select name="delegateLimit">${opt('', g.delegateLimit == null ? '' : 'x', `Studio default (${S.st.settings.delegateLimit ?? 3})`)}${[0, 1, 2, 3, 4, 6, 8].map((n) => opt(String(n), g.delegateLimit == null ? 'x' : String(g.delegateLimit), n === 0 ? 'None' : `${n} open at once`)).join('')}</select><small>Full chats an agent may open to fan work out. Agents on this PC only; cloud agents can't open chats.</small></label>
@@ -2741,6 +4407,8 @@ function settingsForm(g) {
       <label class="field"><span>Repo</span><input value="${esc(g.repoPath)}" disabled><small>${g.isolation === 'worktree' ? `Worktrees in ${esc(g.repoPath)}.ballast · shared line ${esc(g.integrationBranch)}` : 'Shared working tree'}</small></label>
     </div>
     </div>
+
+    ${jungleSettings(g)}
 
     <h3>Usage limits &amp; rules</h3>
     <p class="hint" style="margin-top:-4px">Accounts are shared between your games. Decide how far into each account's limits this game may go, and how its agents should work as an account fills up. Rules are checked before every turn against that agent's own account.</p>
@@ -2786,14 +4454,19 @@ function settingsForm(g) {
 
 // ---- Usage rules editor (rows are plain DOM; saved with the settings form)
 
-const ruleText = (r) => `${S.st.policy.metrics[r.metric].replace(/ \(.+\)/, '')} over ${r.above}% → ${r.action === 'instruct' ? `tell agents "${r.text.slice(0, 50)}…"` : S.st.policy.actions[r.action]}`;
+const routeTags = (g, model) => (g.modelRoutes || []).filter((r) => r.model === model).flatMap((r) => r.tags).join(', ');
+const isPaceMetric = (m) => /-pace$/.test(m);
+const ruleText = (r) => (isPaceMetric(r.metric)
+  ? `${r.metric.startsWith('weekly') ? 'Weekly' : 'Session'} more than ${r.above} points ahead of pace → ${r.action === 'instruct' ? `tell agents "${r.text.slice(0, 50)}…"` : S.st.policy.actions[r.action]}`
+  : ruleTextFixed(r));
+const ruleTextFixed = (r) => `${S.st.policy.metrics[r.metric].replace(/ \(.+\)/, '')} over ${r.above}% → ${r.action === 'instruct' ? `tell agents "${r.text.slice(0, 50)}…"` : S.st.policy.actions[r.action]}`;
 
 function ruleRow(r = { metric: 'weekly', above: 80, action: 'one-task', on: true }) {
   const opt = (v, cur, label) => `<option value="${esc(v)}"${v === cur ? ' selected' : ''}>${esc(label)}</option>`;
   return `<div class="rule${r.on === false ? ' off' : ''}" data-rule="${esc(r.id || '')}">
     <input type="checkbox" class="r-on" title="Rule on" ${r.on === false ? '' : 'checked'}>
     <span>When</span><select class="mini r-metric">${Object.entries(S.st.policy.metrics).map(([k, l]) => opt(k, r.metric, l)).join('')}</select>
-    <span>is over</span><input class="r-above" type="number" min="1" max="100" value="${r.above}"><span>%</span>
+    <span class="r-pre">${isPaceMetric(r.metric) ? 'is more than' : 'is over'}</span><input class="r-above" type="number" min="1" max="100" value="${r.above}"><span class="r-unit">${isPaceMetric(r.metric) ? 'points ahead of pace' : '%'}</span>
     <select class="mini r-action">${Object.entries(S.st.policy.actions).map(([k, l]) => opt(k, r.action, l)).join('')}</select>
     <button type="button" class="icon-btn" data-act="rule-remove" title="Remove rule">✕</button>
     <input class="r-text" placeholder="What should the agents do? e.g. Only fix bugs; no new features" value="${esc(r.text || '')}" ${r.action === 'instruct' ? '' : 'hidden'}>
@@ -2826,10 +4499,13 @@ function policyNow(g) {
     const s = pct(a, 'session');
     const w = pct(a, 'weekly');
     const p = g.usagePolicy || {};
-    const hit = (r) => r.on && (r.metric === 'session' ? s : r.metric === 'weekly' ? w : Math.max(s, w)) >= r.above;
+    const ahead = (m) => (m === 'session-pace' ? a.pace?.session?.ahead : a.pace?.weekly?.ahead) ?? 0;
+    const hit = (r) => r.on && (isPaceMetric(r.metric) ? ahead(r.metric) : r.metric === 'session' ? s : r.metric === 'weekly' ? w : Math.max(s, w)) >= r.above;
     const capped = p.cap && Math.max(s, w) >= p.cap;
     const live = (p.rules || []).filter(hit);
-    return `<div class="hint" style="margin:2px 0"><b style="color:var(--text)">${esc(a.name)}</b> session ${s}% · weekly ${w}% → ${capped ? '<b style="color:var(--accent)">capped: holding work</b>' : live.length ? esc(live.map((r) => (r.action === 'instruct' ? 'custom instruction' : S.st.policy.actions[r.action].replace(/ \(.+\)/, ''))).join(', ')) : 'normal'}</div>`;
+    const wp = a.pace?.weekly;
+    const paceTxt = wp?.ahead != null ? ` (${Math.abs(wp.ahead) < 3 ? 'on pace' : `${Math.round(Math.abs(wp.ahead))} points ${wp.ahead > 0 ? 'ahead of' : 'behind'} pace`}${a.pace.expiring ? ', resets soon: gets work first' : ''})` : '';
+    return `<div class="hint" style="margin:2px 0"><b style="color:var(--text)">${esc(a.name)}</b> session ${s}% · weekly ${w}%${paceTxt} → ${capped ? '<b style="color:var(--accent)">capped: holding work</b>' : live.length ? esc(live.map((r) => (r.action === 'instruct' ? 'custom instruction' : S.st.policy.actions[r.action].replace(/ \(.+\)/, ''))).join(', ')) : 'normal'}</div>`;
   }).join('');
 }
 
@@ -2843,6 +4519,10 @@ function bindSettings(g) {
     const row = e.target.closest('.rule');
     if (e.target.classList.contains('r-action')) $('.r-text', row).hidden = e.target.value !== 'instruct';
     if (e.target.classList.contains('r-on')) row.classList.toggle('off', !e.target.checked);
+    if (e.target.classList.contains('r-metric')) {
+      $('.r-pre', row).textContent = isPaceMetric(e.target.value) ? 'is more than' : 'is over';
+      $('.r-unit', row).textContent = isPaceMetric(e.target.value) ? 'points ahead of pace' : '%';
+    }
   });
   $('#game-settings').onsubmit = async (e) => {
     e.preventDefault();
@@ -2853,7 +4533,9 @@ function bindSettings(g) {
         itch: { target: f.itchTarget },
         name: f.name, leadAgentId: f.leadAgentId || null, brief: f.brief, autopilot: f.autopilot, priority: Number(f.priority),
         coordinatorFile: f.coordinatorFile, claimBatch: Number(f.claimBatch), delegateLimit: f.delegateLimit, subagentLimit: f.subagentLimit,
-        permissionMode: f.permissionMode, model: f.model, effort: f.effort,
+        permissionMode: f.permissionMode, model: f.model, effort: f.effort, checkCommand: f.checkCommand,
+        split: Object.fromEntries(SPLIT_ROWS.map(([k]) => [k, f[`split_${k}`]])), jungleMode: f.jungleMode, jungleAllow: f.jungleAllow,
+        modelRoutes: [{ tags: f.routeSonnet, model: 'sonnet' }, { tags: f.routeHaiku, model: 'haiku' }],
         build: { command: f.command, checkins: f.checkins, outputPath: f.outputPath, shareDir: f.shareDir, webhookUrl: f.webhookUrl, timeoutMin: f.timeoutMin, agentReport: f.agentReport },
       });
       toast('Saved');
@@ -2913,7 +4595,30 @@ function editAccountModal(id) {
 function newGameModal() {
   modal({
     title: 'New game',
-    body: `<label class="field"><span>Name</span><input name="name" placeholder="e.g. Dark Territory"></label>
+    body: `<label class="field"><span>Start from</span><select name="start" id="ng-start">
+        <option value="jungle">A new Jungle Engine game (the engine's starter)</option>
+        <option value="repo">A repo or folder I already have</option>
+      </select></label>
+      <label class="field"><span>Name</span><input name="name" id="ng-name" placeholder="e.g. Dark Territory"></label>
+      <div data-start="jungle">
+        <div id="ng-jcheck" class="ng-jcheck"><p class="hint">Checking this PC for the engine…</p></div>
+        <label class="field"><span>Save it in</span><select name="jwhere" id="ng-jwhere">
+          <option value="repo">My games repo: a new folder in its games folder (pull request)</option>
+          <option value="local">A new project of its own on this PC</option>
+        </select></label>
+        <div class="two">
+          <label class="field"><span>Game id</span><input name="jid" id="ng-jid" placeholder="darkterritory"><small>Lowercase letters and digits. Everything the game names starts with it, and it names the game's folder.</small></label>
+          <label class="field" data-jwhere="repo"><span>Games folder on GitHub</span><input name="gamesFolder" id="ng-jfolder" placeholder="https://github.com/owner/repo/tree/main/games"><small>The project's games folder. The game goes in <code id="ng-jpath">games/&lt;id&gt;</code>.</small></label>
+          <label class="field" data-jwhere="local" hidden><span>Project folder</span><input name="jdir" id="ng-jdir"><small>New or empty. Ballast makes the git repo.</small></label>
+        </div>
+        <label class="field"><span>Tagline (optional)</span><input name="tagline" placeholder="What players read under the title"></label>
+        <p class="hint" data-jwhere="repo">Ballast copies the starter's demo pack for the engine version that repo installs into its games folder, renames it to the game id, registers it in the project's client and server apps, checks it, and opens a pull request. The game runs as Claude cloud sessions on its folder (connect them on the Agents tab), and autopilot turns on once you merge the pull request.</p>
+        <div data-jwhere="local" hidden>
+          <label class="field"><span>GitHub repo (optional)</span><input name="ghrepo" placeholder="e.g. thecompanylive/jungle-darkterritory"><small>Left empty, the project stays on this PC. Filled in, Ballast creates that repo (private) and pushes the first commit.</small></label>
+          <label class="check"><input type="checkbox" name="keepHumanDemo"><span>Keep the « Taille humaine » sample pack<br><span class="hint" style="margin:0">A second pack with human-size players, a table and a button. Leave it off for a gorilla-envelope game.</span></span></label>
+        </div>
+      </div>
+      <div data-start="repo" hidden>
       <label class="field"><span>Where agents run</span><select name="runner" id="ng-runner">
         <option value="local">This PC (local repo)</option>
         <option value="cloud">Claude cloud, on a GitHub repo</option>
@@ -2932,13 +4637,31 @@ function newGameModal() {
         </div>
         <p class="hint">Each agent works in a Claude Code cloud session on its own branch and opens a pull request. Every account needs GitHub connected on claude.ai/code (run <code>/web-setup</code> once in Claude Code, or install the Claude GitHub app). Ballast clones the repo here only to watch for reports and run builds.</p>
       </div>
+      </div>
       <label class="field"><span>Agents</span>${S.st.accounts.map((a) => `<label class="check" style="margin-bottom:6px"><input type="checkbox" name="acc:${a.id}" ${a.loggedIn ? 'checked' : ''}><span>${esc(a.name)} <span class="hint" style="display:inline">${esc(a.email || (a.loggedIn ? '' : 'not logged in'))}</span></span></label>`).join('')}</label>
       <label class="field"><span>Game brief (optional)</span><textarea name="brief" rows="4" placeholder="Genre, pillars, platform, art direction…"></textarea></label>
-      <label class="check"><input type="checkbox" name="survey" checked><span>If the repo already has work in it, have the lead agent survey it first<br><span class="hint" style="margin:0">Reads the code and history, suggests a brief and fills the board. Use Sessions on an agent to continue Claude conversations you already had in this repo.</span></span></label>`,
+      <label class="check" data-start="repo" hidden><input type="checkbox" name="survey" checked><span>If the repo already has work in it, have the lead agent survey it first<br><span class="hint" style="margin:0">Reads the code and history, suggests a brief and fills the board. Use Sessions on an agent to continue Claude conversations you already had in this repo.</span></span></label>`,
     actions: [{ label: 'Cancel' }, {
       label: 'Create', kind: 'primary', onClick: async (root) => {
         const f = formData(root);
         const accountIds = Object.keys(f).filter((k) => k.startsWith('acc:') && f[k]).map((k) => k.slice(4));
+        if (f.start === 'jungle' && f.jwhere === 'repo') {
+          const g = await api('POST', '/api/jungle/repo-games', { name: f.name, id: f.jid, folder: f.gamesFolder, tagline: f.tagline, brief: f.brief, accountIds });
+          S.st = await api('GET', '/api/state');
+          selectGame(g.id);
+          toast('Game folder made. Checking it, then opening the pull request; the feed reports each step.');
+          return;
+        }
+        if (f.start === 'jungle') {
+          const g = await api('POST', '/api/jungle/projects', {
+            name: f.name, id: f.jid, dir: f.jdir, tagline: f.tagline, keepHumanDemo: f.keepHumanDemo, brief: f.brief, accountIds,
+            github: f.ghrepo?.trim() ? { repo: f.ghrepo.trim() } : null,
+          });
+          S.st = await api('GET', '/api/state');
+          selectGame(g.id);
+          toast('Project made. Installing the engine; the feed reports each step.');
+          return;
+        }
         const g = await api('POST', '/api/games', {
           name: f.name, runner: f.runner, repoPath: f.repoPath, isolation: f.isolation, github: f.github, baseBranch: f.baseBranch,
           brief: f.brief, survey: f.survey, accountIds,
@@ -2951,6 +4674,34 @@ function newGameModal() {
       $('#ng-runner', root).onchange = (e) => {
         for (const el of $$('[data-runner]', root)) el.hidden = el.dataset.runner !== e.target.value;
       };
+      $('#ng-jwhere', root).onchange = (e) => {
+        for (const el of $$('[data-jwhere]', root)) el.hidden = el.dataset.jwhere !== e.target.value;
+      };
+      $('#ng-start', root).onchange = (e) => {
+        for (const el of $$('[data-start]', root)) el.hidden = el.dataset.start !== e.target.value;
+      };
+      // The id and folder follow the name until they are typed in by hand.
+      const id = $('#ng-jid', root), dir = $('#ng-jdir', root);
+      let jroot = '';
+      const sync = () => {
+        const v = $('#ng-name', root).value.toLowerCase().normalize('NFD').replace(/[^a-z0-9]/g, '').replace(/^[0-9]+/, '').slice(0, 24);
+        if (!id.dataset.typed) id.value = v;
+        const sep = jroot.includes('\\') ? '\\' : '/';
+        if (!dir.dataset.typed && jroot) dir.value = id.value ? `${jroot}${sep}jungle-${id.value}` : '';
+        const folder = $('#ng-jfolder', root).value.match(/\/tree\/[^/]+\/(.+?)\/*$/)?.[1] || 'games';
+        $('#ng-jpath', root).textContent = `${folder}/${id.value || '<id>'}`;
+      };
+      $('#ng-name', root).addEventListener('input', sync);
+      id.addEventListener('input', () => { id.dataset.typed = '1'; sync(); });
+      dir.addEventListener('input', () => { dir.dataset.typed = '1'; });
+      api('GET', '/api/jungle/check').then((c) => {
+        jroot = c.defaultRoot;
+        if (!$('#ng-jfolder', root).value) $('#ng-jfolder', root).value = c.gamesFolder || '';
+        $('#ng-jfolder', root).addEventListener('input', sync);
+        sync();
+        $('#ng-jcheck', root).innerHTML = `<ul class="ng-jlist">${c.items.map((i) => `<li class="${i.ok ? 'ok' : 'bad'}">${i.ok ? '✓' : '✗'} ${esc(i.label)}${i.ok ? '' : `<br><span class="hint" style="margin:0">${esc(i.fix)}</span>`}</li>`).join('')}</ul>
+          <p class="hint" style="margin:4px 0 0">Ballast copies the engine's starter (<a href="${esc(c.docs)}" target="_blank">Your first game</a>), renames its demo pack to your game's id and checks it before any agent starts work.</p>`;
+      }).catch((err) => { $('#ng-jcheck', root).innerHTML = `<p class="hint">Could not check this PC: ${esc(err.message)}</p>`; });
     },
   });
 }
@@ -2979,7 +4730,8 @@ function editAgentModal() {
   modal({
     title: `Agent: ${a.name}`,
     body: `<label class="field"><span>Name</span><input name="name" value="${esc(a.name)}"></label>
-      <label class="field"><span>Role</span><input name="role" list="roles" value="${esc(a.role)}">${rolesList}</label>`,
+      <label class="field"><span>Role</span><input name="role" list="roles" value="${esc(a.role)}">${rolesList}</label>
+      <label class="field"><span>Model</span><select name="model">${[['', 'Game default'], ['opus', 'Opus'], ['sonnet', 'Sonnet'], ['haiku', 'Haiku'], ['fable', 'Fable']].map(([v, l]) => `<option value="${v}"${(a.model || '') === v ? ' selected' : ''}>${l}</option>`).join('')}</select><small>${S.st.games.find((x) => x.id === a.gameId)?.runner === 'cloud' ? "Cloud agents: pick the same model in this agent's claude.ai session; Ballast can't change it there. " : ''}Tickets routed to this model (Settings → Models by ticket type) wait for agents set to it.</small></label>`,
     actions: [{ label: 'Cancel' }, { label: 'Save', kind: 'primary', onClick: (root) => api('PATCH', `/api/agents/${a.id}`, formData(root)) }],
   });
 }
@@ -3005,6 +4757,7 @@ function globalSettingsModal() {
         <label class="field"><span>Parallel turns per account</span><input name="maxConcurrentPerAccount" type="number" min="1" value="${s.maxConcurrentPerAccount}"></label>
         <label class="field"><span>Autopilot turns per game per day</span><input name="autopilotDailyTurns" type="number" min="1" value="${s.autopilotDailyTurns}"></label>
       </div>
+      <label class="field"><span>Prompt cache lifetime</span><select name="promptCacheTtl">${[['1h', '1 hour (recommended)'], ['5m', '5 minutes'], ['auto', 'Let Claude Code decide']].map(([v, l]) => `<option value="${v}"${(s.promptCacheTtl || '1h') === v ? ' selected' : ''}>${l}</option>`).join('')}</select><small>How long Claude keeps what an agent or Ballast run already sent, so the next turn reads it back at a fraction of the cost. Agent turns are often minutes to hours apart, so 1 hour pays off. Claude Code already uses 1 hour on a subscription but drops to 5 minutes once an account runs on usage credits; this keeps it at 1 hour there too.</small></label>
       <h4 class="sub-h">Fanning out</h4>
       <div class="two">
         <label class="field"><span>Delegate chats per agent</span><input name="delegateLimit" type="number" min="0" max="8" value="${s.delegateLimit ?? 3}"><small>Full chats an agent may have open at once to spread its work (0 = off). Each lands on the account with the most headroom.</small></label>
@@ -3018,6 +4771,17 @@ function globalSettingsModal() {
         <label class="field"><span>Auto-approve unreviewed work after (hours)</span><input name="reviewAutoApproveHours" type="number" min="0" value="${s.reviewAutoApproveHours}"><small>Only for "Approve first" areas. 0 = never.</small></label>
         <label class="field"><span>Delivery heads-up (minutes before each check-in)</span><input name="deliveryHeadsUpMin" type="number" min="0" value="${s.deliveryHeadsUpMin}"></label>
       </div>
+      <h4 class="sub-h">Daily update and time away</h4>
+      <div class="two">
+        <label class="field"><span>Daily update in each game's Feed</span><div class="row"><label class="check" style="margin:0"><input type="checkbox" name="dr.on" ${s.dailyReport?.on !== false ? 'checked' : ''}><span>at</span></label><input name="dr.at" type="time" value="${esc(s.dailyReport?.at || s.workHours?.end || '18:00')}" style="width:auto"></div><small>What got done, what to check, what's still in progress and how the game plays differently, in plain words. A quiet day is one line. <a href="#" data-act="daily-now">Write today's updates now</a></small></label>
+        <div class="field"><span class="field-label">Time away</span><div class="row" style="gap:6px;flex-wrap:wrap">
+          <select name="away.reason" style="width:auto">${[['', 'Not away'], ['sick', 'Off sick'], ['vacation', 'On vacation'], ['away', 'Away']].map(([v, l]) => `<option value="${v}"${(s.away?.reason || '') === v ? ' selected' : ''}>${l}</option>`).join('')}</select>
+          <input name="away.from" type="date" value="${esc(s.away?.from || '')}" style="width:auto"><span class="hint" style="margin:0">to</span><input name="away.to" type="date" value="${esc(s.away?.to || '')}" style="width:auto"></div>
+          <input name="away.note" value="${esc(s.away?.note || '')}" placeholder="Note for the team (optional)" style="margin-top:6px">
+          <small class="hint" style="display:block;margin-top:6px;font-weight:normal">While you're away, agents leave work that needs you (approvals, playtests, decisions) on the board. They do review-free work instead: engine updates, asset quality in the current style, QA checks, headset simulations, performance. Ballast adds that work when a board runs low, and the first update after you're back covers the whole time away.</small></div>
+      </div>
+      <h4 class="sub-h">Jungle Engine</h4>
+      <p class="hint" style="margin-top:-2px">${(() => { const j = S.st.jungleDocs || {}; return `Ballast copies the engine's docs from <a href="https://thecompanylive.github.io/jungle-engine/" target="_blank" rel="noopener">thecompanylive.github.io/jungle-engine</a> once a day and works within them: triage, GDD checks, audits, conversation mode and agents read them, and each day's changes are summarized in Jungle games' Feeds, with tickets where a game's code is affected. ${j.syncing ? 'Syncing now…' : j.lastSync ? `Last synced ${esc(ago(j.lastSync))}: ${j.pages} guide pages, latest engine ${esc(j.engine || '?')}.` : 'Not synced yet.'}${j.error ? ` <span style="color:var(--red)">${esc(j.error)}</span>` : ''} <a href="#" data-act="jungle-docs-sync">Sync now</a>`; })()}</p>
       <h4 class="sub-h">Working hours and usage reports</h4>
       <div class="two">
         <label class="field"><span>Working hours</span><div class="row"><input name="wh.start" type="time" value="${esc(s.workHours?.start || '09:00')}"><span class="hint" style="margin:0">to</span><input name="wh.end" type="time" value="${esc(s.workHours?.end || '18:00')}"></div></label>
@@ -3059,8 +4823,12 @@ function globalSettingsModal() {
         for (const k of Object.keys(f)) if (k.startsWith('review.')) { reviewModes[k.slice(7)] = f[k]; delete f[k]; }
         const workHours = { start: f['wh.start'], end: f['wh.end'], days: [0, 1, 2, 3, 4, 5, 6].filter((i) => f[`wh.day${i}`]) };
         const weeklyReport = { day: f['wk.day'], time: f['wk.time'] };
-        for (const k of Object.keys(f)) if (k.startsWith('wh.') || k.startsWith('wk.')) delete f[k];
-        return api('PATCH', '/api/settings', { ...f, digestDaily: !!f.digestDaily, blockTriage: !!f.blockTriage, review: reviewModes, workHours, weeklyReport });
+        const director = {
+          dailyReport: { on: !!f['dr.on'], at: f['dr.at'] || '18:00' },
+          away: f['away.reason'] ? { reason: f['away.reason'], from: f['away.from'], to: f['away.to'], note: f['away.note'] } : null,
+        };
+        for (const k of Object.keys(f)) if (k.startsWith('wh.') || k.startsWith('wk.') || k.startsWith('dr.') || k.startsWith('away.')) delete f[k];
+        return api('PATCH', '/api/director', director).then(() => api('PATCH', '/api/settings', { ...f, digestDaily: !!f.digestDaily, blockTriage: !!f.blockTriage, review: reviewModes, workHours, weeklyReport }));
       },
     }],
   });
@@ -3136,7 +4904,7 @@ function setupShell() {
       <form id="su-work" class="settings">
         <div class="two">${[...S.st.disciplines, { id: 'other', label: 'Untagged work' }].map((d) => `<label class="field"><span>${esc(d.label)}</span><select name="review.${d.id}">
           ${['after', 'gate', 'skip'].map((m) => `<option value="${m}"${(s.review?.[d.id] || 'after') === m ? ' selected' : ''}>${MODE_INFO[m].label}</option>`).join('')}</select></label>`).join('')}</div>
-        <label class="check"><input type="checkbox" name="defaultRules" ${s.defaultUsagePolicy !== null ? 'checked' : ''}><span><b>Start new games with the usage starter rules</b><br><span class="hint" style="margin:0">One task at a time over 60% of a session, Sonnet over 70% weekly, keep tasks small over 75%, no fan-out over 80% session, no new claims over 85% weekly, and tell you over 90%. Change them per game any time.</span></span></label>
+        <label class="check"><input type="checkbox" name="defaultRules" ${s.defaultUsagePolicy ? 'checked' : ''}><span><b>Start new games with the usage starter rules</b><br><span class="hint" style="margin:0">Paced across each account's week: one task at a time over 60% of a session, smaller tasks 10 points ahead of weekly pace, Sonnet 20 ahead, no fan-out over 80% of a session, no new claims 30 ahead, and tell you over 90%. Nothing holds an account back late in its week, when unused budget would be lost. Change them per game any time.</span></span></label>
         <label class="field"><span>Autopilot leaves an account alone above (%)</span><input name="limitGuardPct" type="number" min="1" max="100" value="${s.limitGuardPct}" style="width:100px"><small>Of its session or weekly limit, across all games.</small></label>
       </form>`,
     phone: `<h2>Ballast on your phone</h2>
@@ -3272,6 +5040,7 @@ const ACTIONS = {
   'ask-reset': async () => { await api('POST', `/api/games/${S.gameId}/ask/reset`); toast('New conversation: earlier questions won’t be carried into the next one'); },
   'ask-to-team': (d) => sendAnswerToTeam(d.id),
   'ask-copy': (d) => copyText((S.feeds[S.gameId] || []).find((e) => e.kind === 'answer' && e.askId === d.id)?.text || '', 'Answer'),
+  'roadmap-audit': async (d) => { try { await api('POST', `/api/games/${S.gameId}/roadmap/audit`, { model: d.model }); toast('Auditing every feature against the GDD and the repo. The levels update when it finishes (a few minutes).'); } catch (err) { fail(err); } },
   'roadmap-run': async (d) => { await api('POST', `/api/games/${S.gameId}/roadmap`, { model: d.model }); toast('Breaking down the GDD… (a few minutes)'); },
   'feature-open': (d) => featureModal(d.id),
   'ms-add': () => modal({ title: 'New milestone', body: '<label class="field"><span>Name</span><input name="name" placeholder="e.g. Steam Next Fest demo"></label>', actions: [{ label: 'Cancel' }, { label: 'Add', kind: 'primary', onClick: (root) => api('PATCH', `/api/games/${S.gameId}/roadmap`, { addMilestone: { name: $('input', root).value || 'Milestone' } }) }] }),
@@ -3336,8 +5105,41 @@ const ACTIONS = {
   'review-discard': () => confirmModal('Discard this review?', 'The transcript so far will be deleted.', 'Discard', () => { RS.gen = (RS.gen || 0) + 1; reviewStop(); store(RS_DRAFT, ''); $('#review-session')?.remove(); }),
   'queue-earlier': async () => { const r = await api('POST', `/api/games/${S.gameId}/queue-earlier`); toast(`Queued ${r.queued} for review${r.skipped ? `, ${r.skipped} filed as not your field` : ''}`); },
   'review-all': async (d) => { const r = await api('POST', `/api/games/${S.gameId}/approve-all`, { discipline: d.d }); toast(`Approved ${r.approved}`); },
+  'daily-now': async () => { try { await api('POST', '/api/daily-report'); toast('Writing today\'s updates. Each game\'s Feed gets its own.'); } catch (err) { fail(err); } },
+  'jungle-docs-sync': async () => { try { await api('POST', '/api/jungle-docs/sync'); toast('Syncing the Jungle Engine docs. Changes show up in Jungle games\' Feeds.'); } catch (err) { fail(err); } },
   'q-answer': (d) => answerModal(d.id),
+  'gdd-import': async () => { toast('Importing the GDD from where it lives…'); await api('POST', `/api/games/${S.gameId}/gdd/import`, {}); await loadGdd(); toast('GDD imported as a new version.'); },
+  'gdd-paste': () => gddPasteModal(),
+  'gdd-download': () => { const d = GDDV.data[S.gameId]; const v = d?.versions?.[0]; if (!d?.current) return; const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([d.current], { type: 'text/markdown' })); a.download = `${(game().slug || 'gdd')}-gdd-v${v.v}.md`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); },
+  'gdd-discard': (d) => api('PATCH', `/api/games/${S.gameId}/gdd/drafts/${d.id}`, { discard: true }),
+  'gdd-accept': (d) => confirmModal('Accept these edits?', 'They are saved as the next GDD version and written back where the GDD lives; then the board is re-checked against it.', 'Accept', async () => { await api('POST', `/api/games/${S.gameId}/gdd/drafts/${d.id}/accept`); toast('Saved. Writing it back and updating the board…'); }),
+  'gym-ask': (d) => gymAskModal(d.section, d.gym || null),
+  'gym-remove': (d) => confirmModal('Forget this gym?', 'Ballast stops showing it. The gym\'s code stays in the game.', 'Forget', () => api('DELETE', `/api/games/${S.gameId}/gyms/${d.id}`)),
+  'gym-copy': (d) => { const gym = (game().gyms || []).find((x) => x.id === d.id); copyText(gym?.open || '', 'How to open the gym'); },
+  'subject-edit': (d) => subjectModal(d.id || null),
+  'subject-round': async (d) => { await api('POST', `/api/games/${S.gameId}/subjects/${d.id}/round`, {}); toast('Round is on the board.'); },
+  'focus-edit': (d) => focusModal(d.id || null),
+  'focus-toggle': (d) => api('PATCH', `/api/games/${S.gameId}/focus`, { toggle: d.id }),
+  'focus-remove': (d) => { const f = focusesOf(game()).find((x) => x.id === d.id); confirmModal(`Remove "${f?.title}"?`, 'Its tickets stay on the board; they just stop going first.', 'Remove', () => api('PATCH', `/api/games/${S.gameId}/focus`, { remove: d.id })); },
+  'focus-plan': async (d) => { await api('PATCH', `/api/games/${S.gameId}/focus`, { plan: d.id }); toast('Planning: reading the GDD and the code. New tickets land on the board in a few minutes.'); },
+  'focus-match': (d) => api('PATCH', `/api/games/${S.gameId}/focus`, { match: true }),
+  'section-toggle': (d) => { SEC.open.has(d.id) ? SEC.open.delete(d.id) : SEC.open.add(d.id); renderSections(); },
+  'gate-pass': async (d) => { await api('PATCH', `/api/games/${S.gameId}/gates`, { gate: { featureId: d.id, gate: Number(d.gate) } }); toast(`Gate passed: work toward L${d.gate} starts now`); },
+  'gates-sort': async () => { const r = await api('POST', `/api/games/${S.gameId}/gates/sort`); toast(`Sorting ${r.tickets} ticket${r.tickets === 1 ? '' : 's'} into sections…`); },
+  'gateset-edit': (d) => gateSetModal(d.id || null),
+  'gateset-apply': (d) => { const s = S.st.roadmaps[S.gameId].gates.sets.find((x) => x.id === d.id); confirmModal(`Apply "${s.name}"?`, 'Every section it lists moves to its target gate now. Work for gates that open starts right away; tickets above a lowered gate wait.', 'Apply', () => api('PATCH', `/api/games/${S.gameId}/gates`, { applySet: d.id })); },
+  'gateset-move': (d) => api('PATCH', `/api/games/${S.gameId}/gates`, { moveSet: { id: d.id, dir: d.dir } }),
+  'gateset-delete': (d) => api('PATCH', `/api/games/${S.gameId}/gates`, { deleteSet: d.id }),
+  'jungle-brief': async (d) => { const r = await api('GET', `/api/games/${d.id}/jungle-share`); copyText(r.brief, `Brief for Jungle Studio (${r.tasks.length} ticket${r.tasks.length === 1 ? '' : 's'})`); },
+  'task-owner': async (d) => { await api('PATCH', `/api/tasks/${d.id}/owner`, { owner: d.owner }); toast(d.owner === 'done-in-jungle' ? 'Marked done in Jungle Studio' : d.owner === 'jungle' ? 'Sent to Jungle Studio: no Ballast agent will take it' : 'Ballast\'s agents can take it now'); },
+  'split-preset': (d) => {
+    const form = $('#game-settings');
+    for (const [k] of SPLIT_ROWS) form[`split_${k}`].value = d.preset === 'code' && (k === 'gameplay' || k === 'backend') ? 'jungle' : 'ballast';
+    toast('Set. Press Save to keep it.');
+  },
   'q-dismiss': (d) => api('POST', `/api/inbox/${d.id}/dismiss`),
+  'q-addtask': async (d) => { try { const t = await api('POST', `/api/inbox/${d.id}/add-task`); toast(`On the board as #${t.num}.`); } catch (err) { fail(err); } },
+  'q-reopen': async (d) => { try { await api('POST', `/api/inbox/${d.id}/reopen`); toast('Reopened. Its agent was told to disregard that answer.'); } catch (err) { fail(err); } },
   'game': (d) => selectGame(d.id),
   'probe': async (d) => { await api('POST', `/api/accounts/${d.id}/probe`); },
   'sync': async (d) => { await api('POST', `/api/accounts/${d.id}/sync`); toast('Reading claude.ai artifacts…'); },
@@ -3422,6 +5224,15 @@ const ACTIONS = {
   'new-game': () => (S.st.accounts.length ? newGameModal() : toast('Add a Claude account first.', true)),
   'new-account': newAccountModal,
   'acct-login': (d) => loginFlow(d.id),
+  'acct-repair': async (d, el) => {
+    if (el) el.disabled = true;
+    toast('Checking the sign-in with a real call…');
+    try {
+      const r = await api('POST', `/api/accounts/${d.id}/repair`);
+      if (r.status === 'ok') toast(r.message);
+      else modal({ title: 'Repair sign-in', body: `<p>${esc(r.message)}</p>${r.opened === false && r.command ? `<p class="hint">No window could open here. Run this in a terminal:</p><pre>${esc(r.command)}</pre>` : ''}`, actions: [{ label: 'OK', kind: 'primary' }] });
+    } finally { if (el) el.disabled = false; }
+  },
   'acct-detach': (d) => {
     const a = acctOf(d.id);
     confirmModal(`Give ${a.name} its own login?`, `Ballast gives ${a.name} its own Claude profile, like your other accounts, and opens a terminal to sign it in. Sign in as ${a.email}. After that, whatever you're signed into in the Claude app or CLI never changes who Ballast runs as. Its agents keep their conversations.`, 'Open the sign-in', async () => {
@@ -3451,6 +5262,20 @@ const ACTIONS = {
   'task-status': (d) => api('PATCH', `/api/tasks/${d.id}`, { status: d.status }),
   'task-edit': (d) => editTaskModal(d.id),
   'task-delete': (d) => api('DELETE', `/api/tasks/${d.id}`),
+  'task-cancel': (d) => api('PATCH', `/api/tasks/${d.id}`, { status: 'done', cancelled: true }),
+  'board-archive': () => archiveModal(),
+  'gdd-review': async () => {
+    try {
+      await api('POST', `/api/games/${S.gameId}/gdd-review`);
+      toast('Re-evaluating against the GDD. New tasks land on the board and the feed gets a summary.');
+    } catch (err) { fail(err); }
+  },
+  'archive-reopen': async (d, el) => {
+    await api('PATCH', `/api/tasks/${d.id}`, { status: 'open' });
+    el.closest('.arch-row')?.remove();
+    toast('Back on the board');
+  },
+  'note-check': async (d) => { await api('POST', `/api/games/${S.gameId}/notes/${d.num}/check`); toast(`Checking note #${d.num} against the blocked tickets`); },
   'build-now': async () => { await api('POST', `/api/games/${S.gameId}/build`); toast('Build started'); },
   'build-cancel': () => api('POST', `/api/games/${S.gameId}/build/cancel`),
   'build-log': (d) => showBuildLog(d.id),
@@ -3528,15 +5353,31 @@ async function refresh() {
         if (S.gameId) store('gameId', S.gameId);
         else if (S.view === 'game') S.view = 'studio';
       }
-      renderLive();
+      // A redraw between a button's press and release replaces the button, so the click is lost:
+      // while a pointer is down, live updates wait for its release.
+      if (POINTER.down) POINTER.pending = true;
+      else renderLive();
       loadUsage();
     } catch (err) { fail(err); } finally { refreshing = null; }
   })();
   return refreshing;
 }
 
+const POINTER = { down: false, pending: false };
+document.addEventListener('pointerdown', () => { POINTER.down = true; }, true);
+const pointerReleased = () => {
+  if (!POINTER.down) return;
+  POINTER.down = false;
+  // After the click this release produces has been handled.
+  if (POINTER.pending) { POINTER.pending = false; setTimeout(renderLive, 60); }
+};
+document.addEventListener('pointerup', pointerReleased, true);
+document.addEventListener('pointercancel', pointerReleased, true);
+window.addEventListener('blur', pointerReleased);
+
 function handleEvent(ev) {
   if (ev.type === 'state') return refresh();
+  if (ev.type === 'loops') return loopsChanged(ev.gameId);
   if (ev.type === 'thread' || ev.type === 'thread-live') {
     const list = $(`#thread-msgs[data-task="${ev.taskId}"]`);
     if (!list) return;
